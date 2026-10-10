@@ -369,7 +369,10 @@ const scanLength = (lines: InstructionLine[]): LengthScan => {
   const range = RANGE_RE.exec(c);
   if (range) {
     const lo = Number(range[1] ?? range[4]); const hi = Number(range[2] ?? range[5]); const unit = range[3] ?? range[6];
-    if (lo > 0 && hi >= lo && !LENGTH_NEGATOR_RE.test(c.slice(0, range.index))) return { target: { unit: normalizeUnit(unit), count: hi, bound: 'max', min: lo }, mentioned };
+    // Minutes are carried as seconds here too: "1-2 minutes" was read as one
+    // to two SECONDS, a LENGTH line of "between 3 and 5 words".
+    const per = /^min/i.test(unit) ? 60 : 1;
+    if (lo > 0 && hi >= lo && !LENGTH_NEGATOR_RE.test(c.slice(0, range.index))) return { target: { unit: normalizeUnit(unit), count: hi * per, bound: 'max', min: lo * per }, mentioned };
     return { target: null, mentioned };
   }
   if (expressions !== 1) return { target: null, mentioned };

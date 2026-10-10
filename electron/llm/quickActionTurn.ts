@@ -1,4 +1,5 @@
 import { buildAssembledTurnContentV2, buildTurnContentV2, carriesV2Core, type EvidenceBlockV2 } from "./promptSystemV2";
+import { analyzeUserInstructions, removeGroundingOverrides, userInstructionsOverrideAppLength, type UserLengthBound } from "./userInstructionContract";
 
 /**
  * The user turn for Recap, Follow-up questions, Clarify and Brainstorm.
@@ -44,13 +45,88 @@ const REQUESTS: Record<QuickAction, string> = {
     // interviewer...") in about half the replies; "out loud in my voice" is the
     // user thinking aloud, 45 of 45. "At most 120 words" left Haiku at a median
     // of 158 to 179; "Under 100" puts it at 126 to 132 and the others under 100.
-    brainstorm: 'Brainstorm this out loud in my voice: two or three different approaches and what each one costs, then the one I would go with. Under 100 words',
+    // (The length is in DEFAULT_LENGTH: a Real-time prompt can replace it.)
+    brainstorm: 'Brainstorm this out loud in my voice: two or three different approaches and what each one costs, then the one I would go with',
     // Brainstorm pressed over a system design on the table: alternatives to it,
     // with the pick drawn. The request above, said "out loud", made Haiku leave
     // the diagram out 5 times in 5 even with the diagram contract in the system
     // prompt; asked for here, 15 of 15 on three models carry exactly one.
-    brainstorm_alternatives: 'Brainstorm alternatives to this design out loud in my voice: two or three different designs and what each one costs, then the one I would go with, drawn as one diagram. Under 100 words outside the diagram',
+    brainstorm_alternatives: 'Brainstorm alternatives to this design out loud in my voice: two or three different designs and what each one costs, then the one I would go with, drawn as one diagram',
 };
+// The request's own length, and what a length is measured outside of.
+const DEFAULT_LENGTH: Partial<Record<QuickAction, { length: string; outside: string }>> = {
+    brainstorm: { length: 'Under 100 words', outside: '' },
+    brainstorm_alternatives: { length: 'Under 100 words', outside: ' outside the diagram' },
+};
+
+// The Real-time prompt reaches Brainstorm in the system prompt, which says it
+// outranks every default. The request is still the last thing read, and on
+// claude-haiku-5-5 it won: with "Java only. Name the Java class you would use"
+// 0 replies of 8 named one, and with "Keep it under 60 words" the median stayed
+// at 109 (2026-10-10). So the request points at the instructions (7 of 8), and
+// where they set a length it states that length and not its own (median 71,
+// the same overshoot Haiku has on "Under 100").
+const STANDING_INSTRUCTIONS_FIRST = ' My standing instructions come first where they differ.';
+const BOUND_WORDS: Record<UserLengthBound, string> = { max: 'At most', min: 'At least', exact: 'Exactly', about: 'About' };
+// Models count words far better than seconds (userInstructionContract renderLengthLine).
+const WORDS_PER_SECOND = 2.5;
+
+/**
+ * The length the user's standing instructions set, as the request states it.
+ * null: they say nothing about length, so the request keeps its own. '': they
+ * speak about length with nothing to restate here (a list size, "be thorough"),
+ * so the request names none and the system prompt's reading of them stands.
+ */
+function standingLength(deliveredInstructions: string): string | null {
+    const analysis = analyzeUserInstructions(deliveredInstructions);
+    if (!userInstructionsOverrideAppLength(analysis)) return null;
+    const target = analysis.length;
+    if (!target || target.unit === 'bullets') return '';
+    const inWords = target.unit === 'seconds';
+    const scale = (n: number) => (inWords ? Math.round(n * WORDS_PER_SECOND) : n);
+    const count = scale(target.count);
+    const unit = inWords ? 'words' : target.unit;
+    const named = count === 1 ? unit.replace(/s$/, '') : unit;
+    return target.min !== undefined
+        ? `Between ${scale(target.min)} and ${count} ${named}`
+        : `${BOUND_WORDS[target.bound]} ${count} ${named}`;
+}
+
+// A class sat through in General mode got a candidate's questions: the lecturer
+// was asked how "your team" tunes a learning rate. General reads a conversation
+// as an interview unless it plainly is something else, and a transcript whose
+// only speaker is labelled [INTERVIEWER] is not plainly anything.
+//
+// Said in the General prompt for every press, it cost the interview cases (a
+// typed question on Haiku went from 17 of 24 right to 8). So it is said here,
+// and only when nobody but the other person has spoken (the engine decides):
+// the shape a class has and an answered question has not. Three models, eight
+// runs, three questions a run, questions about the material (2026-10-10):
+//
+//   a lecture on gradient descent          28 of 72 -> 67 of 72
+//   the same with "any questions so far?"  25 of 72 -> 68 of 72
+//   a history lecture                      58 of 72 -> 69 of 72
+//   an interviewer's introduction and first question, unanswered:
+//     still a candidate's questions        67 of 72 -> 66 of 72
+//
+// "none of it is a question for me to answer" is what keeps that last row:
+// without it a lone "What is an API?" drew questions about APIs (49 of 72
+// right, against 69 with no clause at all).
+const IF_THEY_ARE_TEACHING = '. If they are giving a class or a talk and none of it is a question for me to answer, ask about the material itself and never about their team';
+
+/** The request for one press: what was asked, how long, in which language. */
+function requestFor(action: QuickAction, extras: QuickActionTurnExtras | undefined): string {
+    // What the prompt will actually carry: sentences that try to lift the
+    // grounding rules are removed on every carrier (promptSystemV2
+    // cleanCustomInstructions), and instructions that were nothing else leave
+    // no block to point at.
+    const standing = extras?.standingInstructions ? removeGroundingOverrides(extras.standingInstructions).text.trim() : '';
+    const own = DEFAULT_LENGTH[action];
+    const userLength = standing && own ? standingLength(standing) : null;
+    const length = own ? (userLength ?? own.length) : '';
+    const listening = action === 'follow_up_questions' && extras?.otherPersonSpokeAlone ? IF_THEY_ARE_TEACHING : '';
+    return `${REQUESTS[action]}${listening}${length ? `. ${length}${own?.outside ?? ''}` : ''}${extras?.languagePinned ? '' : IN_CONVERSATION_LANGUAGE}.${standing ? STANDING_INSTRUCTIONS_FIRST : ''}`;
+}
 
 /**
  * Whether the user pinned a response language (anything but Auto). Takes the
@@ -75,6 +151,18 @@ export interface QuickActionTurnExtras {
      * Brainstorm is asked for alternatives to it.
      */
     beforeRequest?: string;
+    /**
+     * Evidence the decision layer already retrieved, filtered and rendered for
+     * the question on the table (context-packer's <evidence> elements, content
+     * escaped there): the reference files and profile Brainstorm reads from.
+     * It joins the evidence set as it is, after the problem statement.
+     */
+    renderedEvidence?: string;
+    /**
+     * The mode's Real-time prompt, when the system prompt this turn is sent
+     * with carries one. The request then defers to it (requestFor).
+     */
+    standingInstructions?: string;
     /** A response language is pinned, so the request does not name the conversation's (responseLanguageIsPinned). */
     languagePinned?: boolean;
     /**
@@ -85,10 +173,17 @@ export interface QuickActionTurnExtras {
      * 2026-10-10).
      */
     contextIsRendered?: boolean;
+    /**
+     * Nobody but the other person has spoken in the window: no words from the
+     * user and no answer shown to them. That is what a class or a talk looks
+     * like, so Follow-up questions is told what to ask if it is one
+     * (IF_THEY_ARE_TEACHING).
+     */
+    otherPersonSpokeAlone?: boolean;
 }
 
 /** What the engine tells Clarify and Follow-up questions about the context it hands them. */
-export type QuickActionContextOptions = Pick<QuickActionTurnExtras, 'contextIsRendered'>;
+export type QuickActionContextOptions = Pick<QuickActionTurnExtras, 'contextIsRendered' | 'otherPersonSpokeAlone'>;
 
 // The envelope's own tags. The block placed before the request is app-rendered
 // but quotes the design's question and its diagram source, and neither is
@@ -97,6 +192,23 @@ export type QuickActionContextOptions = Pick<QuickActionTurnExtras, 'contextIsRe
 // able to pose as one either.
 const ENVELOPE_TAG_RE = /<(\/?)(task|current_turn|recent_transcript|evidence_set|evidence|assembled_context)\b/gi;
 const neutraliseEnvelopeTags = (block: string): string => block.replace(ENVELOPE_TAG_RE, '&lt;$1$2');
+// Rendered evidence is made of <evidence> elements, so those stay; nothing in
+// it may open or close the set or any other part of the envelope.
+const EVIDENCE_SET_OPEN = '<evidence_set>\n';
+const EVIDENCE_SET_CLOSE = '\n</evidence_set>';
+const ENVELOPE_TAG_BAR_EVIDENCE_RE = /<(\/?)(task|current_turn|recent_transcript|evidence_set|assembled_context)\b/gi;
+
+/** Adds decision-layer evidence to the turn's evidence set, opening one when the turn has none. */
+function withRenderedEvidence(turn: string, renderedEvidence: string | undefined): string {
+    const rendered = renderedEvidence?.trim().replace(ENVELOPE_TAG_BAR_EVIDENCE_RE, '&lt;$1$2');
+    if (!rendered) return turn;
+    // The set, when there is one, opens the turn and its content is escaped,
+    // so the first closing tag is its own.
+    const close = turn.startsWith(EVIDENCE_SET_OPEN) ? turn.indexOf(EVIDENCE_SET_CLOSE) : -1;
+    return close >= 0
+        ? `${turn.slice(0, close)}\n${rendered}${turn.slice(close)}`
+        : `${EVIDENCE_SET_OPEN}${rendered}${EVIDENCE_SET_CLOSE}\n\n${turn}`;
+}
 
 /**
  * `systemPrompt` is the prompt the call will be sent with. A v2 prompt (also
@@ -107,11 +219,14 @@ const neutraliseEnvelopeTags = (block: string): string => block.replace(ENVELOPE
 export function buildQuickActionTurn(action: QuickAction, systemPrompt: string, context: string, extras?: QuickActionTurnExtras): string {
     try {
         if (carriesV2Core(systemPrompt)) {
-            const request = `${REQUESTS[action]}${extras?.languagePinned ? '' : IN_CONVERSATION_LANGUAGE}.`;
+            const request = requestFor(action, extras);
             if (extras?.contextIsRendered) {
                 return buildAssembledTurnContentV2({ assembledContext: context, currentTurn: request, directRequest: request });
             }
-            const turn = buildTurnContentV2({ evidence: extras?.evidence, recentTranscript: context, currentTurn: request, directRequest: request });
+            const turn = withRenderedEvidence(
+                buildTurnContentV2({ evidence: extras?.evidence, recentTranscript: context, currentTurn: request, directRequest: request }),
+                extras?.renderedEvidence,
+            );
             const block = extras?.beforeRequest?.trim();
             if (!block) return turn;
             // Everything before the request is escaped, so the only literal

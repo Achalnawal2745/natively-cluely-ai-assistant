@@ -259,6 +259,7 @@ import {
   finalizeStreamingByIntentMessages,
   prepareIntelligenceStreamPlaceholderMessages,
   discardStreamingByIntentMessages,
+  dropSealedEmptyByIntentMessages,
 } from '../lib/overlayMessagePersistence.mjs';
 import {
   resolveCgEventTapAvailable,
@@ -7476,7 +7477,13 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
   // Only the action's own placeholder, and only while it is still empty: an
   // answer that had begun is never thrown away here.
   const discardEmptyPlaceholder = useCallback((intent: string) => {
-    if (streamingIntentRef.current !== intent || streamingTextRef.current !== '') return;
+    if (streamingIntentRef.current !== intent) {
+      // Another action took the stream over before this one's first word. Its
+      // placeholder closed this one's row as it was, with nothing in it.
+      setMessages((prev) => dropSealedEmptyByIntentMessages(prev, intent));
+      return;
+    }
+    if (streamingTextRef.current !== '') return;
     if (streamingNodeRef.current) streamingNodeRef.current.innerHTML = '';
     streamingNodeRef.current = null;
     streamingMsgIdRef.current = null;
@@ -7970,6 +7977,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
         setIsProcessing(false);
         // The engine's mode is the placeholder's intent for these three.
         if (data.mode === 'clarify' || data.mode === 'recap' || data.mode === 'follow_up_questions') {
+          // Failed after its first words: they stay, and the row is closed
+          // (no finished answer is coming to close it). flushToken leaves a
+          // row with no words alone, and that one is taken away.
+          if (streamingIntentRef.current === data.mode) flushToken();
           discardEmptyPlaceholder(data.mode);
         }
         // What to Answer sometimes words its own failure: for a provider
@@ -8394,7 +8405,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     analytics.trackCommandExecuted('recap');
 
     try {
-      await window.electronAPI.generateRecap();
+      const result = await window.electronAPI.generateRecap();
+      // Nothing came back: cancelled, or overtaken by an answer (see
+      // handleClarify). A real failure arrives as onIntelligenceError.
+      if (!result?.summary) discardEmptyPlaceholder('recap');
     } catch (err) {
       discardEmptyPlaceholder('recap');
       setMessages((prev) => [
@@ -8423,7 +8437,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     analytics.trackCommandExecuted('suggest_questions');
 
     try {
-      await window.electronAPI.generateFollowUpQuestions();
+      const result = await window.electronAPI.generateFollowUpQuestions();
+      // Nothing came back: cancelled, or overtaken by an answer (see
+      // handleClarify). A real failure arrives as onIntelligenceError.
+      if (!result?.questions) discardEmptyPlaceholder('follow_up_questions');
     } catch (err) {
       discardEmptyPlaceholder('follow_up_questions');
       setMessages((prev) => [
@@ -8452,7 +8469,11 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     analytics.trackCommandExecuted('clarify');
 
     try {
-      await window.electronAPI.generateClarify();
+      const result = await window.electronAPI.generateClarify();
+      // Nothing came back: cancelled, or overtaken by an answer. Main says
+      // nothing for those (a real failure arrives as onIntelligenceError), so
+      // the bubble opened above is taken away here if it is still empty.
+      if (!result?.clarification) discardEmptyPlaceholder('clarify');
     } catch (err) {
       discardEmptyPlaceholder('clarify');
       setMessages((prev) => [

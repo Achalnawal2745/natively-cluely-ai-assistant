@@ -7434,6 +7434,10 @@ export class AppState {
 
     this.intelligenceManager.on('error', (error: Error, mode: string) => {
       console.error(`[IntelligenceManager] Error in ${mode}:`, error)
+      // Words that arrived before the failure go first, as for a final answer.
+      // Sent after it, they opened a new row under the failure line that
+      // nothing ever closed.
+      flushBatchesBeforeFinal()
       const win = mainWindow()
       this.sendToWindow(win, 'intelligence-error', { error: error.message, mode })
     })

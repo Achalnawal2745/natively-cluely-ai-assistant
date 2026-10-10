@@ -106,6 +106,13 @@ export interface AnswerRequest {
    * mode's files, so source isolation is unchanged.
    */
   extraAllowedSourceTypes?: SourceType[];
+
+  /**
+   * The caller wants this turn's evidence for a prompt of its own and is not a
+   * turn of the answer conversation (Brainstorm). orchestrate() then leaves the
+   * session's conversation state as it found it.
+   */
+  keepConversationState?: boolean;
 }
 
 export interface RetrievalPort {
@@ -1428,7 +1435,11 @@ export async function orchestrate(
   // Advance conversation state so the NEXT turn's bare follow-up can resolve.
   // Question + evidence identity only; the transport appends the answer
   // summary after the stream completes (recordAnswerSummary).
-  try {
+  //
+  // Not for a caller that only borrows the retrieval (keepConversationState):
+  // it is not a turn of the answer conversation, and advancing would drop the
+  // last answer's summary, which is what "explain that" resolves against.
+  if (!req.keepConversationState) try {
     const { advanceConversationState } = require('../question/conversation-state-store');
 
     // Record this turn's source-precedence outcome (Pattern F). Derived from

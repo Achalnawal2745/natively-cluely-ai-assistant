@@ -205,7 +205,7 @@ describe('1c. found in review, 2026-10-10', () => {
   test('the engine says which context is its own markup', () => {
     const engine = read('electron/IntelligenceEngine.ts');
     assert.match(engine, /this\.clarifyLLM\.generateStream\(context, \{ contextIsRendered: actionContext\?\.rendered === true \}\)/);
-    assert.match(engine, /this\.followUpQuestionsLLM\.generateStream\(context, \{ contextIsRendered: actionContext\?\.rendered === true \}\)/);
+    assert.match(engine, /this\.followUpQuestionsLLM\.generateStream\(context, \{ contextIsRendered: actionContext\?\.rendered === true, otherPersonSpokeAlone \}\)/);
   });
 });
 
