@@ -144,12 +144,16 @@ export class KeybindManager {
         // was take Cmd+H (Hide) on macOS and Ctrl+H on Windows away from every
         // other app. The first-launch tour still gets its Take Screenshot press,
         // as a keydown in its own window (ShortcutTour.tsx).
-
-        // Screen-analyze stays global in both modes.
-        if (actionId === 'general:capture-and-process') return true;
-        // Browser/page capture must work globally in both modes (same rationale
-        // as the screenshot shortcuts — it's a global capture trigger).
-        if (actionId === 'general:capture-dom') return true;
+        //
+        // Capture Screen & Ask AI and Capture Page are not global here either
+        // (2026-10-10). Both end in the same overlay listener. Pressed for real
+        // outside a meeting, Cmd+Shift+Enter hid the launcher, took a picture
+        // of the screen, put the launcher back and stopped: nothing was shown
+        // and nothing was asked, and the picture stayed in the queue for the
+        // next meeting to pick up. Cmd+Y asks the browser extension for the
+        // page and delivers it to the overlay, or falls back to that same
+        // screenshot. Registered, they also kept Ctrl+Y (Redo) and
+        // Cmd+Y (History) from every other app.
 
         return false;
     }
@@ -407,6 +411,7 @@ export class KeybindManager {
         // the current mode. In launcher mode that excludes all of chat:*, whose
         // recorded conflicts must survive — Settings is opened from the
         // launcher, so that is precisely when the renderer reads the snapshot.
+        const failingBefore = this.registrationFailures;
         this.registrationFailures = beginFullRegistrationPass(
             this.registrationFailures,
             (id) => {
@@ -421,6 +426,7 @@ export class KeybindManager {
                 return this.shouldRegister(id);
             },
         );
+        const keptForThisPass = this.registrationFailures;
 
         this.keybinds.forEach(kb => {
             if (kb.isGlobal && kb.accelerator && kb.accelerator.trim() !== '') {
@@ -462,11 +468,69 @@ export class KeybindManager {
             }
         });
 
+        this.probeMeetingOnlyShortcuts();
+
+        // A verdict this pass dropped before re-testing, and did not find
+        // again, was never announced as cleared: markRegistration only speaks
+        // on a change, and by then the entry was already gone. A window that
+        // learns of conflicts from the pushes alone (the overlay's banner) kept
+        // showing one for a shortcut that now works.
+        // (One the pass kept and then cleared was announced by markRegistration.)
+        for (const id of Object.keys(failingBefore)) {
+            if (id in keptForThisPass || id in this.registrationFailures) continue;
+            BrowserWindow.getAllWindows().forEach(win => {
+                if (!win.isDestroyed()) {
+                    win.webContents.send('keybinds:registration-succeeded', { id, accelerator: failingBefore[id] });
+                }
+            });
+        }
+
         this.updateMenu();
 
         // (Re-)start the health-check loop so it always reflects the current
         // registered set after any full re-registration.
         this.startHealthCheck();
+    }
+
+    /**
+     * Asks the OS, outside a meeting, whether each meeting-only shortcut could
+     * be taken, and gives it straight back.
+     *
+     * Outside a meeting most shortcuts are not registered (shouldRegister), so
+     * one held by another app was only found when a meeting started: the first
+     * the user heard of it was a key that did nothing in the meeting, and
+     * Settings, which is opened from the launcher, had no badge to show before
+     * that. The answer does not depend on the mode, so it is asked here too.
+     *
+     * Register and unregister run back to back with no turn of the event loop
+     * between them, so no key press can reach the empty handler, and nothing
+     * stays registered: the other app keeps its key. Same call on macOS and
+     * Windows (globalShortcut), and the Windows chord table never sees these
+     * ids, since it is built from shouldRegister alone.
+     */
+    private probeMeetingOnlyShortcuts(): void {
+        if (this.activeMode !== 'launcher' || !this.getGlobalShortcutsEnabled()) return;
+        this.keybinds.forEach(kb => {
+            if (!kb.isGlobal || !kb.accelerator || kb.accelerator.trim() === '') return;
+            if (this.shouldRegister(kb.id)) return;
+            const acc = kb.accelerator.trim();
+            if (!isRegisterableAccelerator(acc)) {
+                this.markRegistration(kb.id, acc, false);
+                return;
+            }
+            try {
+                // Held by one of this app's own shortcuts (two actions bound to
+                // one key): unregistering it here would drop the real one.
+                if (globalShortcut.isRegistered(acc)) return;
+                globalShortcut.register(acc, () => { /* released before any key can arrive */ });
+                const free = globalShortcut.isRegistered(acc);
+                if (free) globalShortcut.unregister(acc);
+                this.markRegistration(kb.id, acc, free);
+            } catch (e) {
+                // A probe that throws says nothing: the last verdict stands.
+                console.warn(`[KeybindManager] Could not probe ${acc} (${kb.id}):`, e);
+            }
+        });
     }
 
     /**
