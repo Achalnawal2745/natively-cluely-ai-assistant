@@ -327,7 +327,35 @@ export function decide(req: AnswerRequest): Readonly<TurnDecision> {
     && !cls.questionTypes.includes('META_REQUEST')
     && policy.retrievalPolicy.enabled
     && policy.allowedSourceTypes.includes('REFERENCE_FILE');
-  const retrieves = cls.shouldRetrieve || sourcePrimaryTurn;
+  // A PROFILE THAT FITS is read on such a turn too (2026-10-12). The rule above
+  // leaves out a turn whose only documents are the résumé and the job
+  // description, so in the two profile modes a question the classifier answers
+  // from general knowledge read nothing from them. Measured on the benchmark's
+  // development and challenge questions (Looking for work, 95 turns): 5 took
+  // this path with a profile loaded, 3 of them asked for something the profile
+  // states, and all 3 were answered without it: typed "fernlatch speed numbers,
+  // before and after" with the résumé loaded gave "I don't have Fernlatch
+  // performance numbers in front of me"; typed "whats the on call setup for
+  // this job" with the posting loaded gave "I'll confirm the rotation". On the
+  // turns that did retrieve, 11 % of such questions went wrong. Only the modes
+  // that hydrate the user's own profile, only when the profile is handed over
+  // whole (PROFILE_WHOLE_MAX_TOKENS), and never for a coding or design task,
+  // which keeps its prompt free of the résumé (deep-run 2, issue 5). No claim
+  // is added: the turn stays FAST and what the evidence may support is unchanged.
+  // A request for code the classifier did not type as a coding task ("implement two sum in python and explain the
+  // complexity" matches none of its patterns) is kept out as well: conservative, a miss here only leaves the turn as it was.
+  const CODE_ASK_RE = /\b(implement|write|code|coding|program|function|algorithm|complexity|big[- ]?o|leetcode|python|javascript|typescript|java|kotlin|golang|rust|sql|regex)\b/i;
+  const profileFits = !!req.profileWhole
+    && req.profileWhole.docs > 0 && req.profileWhole.tokens > 0 && req.profileWhole.tokens <= PROFILE_WHOLE_MAX_TOKENS;
+  const profilePrimaryTurn = cls.path === 'FAST' && !cls.shouldRetrieve
+    && profileFits && policy.profileSources.length > 0
+    && !cls.questionTypes.includes('META_REQUEST')
+    && !cls.questionTypes.includes('CODING_TASK') && !cls.questionTypes.includes('SYSTEM_DESIGN')
+    && !CODE_ASK_RE.test(q.resolved)
+    && policy.retrievalPolicy.enabled;
+  const profilePrimaryTypes: SourceType[] = profilePrimaryTurn
+    ? policy.allowedSourceTypes.filter((t) => t === 'RESUME' || t === 'JOB_DESCRIPTION') : [];
+  const retrieves = cls.shouldRetrieve || sourcePrimaryTurn || profilePrimaryTypes.length > 0;
   const multiFile = (req.attachedSourceCount ?? 0) >= 2 && retrieves;
 
   // A GENERAL question in a LIVE MEETING still reads the meeting (2026-09-24).
@@ -371,6 +399,7 @@ export function decide(req: AnswerRequest): Readonly<TurnDecision> {
   // is live (the meeting rule above would otherwise have been the whole plan).
   const fastTurnSources: SourceType[] = [
     ...(sourcePrimaryTurn ? ['REFERENCE_FILE' as SourceType] : []),
+    ...profilePrimaryTypes,
     ...(meetingContextForGeneralTurn ? ['MEETING_TRANSCRIPT' as SourceType] : []),
   ];
 
