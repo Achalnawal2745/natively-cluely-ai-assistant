@@ -1112,4 +1112,12 @@ export const ZH_GENERATED: Record<string, string> = {
     "Set default": "设为默认",
     "default": "默认",
     "Use this model by default for this provider": "将此模型设为该提供商的默认模型",
+    // Settings > About, the Reviews section (2026-10-11).
+    "Reviews": "评价",
+    "Tell us how Natively is working for you.": "告诉我们 Natively 用起来怎么样。",
+    "Rate Natively": "为 Natively 评分",
+    "A star rating and a few words, if you like.": "打个星级，愿意的话再写几句。",
+    "This install has already sent a review. Thank you.": "此安装已提交过评价。谢谢。",
+    "Write a review": "写评价",
+    "Sent": "已提交",
 };

@@ -1,10 +1,11 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useT } from '../i18n';
 import {
     Github, Twitter, Linkedin, Instagram, Send, Star, Bug, Mail, Heart,
     CalendarCheck, Workflow, Smartphone, ListOrdered,
     LayoutGrid, Search, FileText, UserRound, PlayCircle,
-    HardDrive, Sliders, Lock, ArrowRight,
+    HardDrive, Sliders, Lock, ArrowRight, Check,
 } from 'lucide-react';
 import { AutoAnswerIcon } from './AutoAnswerIcon';
 import evinProfile from '../assets/evin.png';
@@ -21,6 +22,7 @@ import { LiquidGlassBadge } from '../ui-components/LiquidGlassBadge';
 import { SETTINGS_BTN, SettingsRow, SettingsSectionHeading } from './settings/SettingsRow';
 // The learn-more hover (.t-learn), shared with Plans' "Open" / "Email" actions.
 import './settings/HowItWorksRefund.css';
+import ReviewModal from './ReviewModal';
 
 // Built from the AI Providers panel's `.aip-*` system (the same one Retrieval
 // adopts), so About reads as part of Settings rather than its own UI: aip-card
@@ -211,6 +213,51 @@ export const AboutSection: React.FC<AboutSectionProps> = ({ onNavigate, onOpenMo
         return () => window.removeEventListener('focus', handleFocus);
     }, []);
 
+    // Reviews. The card is the one the app's own review prompt opens, and it
+    // goes through the same two calls (review:submit, review:update-testimonial),
+    // so a review sent from here is the same row with the same consent step.
+    // What differs is who started it: the prompt waits for three sessions or
+    // thirty minutes and can be told "Never ask", and this row is always here.
+    //
+    // One review per install, as the prompt has it ("already reviewed: never"):
+    // the server adds a row per submission and the website's rating averages
+    // every row, so a second one from the same person would count twice.
+    const [reviewOpen, setReviewOpen] = useState(false);
+    const [hasReviewed, setHasReviewed] = useState(false);
+    const reviewButtonRef = useRef<HTMLButtonElement | null>(null);
+
+    useEffect(() => {
+        let live = true;
+        // Answers after a network round trip (up to 8s offline), so the row
+        // starts on "Write a review" and only then settles on "Sent".
+        window.electronAPI?.reviewGetPromptState?.()
+            .then((res) => {
+                if (live && res?.ok && (res.local?.has_reviewed || res.backend?.state?.has_reviewed)) setHasReviewed(true);
+            })
+            .catch(() => { /* the row stays on "Write a review" */ });
+        return () => { live = false; };
+    }, []);
+
+    const submitReview = useCallback(async (payload: { rating: number; review_text: string | null }) => {
+        const res = await window.electronAPI?.reviewSubmit?.(payload);
+        if (res?.ok) setHasReviewed(true);
+        return res || { ok: false, error: 'no_api' };
+    }, []);
+
+    const updateTestimonial = useCallback(async (reviewId: string, payload: {
+        name: string | null; role: string | null; company: string | null;
+        can_use_publicly: boolean; display_name_publicly: boolean;
+    }) => {
+        const res = await window.electronAPI?.reviewUpdateTestimonial?.({ review_id: reviewId, ...payload });
+        return res || { ok: false, error: 'no_api' };
+    }, []);
+
+    const closeReview = useCallback(() => {
+        setReviewOpen(false);
+        // Back to the button that opened it, when the row still has one.
+        reviewButtonRef.current?.focus();
+    }, []);
+
     const openLink = (url: string) => {
         // Returning >20s after opening the donation page marks it complete (above).
         if (url === DONATE_URL) {
@@ -380,6 +427,41 @@ export const AboutSection: React.FC<AboutSectionProps> = ({ onNavigate, onOpenMo
                 </div>
             </section>
 
+            {/* Where a review is written. Its own section, above the closing one:
+                the rows below it all leave the app (GitHub, Telegram, mail), and
+                this one does not. */}
+            <section>
+                <SettingsSectionHeading
+                    title={t('Reviews')}
+                    subtitle={t('Tell us how Natively is working for you.')}
+                />
+                <div className={ROW_GROUP}>
+                    <SettingsRow
+                        icon={<Star size={20} />}
+                        title={t('Rate Natively')}
+                        description={hasReviewed
+                            ? t('This install has already sent a review. Thank you.')
+                            : t('A star rating and a few words, if you like.')}
+                        descriptionKey={hasReviewed ? 'sent' : 'open'}
+                        control={hasReviewed ? (
+                            <span className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
+                                <Check size={14} aria-hidden="true" />
+                                {t('Sent')}
+                            </span>
+                        ) : (
+                            <button
+                                ref={reviewButtonRef}
+                                type="button"
+                                onClick={() => setReviewOpen(true)}
+                                className={SETTINGS_BTN}
+                            >
+                                {t('Write a review')}
+                            </button>
+                        )}
+                    />
+                </div>
+            </section>
+
             {/* Community and the panel's own title are ONE closing section, at the
                 owner's request. They were two, which meant two headings and three row
                 groups for what is really a single block: who made it, how to reach
@@ -411,6 +493,21 @@ export const AboutSection: React.FC<AboutSectionProps> = ({ onNavigate, onOpenMo
                     ))}
                 </div>
             </section>
+
+            {/* On <body>, not in this column: Settings' card clips its content
+                and is cut into bands while its genie runs, and the review card
+                is a window-level card with its own colours (--rv-*), which is
+                how it is drawn everywhere else it appears. */}
+            {typeof document !== 'undefined' && createPortal(
+                <ReviewModal
+                    isOpen={reviewOpen}
+                    onClose={closeReview}
+                    prompted={false}
+                    submitReview={submitReview}
+                    updateTestimonial={updateTestimonial}
+                />,
+                document.body,
+            )}
         </div>
     );
 };

@@ -10,8 +10,9 @@
 //
 // Behaviour is unchanged from the form it replaces:
 //   Step 1 ("review")      — rating 1-5 + optional 300-char note
-//   Step 2 ("testimonial") — Save with name (requires a name), Send
-//                            anonymously, or decline ("Don't share my words")
+//   Step 2 ("testimonial") — Save with name (requires a name) or Send
+//                            anonymously; closing the card here publishes
+//                            nothing
 //   Step 3 ("thanks")      — confirmation, auto-dismisses after 5s
 //
 // All motion is gated on `useReducedMotion()`.
@@ -26,6 +27,13 @@ import { GenieModal } from "./ui/GenieModal"
 import { useResolvedTheme } from "../hooks/useResolvedTheme"
 
 const MAX_CHARS = 300
+
+// Where the card sits. Asked for by the app (the review prompt), it is one of
+// the launcher's own cards. Opened by the user from Settings > About, it has to
+// clear Settings, which sits on GenieModal's default layer (300); this is
+// ConfirmDialog's layer, the one made for "above Settings".
+const PROMPT_LAYER = 60
+const OVER_SETTINGS_LAYER = 400
 
 // The card's drop shadow (--rv-shadow's outer layer), for the stand-in that
 // carries it while the genie runs.
@@ -55,6 +63,14 @@ export interface ReviewModalProps {
     onSubmitted?: (reviewId: string) => void
     prefillName?: string
     /**
+     * True (default) when the app asked for the review. False when the user
+     * opened the card themselves (Settings > About): there is nothing to put
+     * off or refuse, so "Maybe later" and "Never ask" are not drawn; the card
+     * sits above Settings; and Escape closes this card only, not Settings
+     * underneath it.
+     */
+    prompted?: boolean
+    /**
      * NOTE ON WHAT IS *NOT* HERE. This modal used to accept `hardwareId`,
      * `appVersion`, `buildChannel` and `platform` and pass them down into the
      * submit payload. None of it ever reached the API: `review:submit` in
@@ -82,6 +98,9 @@ export interface ReviewModalProps {
 type Step = "review" | "testimonial" | "thanks"
 
 const RATING_WORDS = ["", "Poor", "Fair", "Good", "Great", "Exceptional"] as const
+/** The card opens on five stars and the user adjusts from there (the owner,
+ *  2026-10-12). Send is therefore live from the start. */
+const DEFAULT_RATING = 5
 
 /**
  * The API returns machine codes (`rate_limited_key`, `hardware_id_required`,
@@ -125,6 +144,7 @@ const ReviewModal: React.FC<ReviewModalProps> = ({
     onDismissForever,
     onSubmitted,
     prefillName = "",
+    prompted = true,
     submitReview,
     updateTestimonial,
 }) => {
@@ -139,15 +159,17 @@ const ReviewModal: React.FC<ReviewModalProps> = ({
     // submitting/testimonialBusy.
     const stepRef = useRef<Step>("review")
     useEffect(() => { stepRef.current = step }, [step])
-    const [rating, setRating] = useState<number>(0)
+    const [rating, setRating] = useState<number>(DEFAULT_RATING)
     const [hoverRating, setHoverRating] = useState<number>(0)
     const [text, setText] = useState("")
     const [submitting, setSubmitting] = useState(false)
     const [submitError, setSubmitError] = useState<string | null>(null)
 
     // The two SEND buttons both grant public use — between them the user only
-    // chooses the byline. The third path ("Don't share my words") declines
-    // publication entirely (F1). `displayNamePublicly` is not a form control;
+    // chooses the byline. The card had a third, "Don't share my words"; the
+    // owner had it removed on 2026-10-11. Declining is closing the card on
+    // this step: no call is made, so can_use_publicly stays false and the
+    // review is never publishable. `displayNamePublicly` is not a form control;
     // it records which button was pressed so the confirmation can say the
     // right thing.
     const [displayNamePublicly, setDisplayNamePublicly] = useState(false)
@@ -174,7 +196,7 @@ const ReviewModal: React.FC<ReviewModalProps> = ({
     useEffect(() => {
         if (isOpen) {
             setStep("review")
-            setRating(0)
+            setRating(DEFAULT_RATING)
             setHoverRating(0)
             setText("")
             setSubmitting(false)
@@ -190,38 +212,48 @@ const ReviewModal: React.FC<ReviewModalProps> = ({
         }
     }, [isOpen])
 
-    // Move focus to the first star button when the modal opens (after the
-    // entrance settles) so keyboard users land in the right place.
+    // Move focus to the chosen star when the modal opens (after the entrance
+    // settles) so keyboard users land in the rail, on the radio that is
+    // checked, and the arrow keys adjust from five.
     //
-    // Code-review 2026-08-12: each star's `onFocus` paints a hover preview, so
-    // this programmatic focus opened the modal already showing a 1-star "Poor"
-    // verdict the user never chose — with Send disabled (it keys on `rating`,
-    // not `hoverRating`) and no way to clear it without a mouse. Landing focus
-    // is a placement, not an opinion: the flag below suppresses exactly the one
-    // synthetic focus this effect causes. `.focus()` dispatches its event
-    // synchronously, so the flag is set and cleared around that single call and
-    // can never swallow a later, genuine focus.
+    // Code-review 2026-08-12: each star's `onFocus` paints a hover preview, and
+    // focus then landed on star 1, so the modal opened showing a 1-star "Poor"
+    // verdict the user never chose. Landing focus is a placement, not an
+    // opinion: the flag below suppresses exactly the one synthetic focus this
+    // effect causes. `.focus()` dispatches its event synchronously, so the flag
+    // is set and cleared around that single call and can never swallow a
+    // later, genuine focus.
     const suppressStarFocusPreview = useRef(false)
     // Runs from GenieModal's onOpened: mid-genie the card is hidden, and a
     // hidden button cannot take focus, so this waits for the pour to land
     // rather than for a fixed 260 ms.
-    const focusFirstStar = useCallback(() => {
-        const first = document.querySelector<HTMLButtonElement>('[data-review-star="1"]')
-        if (!first) return
+    const focusChosenStar = useCallback(() => {
+        const chosen = document.querySelector<HTMLButtonElement>(`[data-review-star="${DEFAULT_RATING}"]`)
+        if (!chosen) return
         suppressStarFocusPreview.current = true
-        try { first.focus() } finally { suppressStarFocusPreview.current = false }
+        try { chosen.focus() } finally { suppressStarFocusPreview.current = false }
     }, [])
 
     // ESC closes; only when not mid-submit. On the first step this is a
     // soft dismissal ("Maybe later") so the prompt doesn't immediately reopen.
+    //
+    // Opened over Settings, the listener runs in the capture phase and keeps
+    // the key: Settings and the launcher each close on a window-level Escape,
+    // and one press would otherwise take this card and Settings down together.
     useEffect(() => {
         if (!isOpen) return
+        const overSettings = !prompted
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape" && !submitting && !testimonialBusy) dismissLaterAndClose()
+            if (e.key !== "Escape") return
+            if (overSettings) {
+                e.preventDefault()
+                e.stopPropagation()
+            }
+            if (!submitting && !testimonialBusy) dismissLaterAndClose()
         }
-        window.addEventListener("keydown", onKey)
-        return () => window.removeEventListener("keydown", onKey)
-    }, [isOpen, submitting, testimonialBusy])
+        window.addEventListener("keydown", onKey, overSettings)
+        return () => window.removeEventListener("keydown", onKey, overSettings)
+    }, [isOpen, submitting, testimonialBusy, prompted])
 
     // The confirmation is a receipt, not a form — it dismisses itself.
     useEffect(() => {
@@ -355,15 +387,6 @@ const ReviewModal: React.FC<ReviewModalProps> = ({
 
     const handleSaveTestimonial = () => submitTestimonial(true)
     const handleKeepAnonymous = () => submitTestimonial(false)
-    // F1 (code-review 2026-08-14): explicit decline. No PATCH is sent, so
-    // can_use_publicly stays false server-side and the review is never
-    // publishable. Reuses the attribution-skipped receipt ("Your rating was
-    // recorded.") — which is exactly what happened.
-    const handleDeclineTestimonial = () => {
-        setAttributionSkipped(true)
-        setStep("thanks")
-    }
-
     const shownRating = hoverRating || rating
     const ratingWord = useMemo(
         () => (shownRating === 0 ? "Not yet rated" : RATING_WORDS[shownRating]),
@@ -382,12 +405,15 @@ const ReviewModal: React.FC<ReviewModalProps> = ({
         <GenieModal
             open={isOpen && !closeRequested}
             label="ReviewModal"
-            // It opens reset (first step, no stars, no text), so only a
+            // The two cards differ by a row of buttons, so each keeps its own
+            // picture: the genie would otherwise pour out the other one's.
+            snapshotKey={prompted ? undefined : "ReviewModal:about"}
+            // It opens reset (first step, five stars, no text), so only a
             // picture of it untouched is one of what the next open shows.
-            keepPictures={step === "review" && rating === 0 && hoverRating === 0 && !text}
-            zIndex={60}
+            keepPictures={step === "review" && rating === DEFAULT_RATING && hoverRating === 0 && !text}
+            zIndex={prompted ? PROMPT_LAYER : OVER_SETTINGS_LAYER}
             onBackdropClick={() => { if (!busy) dismissLaterAndClose() }}
-            onOpened={focusFirstStar}
+            onOpened={focusChosenStar}
             onClosed={() => { if (closeRequestedRef.current) onClose() }}
             backdropClassName="review-modal-genie-backdrop"
             padding={16}
@@ -434,6 +460,7 @@ const ReviewModal: React.FC<ReviewModalProps> = ({
                                     onDismissForever={dismissForeverAndClose}
                                     textareaRef={textareaRef}
                                     suppressStarFocusPreview={suppressStarFocusPreview}
+                                    prompted={prompted}
                                     reduced={reduced}
                                 />
                             )}
@@ -455,7 +482,6 @@ const ReviewModal: React.FC<ReviewModalProps> = ({
                                     error={testimonialError}
                                     onSave={handleSaveTestimonial}
                                     onKeepAnonymous={handleKeepAnonymous}
-                                    onDecline={handleDeclineTestimonial}
                                     reduced={reduced}
                                 />
                             )}
@@ -548,8 +574,10 @@ interface StepReviewProps {
     onDismissForever: () => void
     textareaRef: React.RefObject<HTMLTextAreaElement | null>
     /** True while the open-effect's synthetic `.focus()` is in flight, so
-     *  landing focus on star 1 does not paint a rating the user never chose. */
+     *  landing focus on a star does not paint a rating the user never chose. */
     suppressStarFocusPreview: React.RefObject<boolean>
+    /** False when the user opened the card: no "Maybe later" / "Never ask". */
+    prompted: boolean
     reduced: boolean
 }
 
@@ -557,7 +585,7 @@ const StepReview: React.FC<StepReviewProps> = ({
     rating, shownRating, ratingWord, setRating, setHoverRating,
     text, setText, maxChars, submitting, error,
     onSubmit, onDismissLater, onDismissForever, textareaRef,
-    suppressStarFocusPreview, reduced,
+    suppressStarFocusPreview, prompted, reduced,
 }) => {
     const remaining = maxChars - text.length
     const showCounter = remaining <= 60
@@ -583,8 +611,11 @@ const StepReview: React.FC<StepReviewProps> = ({
                 <h2 id="review-modal-title-review" className="review-headline">
                     How is Natively<br />treating you?
                 </h2>
+                {/* The standfirst's first line sets the width of the stars and
+                    the note under it, so the three share a right edge. */}
+                <div className="review-fit">
                 <p className="review-standfirst">
-                    One rating, thirty seconds. It genuinely shapes what we build next.
+                    One rating, thirty seconds. It genuinely shapes<br />what we build next.
                 </p>
 
                 <div
@@ -616,7 +647,7 @@ const StepReview: React.FC<StepReviewProps> = ({
                             disabled={submitting}
                             className="review-star"
                         >
-                            <Star size={22} strokeWidth={1.5} />
+                            <Star size={26} strokeWidth={1.5} />
                         </motion.button>
                     ))}
                     {/* The live verdict. Keyed on shownRating so it swaps per
@@ -637,14 +668,17 @@ const StepReview: React.FC<StepReviewProps> = ({
                     </span>
                 </div>
 
-                <div className="review-note">
+                <div
+                    className="review-note"
+                    onClick={(e) => { if (e.target === e.currentTarget) textareaRef.current?.focus() }}
+                >
                     <textarea
                         id="review-text"
                         ref={textareaRef}
                         value={text}
                         onChange={(e) => setText(e.target.value.slice(0, maxChars))}
                         placeholder="What worked, what didn't, what surprised you…"
-                        rows={2}
+                        rows={3}
                         disabled={submitting}
                         aria-label="Optional feedback"
                         className="review-note-input"
@@ -662,6 +696,7 @@ const StepReview: React.FC<StepReviewProps> = ({
                         )}
                     </AnimatePresence>
                 </div>
+                </div>
 
                 <ReviewError error={error} />
 
@@ -676,14 +711,16 @@ const StepReview: React.FC<StepReviewProps> = ({
                     >
                         {submitting ? <><Spinner tone="ink" reduced={reduced} />Sending</> : "Send rating"}
                     </motion.button>
-                    <div className="review-quiet-row">
-                        <button type="button" onClick={onDismissLater} disabled={submitting} className="review-quiet">
-                            Maybe later
-                        </button>
-                        <button type="button" onClick={onDismissForever} disabled={submitting} className="review-quiet is-faint">
-                            Never ask
-                        </button>
-                    </div>
+                    {prompted && (
+                        <div className="review-quiet-row">
+                            <button type="button" onClick={onDismissLater} disabled={submitting} className="review-quiet">
+                                Maybe later
+                            </button>
+                            <button type="button" onClick={onDismissForever} disabled={submitting} className="review-quiet is-faint">
+                                Never ask
+                            </button>
+                        </div>
+                    )}
                 </div>
             </section>
 
@@ -705,14 +742,12 @@ interface StepTestimonialProps {
     error: string | null
     onSave: () => void
     onKeepAnonymous: () => void
-    /** F1: explicit decline — review stays private, no publish call is made. */
-    onDecline: () => void
     reduced: boolean
 }
 
 const StepTestimonial: React.FC<StepTestimonialProps> = ({
     name, setName, prefillName = "", namePrefillSuggested, onAcceptNamePrefill,
-    busy, action, error, onSave, onKeepAnonymous, onDecline, reduced,
+    busy, action, error, onSave, onKeepAnonymous, reduced,
 }) => {
     // Save credits the review under `name` — a blank name has nothing to
     // credit, so it stays disabled until one is entered. Keep anonymous never
@@ -787,24 +822,12 @@ const StepTestimonial: React.FC<StepTestimonialProps> = ({
                             {action === "anonymous" ? <><Spinner tone="ivory" reduced={reduced} />Sending</> : "Send anonymously"}
                         </motion.button>
                     </div>
-                    {/* Code-review F1 (2026-08-14): both CTAs above GRANT publish
-                        permission (can_use_publicly:true), and the fine print
-                        promises "never without permission" — so a decline
-                        affordance must exist on THIS step, not just modal
-                        dismissal. The old label "Keep anonymous" historically
-                        meant decline; it now reads "Send anonymously" so the
-                        consent is unmistakable, and this quiet path keeps the
-                        review private (no publish call is ever made). */}
-                    <button
-                        type="button"
-                        onClick={onDecline}
-                        disabled={busy}
-                        className="review-decline"
-                    >
-                        Don&rsquo;t share my words
-                    </button>
+                    {/* Both buttons above GRANT publish permission
+                        (can_use_publicly:true). The way to keep a review
+                        private is to close the card: the close, Escape and a
+                        click outside all leave this step without a call. */}
                     <p className="review-fineprint">
-                        <Lock size={11} strokeWidth={1.7} aria-hidden />
+                        <Lock size={10} strokeWidth={1.7} aria-hidden />
                         Never published without permission. Removal on request.
                     </p>
                 </div>

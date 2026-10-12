@@ -538,7 +538,7 @@ test('pictures: a card showing one of several things is keyed by which', () => {
 });
 
 test('pictures: a card that opens reset keeps only its untouched picture', () => {
-  assert.ok(code('components/ReviewModal.tsx').includes('keepPictures={step === "review" && rating === 0 && hoverRating === 0 && !text}'));
+  assert.ok(code('components/ReviewModal.tsx').includes('keepPictures={step === "review" && rating === DEFAULT_RATING && hoverRating === 0 && !text}'));
 });
 
 test('pictures (premium): the Natively API card has one picture per variant', { skip: !existsSync(resolve(SRC, '../premium/src/NativelyApiPromoToaster.tsx')) && 'premium not checked out' }, () => {

@@ -61,7 +61,10 @@ describe('Review modal — open/close state', () => {
     });
 
     test('the suppression flag is set and cleared around the synthetic focus only', () => {
-        const effect = LIVE.slice(LIVE.indexOf('data-review-star="1"') - 400, LIVE.indexOf('data-review-star="1"') + 400);
+        // 2026-10-12: focus lands on the star the card opens with (five), not on star 1.
+        const at = LIVE.indexOf('data-review-star="${DEFAULT_RATING}"');
+        assert.ok(at > 0, 'the open focuses the default star');
+        const effect = LIVE.slice(at - 400, at + 400);
         assert.match(effect, /suppressStarFocusPreview\.current\s*=\s*true/);
         assert.match(effect, /suppressStarFocusPreview\.current\s*=\s*false/,
             'the flag must be cleared in the same turn, or the first genuine focus is swallowed');
