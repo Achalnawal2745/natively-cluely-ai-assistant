@@ -148,28 +148,29 @@ function verifyPackedNativeArch(appPath, targetArchName) {
 // executables "<productName> Helper (X)", and Chromium derives each helper's
 // launch path from the main executable's basename
 // (content::ChildProcessHost::GetChildPath → "<base> Helper (Renderer).app"),
-// so a CONSISTENT rename is safe — this is exactly how the Interview Coder
-// bundle ships. The plist pass below just re-asserts the same name on
-// CFBundleName/CFBundleDisplayName so the metadata matches the on-disk
-// executable (no "Natively" left anywhere).
-// ad-hoc signing is macOS-only, so use the darwin disguise name.
+// so a CONSISTENT name is required across the main executable, CFBundleName and
+// the helper bundles. Stealth is reverted, so that name is the brand
+// ("Natively"); the plist pass below re-asserts it on CFBundleName/
+// CFBundleDisplayName so the metadata matches the on-disk executable.
+// ad-hoc signing is macOS-only, so use the darwin value.
 const DISGUISE_BASE = require('./disguise-name.cjs').darwin;
 
 const HELPER_SUFFIXES = ['', ' (GPU)', ' (Renderer)', ' (Plugin)'];
 
 /**
- * Re-assert the BRAND display name on the MAIN app's Info.plist so Finder/Dock/Spotlight
- * show "Natively" while the executable/bundle stays "corespeechd" (the disguise).
+ * Re-assert the display name on the MAIN app's Info.plist so Finder/Dock/Spotlight
+ * show "Natively". Stealth is reverted, so productName is already the brand and
+ * the whole bundle (executable, CFBundleName, helpers) reads "Natively".
  *
- * ONLY CFBundleDisplayName is set. CFBundleName MUST stay the disguise alias
- * (corespeechd, from productName): Electron/Chromium derives the helper app name from the
- * main bundle's CFBundleName, so branding it makes Electron look for "Natively Helper.app"
- * — which does not exist (the helpers are "corespeechd Helper.app") — and the main process
- * aborts at launch (electron_main_delegate_mac.mm "Unable to find helper app" → SIGTRAP at
- * ElectronMain). This was the v2.9.1 launch crash. The app still renames itself to
- * "Natively" at runtime via app.setName, so the menu-bar name is branded regardless.
- * (scripts/disguise-name.cjs and packaging-config.test.mjs both require CFBundleName to
- * stay the alias.)
+ * ONLY CFBundleDisplayName is set here; CFBundleName is LEFT as the builder
+ * default (= productName). Electron/Chromium derives the helper app name from
+ * the main bundle's CFBundleName, so CFBundleName and the helper bundles must
+ * agree — they do, both being "Natively", because productName drives both. Do
+ * NOT hand-set CFBundleName to a value that differs from productName / the
+ * helper bundle names, or Electron fails to find its helper app at launch
+ * (electron_main_delegate_mac.mm "Unable to find helper app" → SIGTRAP at
+ * ElectronMain; this was the v2.9.1 launch crash, from the brand/alias split).
+ * packaging-config.test.mjs guards that this pass does not hand-set CFBundleName.
  */
 function enforceMainAppDisplayName(appOutDir, appName) {
     const mainAppPath = path.join(appOutDir, `${appName}.app`);
@@ -242,13 +243,9 @@ exports.default = async function (context) {
     }
 
     const appOutDir = context.appOutDir;
-    // The bundle folder is named from productName (the darwin disguise alias,
-    // "corespeechd") — NOT the brand. appName is used as a path component to find
-    // the .app and its helper bundles, so it MUST be the on-disk folder name. The
-    // brand ("Natively") is applied separately as CFBundleDisplayName only (see
-    // enforceMainAppDisplayName) and the bundle is deliberately NEVER renamed to
-    // "Natively.app" (that would leak the brand into the on-disk path a proctoring
-    // scanner reads — the stealth-clean contract).
+    // The bundle folder is named from productName (now the brand, "Natively").
+    // appName is used as a path component to find the .app and its helper
+    // bundles, so it MUST be the on-disk folder name (productFilename).
     const appName = context.packager.appInfo.productFilename;
     const appPath = path.join(appOutDir, `${appName}.app`);
 

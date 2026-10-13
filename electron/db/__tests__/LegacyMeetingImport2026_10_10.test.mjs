@@ -689,6 +689,29 @@ describe('which folders count as the old profile', () => {
     const disk = { '/appdata/corespeechd': '/appdata/corespeechd', '/appdata/Natively': '/appdata/Natively', '/appdata/natively': '/appdata/Natively' };
     assert.deepEqual(lookup('darwin', disk, '/appdata/corespeechd'), []);
   });
+
+  test('after the stealth revert: the brand profile sweeps a leftover disguise folder', () => {
+    // Reverted build runs from `…/Natively`; a 2.9.x disguise folder lingers
+    // because utils/migrateUserData deferred the rename (populated brand husk or
+    // a live old instance). The sweeper pulls its meetings into the brand dir.
+    const disk = {
+      '/appdata/Natively': '/appdata/Natively',
+      '/appdata/natively': '/appdata/Natively',
+      '/appdata/corespeechd': '/appdata/corespeechd',
+      '/appdata/corespeechd/natively.db': 'x',
+    };
+    assert.deepEqual(lookup('darwin', disk, '/appdata/Natively'), ['/appdata/corespeechd/natively.db']);
+  });
+
+  test('Windows after the revert: the brand profile sweeps a leftover audiodg folder', () => {
+    const disk = {
+      '/appdata/Natively': '/appdata/Natively',
+      '/appdata/natively': '/appdata/Natively',
+      '/appdata/audiodg': '/appdata/audiodg',
+      '/appdata/audiodg/natively.db': 'x',
+    };
+    assert.deepEqual(lookup('win32', disk, '/appdata/Natively'), ['/appdata/audiodg/natively.db']);
+  });
 });
 
 describe('where the import is started', () => {

@@ -54,9 +54,9 @@ const cjs = require('./lib/nativeArch.cjs');
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // HERE = <repo>/electron  →  REPO_ROOT = <repo>. One `..` is enough.
 const REPO_ROOT = path.resolve(HERE, '..');
-// The packaged bundle is the disguise alias ("corespeechd.app"), NOT "Natively.app".
-// Derive it so this test finds the real shipped artifact instead of silently
-// skipping on a stale path. scripts/disguise-name.cjs is the single source of truth.
+// The packaged bundle is "Natively.app" (productName = the brand; stealth
+// reverted). Derive it from the single source of truth so this test finds the
+// real shipped artifact instead of silently skipping on a stale path.
 const APP_BUNDLE = `${require('../scripts/disguise-name.cjs').darwin}.app`;
 const SHIPPED_ARM64_RESOURCES = path.join(REPO_ROOT, 'release', 'mac-arm64', APP_BUNDLE, 'Contents', 'Resources');
 const SHIPPED_X64_RESOURCES = path.join(REPO_ROOT, 'release', 'mac', APP_BUNDLE, 'Contents', 'Resources');

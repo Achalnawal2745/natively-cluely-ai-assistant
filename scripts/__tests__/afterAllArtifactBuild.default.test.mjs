@@ -33,10 +33,10 @@ const abs = (...parts) => path.join(path.sep, ...parts);
 // ---------------------------------------------------------------------------
 
 function mkFrameworkApp(root, { binaryBytes = 1024, danglingSymlink = false, noMacOS = false } = {}) {
-  const app = path.join(root, 'corespeechd.app');
+  const app = path.join(root, 'Natively.app');
   if (!noMacOS) {
     fs.mkdirSync(path.join(app, 'Contents', 'MacOS'), { recursive: true });
-    fs.writeFileSync(path.join(app, 'Contents', 'MacOS', 'corespeechd'), 'bin');
+    fs.writeFileSync(path.join(app, 'Contents', 'MacOS', 'Natively'), 'bin');
   } else {
     fs.mkdirSync(path.join(app, 'Contents'), { recursive: true });
   }
@@ -56,7 +56,7 @@ function mkFrameworkApp(root, { binaryBytes = 1024, danglingSymlink = false, noM
 function mkWinUnpacked(root, { omit = [], noExe = false } = {}) {
   const dir = path.join(root, 'win-unpacked');
   fs.mkdirSync(path.join(dir, 'resources'), { recursive: true });
-  if (!noExe) fs.writeFileSync(path.join(dir, 'audiodg.exe'), 'exe');
+  if (!noExe) fs.writeFileSync(path.join(dir, 'Natively.exe'), 'exe');
   for (const rel of WIN_REQUIRED_FILES) {
     if (omit.includes(rel)) continue;
     const abs = path.join(dir, rel);
@@ -149,15 +149,15 @@ test('dmgArtifacts picks only the DMGs out of the build result', () => {
     dmgArtifacts({
       artifactPaths: [
         '/out/Natively-2.9.1-arm64.zip',
-        '/out/corespeechd-2.9.1-arm64.dmg',
-        '/out/corespeechd-2.9.1-arm64.dmg.blockmap',
-        '/out/corespeechd-2.9.1-x64.DMG',
+        '/out/Natively-2.9.1-arm64.dmg',
+        '/out/Natively-2.9.1-arm64.dmg.blockmap',
+        '/out/Natively-2.9.1-x64.DMG',
         '/out/latest-mac.yml',
       ],
     }),
-    ['/out/corespeechd-2.9.1-arm64.dmg', '/out/corespeechd-2.9.1-x64.DMG']
+    ['/out/Natively-2.9.1-arm64.dmg', '/out/Natively-2.9.1-x64.DMG']
   );
-  assert.deepEqual(dmgArtifacts({ artifactPaths: ['/out/audiodg-Setup-2.9.1.exe'] }), []);
+  assert.deepEqual(dmgArtifacts({ artifactPaths: ['/out/Natively-Setup-2.9.1.exe'] }), []);
   assert.deepEqual(dmgArtifacts(undefined), []);
 });
 
@@ -167,7 +167,7 @@ test('dmgArtifacts picks only the DMGs out of the build result', () => {
 
 function mkDmgRoot(root, { dsStore = true, background = '.background.tiff', appsLink = true } = {}) {
   const mount = path.join(root, 'mount');
-  fs.mkdirSync(path.join(mount, 'corespeechd.app'), { recursive: true });
+  fs.mkdirSync(path.join(mount, 'Natively.app'), { recursive: true });
   if (dsStore) fs.writeFileSync(path.join(mount, '.DS_Store'), 'x');
   if (background === '.background') fs.mkdirSync(path.join(mount, '.background'));
   else if (background) fs.writeFileSync(path.join(mount, background), 'x');
@@ -218,13 +218,13 @@ function vfs({ existing = [], sizes = {}, dirs = {} }) {
 }
 
 const OUT = abs('out');
-const MOUNT = abs('mnt', 'corespeechd');
+const MOUNT = abs('mnt', 'Natively');
 const ARM_ZIP = path.join(OUT, 'Natively-2.9.1-arm64.zip');
-const ARM_DMG = path.join(OUT, 'corespeechd-2.9.1-arm64.dmg');
-const X64_DMG = path.join(OUT, 'corespeechd-2.9.1-x64.dmg');
+const ARM_DMG = path.join(OUT, 'Natively-2.9.1-arm64.dmg');
+const X64_DMG = path.join(OUT, 'Natively-2.9.1-x64.dmg');
 
 function healthyMountView(mount, { layout = true } = {}) {
-  const app = path.join(mount, 'corespeechd.app');
+  const app = path.join(mount, 'Natively.app');
   const fwBin = path.join(app, hook.MAC_FRAMEWORK_BINARY);
   const fwLink = path.join(app, hook.MAC_FRAMEWORK_SYMLINK);
   const macos = path.join(app, 'Contents', 'MacOS');
@@ -233,9 +233,9 @@ function healthyMountView(mount, { layout = true } = {}) {
     sizes: { [fwBin]: 191000000 },
     dirs: {
       [mount]: layout
-        ? ['.DS_Store', '.background.tiff', 'Applications', 'corespeechd.app']
-        : ['Applications', 'corespeechd.app'],
-      [macos]: ['corespeechd'],
+        ? ['.DS_Store', '.background.tiff', 'Applications', 'Natively.app']
+        : ['Applications', 'Natively.app'],
+      [macos]: ['Natively'],
     },
   });
 }
@@ -268,13 +268,13 @@ test('runHook(darwin): healthy DMGs → each one mounted + verified, no throw, n
 
 test('runHook(darwin): DMG missing the framework binary → throws (build fails)', async () => {
   const mount = MOUNT;
-  const macos = path.join(mount, 'corespeechd.app', 'Contents', 'MacOS');
+  const macos = path.join(mount, 'Natively.app', 'Contents', 'MacOS');
   // Mounted app has Contents/MacOS but NO framework binary and NO resolving symlink.
   const view = vfs({
     existing: [macos, path.join(mount, '.DS_Store')],
     dirs: {
-      [mount]: ['.DS_Store', '.background.tiff', 'Applications', 'corespeechd.app'],
-      [macos]: ['corespeechd'],
+      [mount]: ['.DS_Store', '.background.tiff', 'Applications', 'Natively.app'],
+      [macos]: ['Natively'],
     },
   });
   await assert.rejects(
@@ -334,7 +334,7 @@ test('runHook(win32): healthy unpacked → no throw', async () => {
   for (const rel of WIN_REQUIRED_FILES) existing.push(path.join(dir, rel));
   const view = vfs({
     existing,
-    dirs: { [OUT]: ['win-unpacked'], [dir]: ['audiodg.exe', 'ffmpeg.dll'] },
+    dirs: { [OUT]: ['win-unpacked'], [dir]: ['Natively.exe', 'ffmpeg.dll'] },
   });
   const res = await runHook({ artifactPaths: [path.join(OUT, 'Setup.exe')] }, {
     platform: 'win32', view, outDir: OUT, log: () => {}, warn: () => {},
@@ -346,7 +346,7 @@ test('runHook(win32): missing runtime DLL → throws', async () => {
   const dir = path.join(OUT, 'win-unpacked');
   const view = vfs({
     existing: [OUT, dir, path.join(dir, 'ffmpeg.dll')], // most required files absent
-    dirs: { [OUT]: ['win-unpacked'], [dir]: ['audiodg.exe'] },
+    dirs: { [OUT]: ['win-unpacked'], [dir]: ['Natively.exe'] },
   });
   await assert.rejects(
     () => runHook({ artifactPaths: [path.join(OUT, 'Setup.exe')] }, {

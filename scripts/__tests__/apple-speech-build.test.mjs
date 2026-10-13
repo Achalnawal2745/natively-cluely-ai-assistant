@@ -86,17 +86,12 @@ test('generated local helper is gitignored', () => {
   assert.match(ignore, new RegExp('^/resources/apple-speech/' + buildScript.HELPER_NAME + '$', 'm'));
 });
 
-test('Apple Speech helper name is brand-free and matches the runtime lookup', () => {
-  // The helper is spawned as a child process, so its basename AND path appear in
-  // process enumeration — it must never carry the brand (that was the v2.9.1
-  // "natively-apple-speech" stealth leak). And the built name must equal what
-  // electron/audio/AppleSpeechSTT.ts looks up, or Apple Speech STT silently breaks
-  // at runtime (helper spawn ENOENT).
-  assert.doesNotMatch(
-    buildScript.HELPER_NAME,
-    /natively/i,
-    `HELPER_NAME "${buildScript.HELPER_NAME}" must not contain the brand`,
-  );
+test('Apple Speech helper name matches the runtime lookup', () => {
+  // Stealth is reverted: the helper carries the brand like the rest of the app
+  // (HELPER_NAME = disguise-name.cjs darwin value + "-asr" = "Natively-asr").
+  // The only invariant left is that the BUILT name equals what
+  // electron/audio/AppleSpeechSTT.ts looks up, or Apple Speech STT silently
+  // breaks at runtime (helper spawn ENOENT).
   const runtime = fs.readFileSync(path.join(repoRoot, 'electron', 'audio', 'AppleSpeechSTT.ts'), 'utf8');
   assert.ok(
     runtime.includes(`'${buildScript.HELPER_NAME}'`),

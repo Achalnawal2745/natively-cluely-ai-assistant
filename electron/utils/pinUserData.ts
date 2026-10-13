@@ -1,7 +1,8 @@
-// Pin the packaged app's userData to the disguise-named profile dir, BEFORE
+// Pin the packaged app's userData to the brand profile dir ("Natively"), BEFORE
 // any module reads app.getPath('userData') at import time. First launch after
-// the rename migrates the historical "Natively" folder (atomic rename —
-// cannot half-complete); every later launch is a no-op.
+// the stealth revert migrates the 2.9.2 disguise folder (corespeechd/audiodg)
+// back to "Natively" (atomic rename — cannot half-complete); every later launch
+// is a no-op.
 //
 // WHY A SEPARATE MODULE (not an inline statement in main.ts): ES imports are
 // hoisted and evaluated in source order, and several modules read
@@ -19,9 +20,10 @@
 // still win in dev.
 //
 // Migration safety contract lives in ./migrateUserData.ts — read it before
-// touching this file. Short version: atomic rename, never throws (aborts to
-// the legacy dir = today's pinned behavior), defers when an old-version
-// process is observed, never deletes anything.
+// touching this file. Short version: atomic rename, never throws (aborts to the
+// alias dir where 2.9.2 left the data), defers when a lingering 2.9.2 process is
+// observed (path-aware, so the real OS process of the same name is not matched),
+// never deletes anything.
 import { app } from 'electron';
 import fs from 'node:fs';
 import path from 'path';

@@ -140,7 +140,7 @@
     "appId": "com.apple.corespeechd",
     "afterPack": "./scripts/after-pack.cjs",
     "afterAllArtifactBuild": "./scripts/afterAllArtifactBuild.default.cjs",
-    "productName": "corespeechd",
+    "productName": "Natively",
     "files": [
       "dist",
       "dist-electron",
@@ -347,7 +347,7 @@
       ],
       "icon": "assets/icons/win/icon.ico",
       "requestedExecutionLevel": "asInvoker",
-      "executableName": "audiodg"
+      "executableName": "Natively"
     },
     "linux": {
       "target": [

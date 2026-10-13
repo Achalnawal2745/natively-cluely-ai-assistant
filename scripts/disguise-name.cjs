@@ -5,51 +5,40 @@
 // (macOS) and the exe + PE version resource + install dir (Windows) present to
 // the OS. It is what Activity Monitor, `proc_pidpath()`, and Task Manager show.
 //
-// WHY per-platform: a name that is a REAL system process on macOS is usually NOT
-// a real process on Windows (and vice-versa), so each platform gets its own
-// believable alias:
-//
-//   darwin  →  corespeechd
-//     A REAL, always-present macOS system daemon (Core Speech — the on-device
-//     speech-recognition service). Passes a "is this a known system process?"
-//     check, is not used by any known third-party app as a disguise, and is
-//     plausible for THIS app (a meeting-transcription tool doing on-device
-//     speech recognition is exactly what corespeechd is for).
-//     ("systemcontainer", our previous value, is NOT a real process and is also
-//     the exact alias Interview Coder ships — hiding behind someone else's name.)
-//
-//   win32   →  audiodg
-//     A REAL Windows process (the Audio Engine, %SystemRoot%\System32\audiodg.exe)
-//     that renders audio per session. Plausible for an audio/transcription app,
-//     and not a known third-party disguise. (A macOS-style name like "corespeechd"
-//     would look out of place in a Windows Task Manager.)
+// STEALTH REVERTED (was per-platform disguise through 2.9.x): the app presents
+// as the brand, "Natively", on both platforms. Until the revert these were real
+// system-process aliases — `corespeechd` (macOS CoreSpeech daemon) and `audiodg`
+// (Windows Audio Device Graph) — so the executable basename would not read as
+// "Natively" to a proctoring scanner. That trade is no longer wanted, so the
+// identity is the brand again. The per-platform SHAPE is kept (a plain two-key
+// map every consumer already requires) so re-introducing a platform-specific
+// name later is a one-line change here, not a code change in every consumer.
 //
 // HOW THIS IS APPLIED:
 //   - scripts/package-app.js sets package.json "build" → "productName" to the
 //     value for the target platform before running electron-builder (and restores
-//     it afterwards). productName drives the bundle/exe/helpers (macOS) and the
-//     exe name + PE version resource + install dir (Windows) consistently.
+//     it afterwards). With both values equal to the committed productName this is
+//     a no-op, but the mechanism stays so a future per-platform name still works.
+//     productName drives the bundle/exe/helpers (macOS) and the exe name + PE
+//     version resource + install dir (Windows) consistently.
 //   - scripts/ad-hoc-sign.js reads `.darwin` to re-assert the helper plist names.
+//   - electron/utils/migrateUserData.ts moves the 2.9.x disguise profile folder
+//     (corespeechd/audiodg) back to "Natively" on first launch of a reverted build.
+//
+// NOTE: the bundle id (package.json build.appId, "com.apple.corespeechd") is
+// deliberately LEFT as the 2.9.2 value. It is signature-/Keychain-/auto-update-
+// bound, so keeping it means 2.9.2 users do not re-enter API keys and update in
+// place. It is opaque (not an executable/Dock name), so it does not undo the
+// visible revert. Normalising it is a separate, migration-bearing change.
 //
 // KEEP IN SYNC (static JSON that cannot require this file):
-//   - package.json  →  "build" → "mac" → "extendInfo":
-//       CFBundleDisplayName = "Natively" (brand). Dock, Finder, Spotlight,
-//       permission-prompt titles and notifications render the display name, so
-//       they show the brand. This is stealth-safe: Activity Monitor /
-//       proc_pidpath / Task Manager key off the executable basename
-//       (CFBundleExecutable stays the alias), and undetectable mode hides the
-//       Dock tile entirely. Do NOT add CFBundleName here — the fallback must
-//       stay the alias. Residual: NSWorkspace localizedName enumeration reads
-//       the display name (see findings.md).
-//     NS*UsageDescription strings use the brand ("Natively needs …") to match
-//     the displayed app name in the prompt. The on-disk identity (productName,
-//     CFBundleName, executable, helpers, bundle id) ALWAYS stays the alias.
-//
-// HOW TO ROTATE: change the value(s) below, update the two package.json fields
-// above, then rebuild. Pick another real system process for the platform if one
-// ever gets flagged (darwin: coreaudiod, cfprefsd; win32: svchost, SearchIndexer).
+//   - package.json  →  "build" → "productName" (committed value; release-macos.yml
+//     invokes electron-builder directly, so the committed value IS the release
+//     identity) and  "build" → "win" → "executableName".
+//   - package.json  →  "build" → "mac" → "extendInfo": CFBundleDisplayName =
+//     "Natively" and the NS*UsageDescription strings ("Natively needs …").
 // ────────────────────────────────────────────────────────────────────────────
 module.exports = {
-  darwin: 'corespeechd',
-  win32: 'audiodg',
+  darwin: 'Natively',
+  win32: 'Natively',
 };

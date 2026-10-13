@@ -147,13 +147,14 @@ test('renderer builds carry version and commit provenance', () => {
   assert.match(about, /VITE_BUILD_COMMIT/);
 });
 
-test('macOS Dock/Finder show the brand while the executable stays disguised', () => {
-  // BRAND-vs-STEALTH SPLIT (2026-10-02): CFBundleDisplayName drives Dock, Finder,
-  // Spotlight, permission-prompt titles and notifications, so it carries the brand
-  // ("Natively"). Everything a detector reads — executable basename (Activity
-  // Monitor, proc_pidpath, Task Manager), CFBundleName fallback, helpers, bundle
-  // id — stays the disguise alias. Reverting DisplayName to the alias silently
-  // un-brands the Dock; adding CFBundleName here would un-stealth the fallback.
+test('macOS Dock/Finder show the brand, and CFBundleName is left to the builder default', () => {
+  // Stealth reverted: productName IS the brand ("Natively"), so executable,
+  // CFBundleName (builder default) and helpers all read the brand too.
+  // CFBundleDisplayName still carries the brand explicitly (Dock, Finder,
+  // Spotlight, permission-prompt titles, notifications). CFBundleName must stay
+  // the builder default (= productName) so Electron's helper-app lookup, which
+  // derives from CFBundleName, keeps matching the helper bundles — pinning it to
+  // a different literal here is what caused the v2.9.1 launch crash.
   const extendInfo = pkg.build?.mac?.extendInfo ?? {};
   assert.equal(
     extendInfo.CFBundleDisplayName,
@@ -162,8 +163,8 @@ test('macOS Dock/Finder show the brand while the executable stays disguised', ()
   );
   assert.ok(
     !('CFBundleName' in extendInfo),
-    'build.mac.extendInfo must NOT set CFBundleName — the fallback has to stay ' +
-      'the builder default (productName = disguise alias)'
+    'build.mac.extendInfo must NOT set CFBundleName — it has to stay the builder ' +
+      'default (= productName) so the helper-app lookup matches the helper bundles'
   );
   for (const key of Object.keys(extendInfo).filter((k) => k.endsWith('UsageDescription'))) {
     assert.match(
@@ -175,34 +176,36 @@ test('macOS Dock/Finder show the brand while the executable stays disguised', ()
   }
 });
 
-test('ad-hoc-sign.js does NOT brand the MAIN app CFBundleName (Electron finds its helper by it)', () => {
-  // THE v2.9.1 LAUNCH CRASH THIS GUARDS: enforceMainAppDisplayName in ad-hoc-sign.js set
-  // the main app's CFBundleName to "Natively". Electron/Chromium derives its helper app
-  // name from the main bundle's CFBundleName, so it looked for "Natively Helper.app" — but
-  // the helpers are "<alias> Helper.app" — and the main process aborted at launch with
-  // electron_main_delegate_mac.mm "Unable to find helper app" (SIGTRAP at ElectronMain).
-  // CFBundleName must stay the disguise alias; only CFBundleDisplayName carries the brand.
+test('ad-hoc-sign.js does NOT hand-set the MAIN app CFBundleName (Electron finds its helper by it)', () => {
+  // THE v2.9.1 LAUNCH CRASH THIS GUARDS: enforceMainAppDisplayName in ad-hoc-sign.js
+  // hand-set the main app's CFBundleName to a literal that differed from the helper
+  // bundle names. Electron/Chromium derives its helper app name from the main bundle's
+  // CFBundleName, so it looked for a helper app that did not exist and the main process
+  // aborted at launch with electron_main_delegate_mac.mm "Unable to find helper app"
+  // (SIGTRAP at ElectronMain). CFBundleName must stay the builder default (= productName)
+  // so it always matches the helper bundles; only CFBundleDisplayName is set explicitly.
   const src = fs.readFileSync(path.join(repoRoot, 'scripts', 'ad-hoc-sign.js'), 'utf8');
   assert.ok(
     !/Set :CFBundleName ['"]Natively/.test(src),
-    'scripts/ad-hoc-sign.js must NOT set the MAIN app CFBundleName to the brand ("Natively"): ' +
-      'Electron locates its helper app by CFBundleName, so it must stay the disguise alias. ' +
-      'Brand the main app only via CFBundleDisplayName.'
+    'scripts/ad-hoc-sign.js must NOT hand-set the MAIN app CFBundleName to a literal: ' +
+      'Electron locates its helper app by CFBundleName, so it must stay the builder ' +
+      'default (= productName). Brand the main app only via CFBundleDisplayName.'
   );
 });
 
-test('committed productName stays the disguise alias (release builds use it verbatim)', () => {
-  // THE REGRESSION THIS GUARDS: release-macos.yml invokes electron-builder
-  // DIRECTLY (it hand-rolls stages to dodge a rimraf race, so package-app.js's
-  // per-platform productName swap never runs). The committed productName IS the
-  // release on-disk identity — flipping it back to "Natively" would ship a
-  // release whose bundle/exe/helpers expose the brand to proc_pidpath.
+test('committed productName matches the single source of truth (release builds use it verbatim)', () => {
+  // release-macos.yml invokes electron-builder DIRECTLY (it hand-rolls stages to
+  // dodge a rimraf race, so package-app.js's per-platform productName swap never
+  // runs). The committed productName IS the release on-disk identity, so it must
+  // equal scripts/disguise-name.cjs (now "Natively" — stealth reverted). If a
+  // per-platform name is ever reintroduced there, this keeps the committed
+  // default in lockstep with it.
   const disguise = createRequire(import.meta.url)('../disguise-name.cjs');
   assert.equal(
     pkg.build?.productName,
     disguise.darwin,
-    `committed build.productName must stay "${disguise.darwin}" (the darwin ` +
-      `alias); package-app.js derives per-platform names from disguise-name.cjs at build time`
+    `committed build.productName must equal disguise-name.cjs darwin ("${disguise.darwin}"); ` +
+      `release-macos.yml uses the committed value verbatim`
   );
 });
 
@@ -231,10 +234,10 @@ test('the default mac build makes a DMG, and only on an electron-builder whose D
   );
 });
 
-test('the mac DMG keeps the disguise alias as its file and volume name', () => {
-  // build.mac.artifactName carries the brand for the updater zip; without its own
-  // artifactName the DMG would inherit it, and without a title the mounted volume
-  // would be "<name> <version>". Both resolve from productName, which is the alias.
+test('the mac DMG names its file and volume from productName', () => {
+  // The DMG file and the mounted volume both resolve from productName (now the
+  // brand, "Natively"): its own artifactName template keeps the file name from
+  // inheriting the updater zip's, and the title names the mounted volume.
   assert.equal(pkg.build?.dmg?.artifactName, '${productName}-${version}-${arch}.${ext}');
   assert.equal(pkg.build?.dmg?.title, '${productName}');
 });

@@ -163,10 +163,11 @@ When you do submit to core, the same `natively.rb` is the PR — drop the
 `brew uninstall --cask natively` removes the app. `brew uninstall --zap` also
 removes user data. The paths are derived from Electron's `app.getName()`, which
 returns package.json's `name` (`natively`) — **not** the `Natively` product
-name — plus the `com.apple.corespeechd` app ID for the preference domain.
-The userData profile itself is pinned and migrated to the disguise name (see
-`electron/utils/migrateUserData.ts`), so the historical `Natively` dir and the
-post-migration `corespeechd` dir are both zapped. Verified against a real install:
+name — plus the `com.apple.corespeechd` app ID for the preference domain (that
+app ID is unchanged by the stealth revert). The userData profile is pinned to
+`Natively` and migrated back from the 2.9.x disguise name (see
+`electron/utils/migrateUserData.ts`), so both the `Natively` dir and the 2.9.x
+`corespeechd` dir are zapped. Verified against a real install:
 
 ```
 ~/Library/Application Support/corespeechd
@@ -180,7 +181,7 @@ post-migration `corespeechd` dir are both zapped. Verified against a real instal
 ```
 
 The cask also zaps the legacy `com.electron.meeting-notes` preference domain so
-upgrades from pre-corespeechd releases clean up fully.
+upgrades from the oldest releases clean up fully.
 
 Deliberately **not** zapped: stealth mode calls `app.setName("Terminal ")` /
 `"System Settings "` / `"Activity Monitor "` at runtime, so a disguised session
