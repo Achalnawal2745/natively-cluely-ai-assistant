@@ -111,17 +111,17 @@ describe('describeDoubleCaptureFailure', () => {
     const host = describeDoubleCaptureFailure('needs-host-permission', 'denied');
     assert.match(host.detail, /extension icon/i);
     const pair = describeDoubleCaptureFailure('no-extension', 'denied');
-    assert.match(pair.detail, /Settings → Sync/);
+    assert.match(pair.detail, /Settings → Companion/);
   });
 });
 
 describe('remediation copy names real UI surfaces', () => {
-  test("settings path is 'Settings → Sync' (the actual tab label), not the nonexistent 'Phone Mirror' entry", () => {
+  test("settings path is 'Settings → Companion' (the actual tab label), not the nonexistent 'Phone Mirror' entry", () => {
     for (const r of ['no-extension', 'timeout']) {
       const n = describePageCaptureFallback(r);
       assert.doesNotMatch(n.detail, /Phone Mirror/, r);
     }
-    assert.match(describePageCaptureFallback('no-extension').detail, /Settings → Sync → Browser Extension/);
+    assert.match(describePageCaptureFallback('no-extension').detail, /Settings → Companion → Browser Extension/);
   });
 
   test('host-permission copy is browser-agnostic (Chrome/Edge/Arc all supported)', () => {

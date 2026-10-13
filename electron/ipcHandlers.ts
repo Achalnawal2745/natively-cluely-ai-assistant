@@ -18980,7 +18980,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       enabled: (info as any)?.enabled,
       clients: (info as any)?.clients,
       extensionConnected: (info as any)?.extensionConnected,
-      // A number, not a payload: ends Sync's pairing countdown on a Re-pair,
+      // A number, not a payload: ends Companion's pairing countdown on a Re-pair,
       // which changes none of the flags above (PhoneMirrorService /pair).
       extPairedAt: (info as any)?.extPairedAt,
     };

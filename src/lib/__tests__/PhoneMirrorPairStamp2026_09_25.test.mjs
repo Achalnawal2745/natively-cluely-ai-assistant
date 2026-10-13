@@ -1,6 +1,6 @@
 // src/lib/__tests__/PhoneMirrorPairStamp2026_09_25.test.mjs
 //
-// Settings → Sync → the extension is connected → Re-pair → click "Connect to
+// Settings → Companion → the extension is connected → Re-pair → click "Connect to
 // Natively" in the extension popup → the card keeps saying "Waiting for
 // extension" and counts down the whole 60 s window.
 //

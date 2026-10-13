@@ -14,7 +14,7 @@ import { NativelyGlyph } from './help/HelpGraphics';
 import { Disclosure, DisclosureChevron } from '../ui/AccordionSection';
 import { SettingsToggle } from './SettingsToggle';
 
-// Sync is built from the parts General and Audio are built from, not from a
+// Companion is built from the parts General and Audio are built from, not from a
 // system of its own: Audio's section heading, General's row (40px tile,
 // 14px bold title, 12px description, SettingsToggle), General's secondary
 // button and ADVANCED disclosure, Audio's card for anything that opens under a
@@ -46,7 +46,7 @@ const DUR_BADGE_POP = 0.5;
 const DUR_BADGE_CLOSE = 0.18;
 
 // Until the first status/settings read lands, the pane renders the settled
-// state with no motion at all — otherwise opening Sync with the mirror already
+// state with no motion at all — otherwise opening Companion with the mirror already
 // on would "expand" every row, because `info` starts life as EMPTY_INFO.
 const MotionReadyContext = React.createContext(false);
 
@@ -146,7 +146,7 @@ const Presence: React.FC<{
   // SettingsRow.tsx's copy already carries). Gating only `initial` is not
   // enough: in mode="wait" the incoming child mounts after the outgoing one's
   // exit settles, a frame or more later, by which time `ready` has flipped, so
-  // a running mirror's description swapped in on every open of Sync.
+  // a running mirror's description swapped in on every open of Companion.
   if (!ready) {
     const Plain = kind === 'control' ? 'div' : 'span';
     const body = id !== null ? <Plain className={cls}>{children}</Plain> : null;
@@ -519,7 +519,7 @@ const SectionHeading: React.FC<{ title: string; subtitle: string }> = ({ title, 
   </>
 );
 
-// General's row. Two additions for Sync's longer copy: the text block can
+// General's row. Two additions for Companion's longer copy: the text block can
 // shrink (min-w-0 flex-1) and the control cannot, so a two-line description
 // wraps instead of squeezing the switch. `children` hang under the row,
 // indented to the title (px-4 + 40px tile + gap-4 = 72px); each child is a
@@ -531,7 +531,7 @@ const SectionHeading: React.FC<{ title: string; subtitle: string }> = ({ title, 
 // in calmly instead of bouncing — overshoot is for arrivals worth celebrating.
 type RowBadge = { key: string; node: React.ReactNode; quiet?: boolean };
 
-const SyncRow: React.FC<{
+const CompanionRow: React.FC<{
   icon: React.ReactNode;
   title: string;
   badge?: RowBadge | null;
@@ -983,7 +983,7 @@ export const PhoneMirrorSettings: React.FC = () => {
   const extControlKey = arming || !shownRunning ? null : shownExtConnected ? 'repair' : 'connect';
 
   const renderCtxRow = (o: CtxOption) => (
-    <SyncRow
+    <CompanionRow
       key={o.field}
       icon={<o.Icon size={20} />}
       title={t(o.label)}
@@ -1008,7 +1008,7 @@ export const PhoneMirrorSettings: React.FC = () => {
         <section>
           <SectionHeading title={t('Phone Mirror')} subtitle={t('Follow live answers on your phone.')} />
 
-          <SyncRow
+          <CompanionRow
             icon={<Smartphone size={20} />}
             title={t('Enable Phone Mirror')}
             badge={phoneBadge}
@@ -1036,7 +1036,7 @@ export const PhoneMirrorSettings: React.FC = () => {
             }
           />
 
-          <SyncRow
+          <CompanionRow
             icon={<Wifi size={20} />}
             title={t('Allow LAN access')}
             badge={lanBusyShown ? tag('updating', t('Updating'), 'sky', true) : null}
@@ -1060,7 +1060,7 @@ export const PhoneMirrorSettings: React.FC = () => {
           {/* Pairing and reset exist only while the server runs; they grow in
               and fold away with it rather than popping the list. */}
           <Collapse open={shownRunning}>
-            <SyncRow
+            <CompanionRow
               icon={<QrCode size={20} />}
               title={t('Pair a phone')}
               descriptionKey={view.exposeOnLan ? 'pair-lan' : 'pair-local'}
@@ -1144,9 +1144,9 @@ export const PhoneMirrorSettings: React.FC = () => {
                   </div>
                 </div>
               </Collapse>
-            </SyncRow>
+            </CompanionRow>
 
-            <SyncRow
+            <CompanionRow
               icon={<KeyRound size={20} />}
               title={t('Reset pairing')}
               descriptionKey={confirmReset ? 'confirm' : 'idle'}
@@ -1223,7 +1223,7 @@ export const PhoneMirrorSettings: React.FC = () => {
         <section>
           <SectionHeading title={t('Browser Extension')} subtitle={t("Send the page you're reading to Natively.")} />
 
-          <SyncRow
+          <CompanionRow
             icon={<NativelyGlyph size={20} />}
             title="Natively Companion"
             badge={extBadge}
@@ -1275,10 +1275,10 @@ export const PhoneMirrorSettings: React.FC = () => {
               </div>
             </Collapse>
             {notice(!!armError, dangerTone, <AlertCircle size={14} />, armError, true)}
-          </SyncRow>
+          </CompanionRow>
 
           <Collapse open={shownRunning}>
-            <SyncRow
+            <CompanionRow
               icon={<ClipboardPaste size={20} />}
               title={t('Pair manually')}
               description={t('If one-click pairing fails, paste this into the extension manually.')}
@@ -1297,7 +1297,7 @@ export const PhoneMirrorSettings: React.FC = () => {
                   </div>
                 </div>
               </Collapse>
-            </SyncRow>
+            </CompanionRow>
           </Collapse>
         </section>
 

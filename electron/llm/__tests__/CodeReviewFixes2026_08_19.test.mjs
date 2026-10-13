@@ -166,7 +166,7 @@ describe('describeDoubleCaptureFailure — platform-correct troubleshooting', ()
   test('both platforms still carry the shared, actionable extension guidance', () => {
     for (const platform of ['darwin', 'win32']) {
       const n = describeDoubleCaptureFailure('no-extension', 'denied', platform);
-      assert.match(n.detail, /Settings → Sync → Browser Extension/);
+      assert.match(n.detail, /Settings → Companion → Browser Extension/);
       assert.equal(n.kind, 'error');
     }
   });

@@ -62,7 +62,7 @@ export function describePageCaptureFallback(rawReason: unknown): PageCaptureFall
       label: 'Screenshot instead — extension not connected',
       detail:
         'The browser extension is not connected, so a screenshot was attached instead. ' +
-        'Pair it in Settings → Sync → Browser Extension.',
+        'Pair it in Settings → Companion → Browser Extension.',
       reason,
     };
   }
@@ -84,7 +84,7 @@ export function describePageCaptureFallback(rawReason: unknown): PageCaptureFall
       label: 'Screenshot instead — browser timed out',
       detail:
         'The browser extension did not respond in time, so a screenshot was attached instead. ' +
-        'If it keeps happening, re-pair it in Settings → Sync.',
+        'If it keeps happening, re-pair it in Settings → Companion.',
       reason,
     };
   }
@@ -135,7 +135,7 @@ export function describeDoubleCaptureFailure(
       (base.kind === 'needs-host-permission'
         ? 'Click the Natively extension icon on that tab to grant this site. '
         : base.kind === 'not-connected'
-          ? 'Pair the extension in Settings → Sync → Browser Extension. '
+          ? 'Pair the extension in Settings → Companion → Browser Extension. '
           : '') +
       screenshotPermissionHint(platform),
     reason: base.reason,

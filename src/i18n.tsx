@@ -60,7 +60,7 @@ const RU: Record<string, string> = {
     'Calendar': 'Календарь',
     'Audio': 'Звук',
     'Keybinds': 'Горячие клавиши',
-    'Sync': 'Синхронизация',
+    'Companion': 'Компаньон',
     'Intelligence': 'Интеллект',
     'Setup & Help': 'Настройка и помощь',
     'About': 'О программе',

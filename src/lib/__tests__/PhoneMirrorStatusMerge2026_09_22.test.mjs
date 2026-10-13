@@ -1,6 +1,6 @@
 // src/lib/__tests__/PhoneMirrorStatusMerge2026_09_22.test.mjs
 //
-// Settings → Sync → "Allow LAN access" → confirm the dialog → the toggle snaps
+// Settings → Companion → "Allow LAN access" → confirm the dialog → the toggle snaps
 // back OFF and the Enable row reads "On — port undefined · bound to undefined
 // (loopback only)". Same after Enable Phone Mirror flips the server on.
 //

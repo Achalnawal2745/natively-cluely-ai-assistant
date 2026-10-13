@@ -1439,7 +1439,7 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6" height="6" rx="1.2"/><rect x="14" y="4" width="6" height="6" rx="1.2"/><rect x="4" y="14" width="6" height="6" rx="1.2"/><path d="M14 14h2.5v2.5H14zM17.5 17.5H20V20h-2.5zM20 14v1M14 20h1"/></svg>
           </div>
           <h1 id="lockTitle">This pairing link has expired</h1>
-          <p>On your computer, open <b>Natively Settings › Sync › Pair a phone</b>, then scan the code<span id="lockAgain"> again</span>.</p>
+          <p>On your computer, open <b>Natively Settings › Companion › Pair a phone</b>, then scan the code<span id="lockAgain"> again</span>.</p>
         </div>
       </div>
 

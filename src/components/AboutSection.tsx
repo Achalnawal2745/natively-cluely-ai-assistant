@@ -64,7 +64,7 @@ interface AboutItem { title: string; body: string; badge?: string; Icon: AboutIc
 // 2.9 official build, the owner's picks from the last 30 days of commits:
 // Auto Answer (off by default and "Beta" in General; the judge skips asks
 // named to someone else, 2cf229bd), embeddings + rerankers, Phone Mirror 2.0
-// (nav label "Sync"), Calendar sync (calendarSessionMatch + follow-up draft),
+// (nav label "Companion"), Calendar sync (calendarSessionMatch + follow-up draft),
 // and Visual Answers (live diagrams and charts in answers; named and put in
 // place of "Better UI and animations" on 2026-10-06, at the owner's word; it
 // has no Settings tab to point at). Undetectable is
@@ -73,7 +73,7 @@ interface AboutItem { title: string; body: string; badge?: string; Icon: AboutIc
 const WHATS_NEW: AboutItem[] = [
     { title: 'Auto Answer', body: 'Answers when a question ends, and skips ones meant for others. In General.', badge: 'Beta', Icon: AutoAnswerIcon },
     { title: 'Visual Answers', body: 'System designs, flows and charts, drawn live inside the answer.', Icon: Workflow },
-    { title: 'Phone Mirror 2.0', body: 'Live transcript, streaming answers and photos from your phone. In Sync.', Icon: Smartphone },
+    { title: 'Phone Mirror 2.0', body: 'Live transcript, streaming answers and photos from your phone. In Companion.', Icon: Smartphone },
     { title: 'Calendar sync', body: 'Meetings link to their event, with names and a follow-up email. In Calendar.', Icon: CalendarCheck },
     { title: 'Embeddings and rerankers', body: 'Gemini, OpenAI, Voyage AI, Jina AI or local models. In Retrieval.', Icon: ListOrdered },
 ];
@@ -115,7 +115,7 @@ const CREATOR_LINKS = [
 ];
 
 // About is built from `./settings/SettingsRow` — the module General, Audio,
-// Sync, Intelligence and Provider Performance are built from, whose own header
+// Companion, Intelligence and Provider Performance are built from, whose own header
 // says it exists "so a pane that adopts the Settings look takes the same
 // measurements rather than a copy of them". About previously used the `aip-*`
 // sheet from AI Providers, which is that panel's own dialect at its own scale

@@ -233,7 +233,7 @@ const MockupNativelyInterface = ({ opacity, theme }: { opacity: number; theme: M
     );
 };
 
-// A button label or result line that changes on a click: Sync's text swap
+// A button label or result line that changes on a click: Companion's text swap
 // (150ms, 4px, 2px blur). Always ready, because these only ever change in
 // answer to the user, never when a value arrives over IPC as the pane opens.
 const LabelSwap: React.FC<{ id: string | null; children?: React.ReactNode }> = ({ id, children }) => (
@@ -2394,7 +2394,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         className={navItemClass(activeTab === 'phone-mirror')}
                                     >
                                         {activeTab === 'phone-mirror' && navActivePill}
-                                        <Smartphone size={16} /> {t('Sync')}
+                                        <Smartphone size={16} /> {t('Companion')}
                                     </button>
 
                                     <button
@@ -2866,7 +2866,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                         }`}
                                                     >
                                                         {/* Each status is one glyph + one word: the glyph cross-fades
-                                                            in its 14px slot, the word swaps (Sync's Copy → Copied).
+                                                            in its 14px slot, the word swaps (Companion's Copy → Copied).
                                                             justify-start puts the glyph where Theme's and Language's
                                                             icons start; centred, it sat 12px further in. */}
                                                         <Presence kind="icon" id={updateStatus}>
