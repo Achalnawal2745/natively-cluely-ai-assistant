@@ -24,14 +24,37 @@ const ENGINE = fs.readFileSync(path.join(HERE, '..', '..', 'IntelligenceEngine.t
 const IPC = fs.readFileSync(path.join(HERE, '..', '..', 'ipcHandlers.ts'), 'utf8');
 
 describe('which turns are verified', () => {
-  test('every heard Looking-for-work turn', () => {
-    assert.equal(claimVerifierKind({ modeId: 'looking-for-work', question: 'Why do you want to leave?', draft: 'x' }), 'personal');
+  // ONE PASS IN TECHNICAL INTERVIEW (2026-10-10; judged 2026-10-13). The pass replaced the streamed answer on screen
+  // two to three seconds after it finished. Judged on and off it changes nothing in Technical Interview (9.11 both
+  // ways), so it is off there unless the comparison switch is set; in Looking for work it is worth 0.14 and four hard
+  // fails, so it stays.
+  const withInterviewPass = (fn) => {
+    const before = process.env.NATIVELY_CLAIM_VERIFIER_INTERVIEW;
+    process.env.NATIVELY_CLAIM_VERIFIER_INTERVIEW = '1';
+    try { fn(); } finally { if (before === undefined) delete process.env.NATIVELY_CLAIM_VERIFIER_INTERVIEW; else process.env.NATIVELY_CLAIM_VERIFIER_INTERVIEW = before; }
+  };
+  test('Technical Interview answers in one pass: no turn is verified, heard or typed', () => {
+    assert.equal(process.env.NATIVELY_CLAIM_VERIFIER_INTERVIEW, undefined, 'the comparison switch must be unset for this suite');
+    for (const surface of ['spoken', 'typed', undefined]) {
+      assert.equal(claimVerifierKind({ modeId: 'technical-interview', question: 'Tell me about a time you debugged a production outage.', draft: 'x', surface }), null);
+      assert.equal(claimVerifierKind({ modeId: 'technical-interview', question: 'What would you say is your biggest weakness?', draft: "I've had to work on scope, and on my last project I sat on a blocker too long.", surface }), null);
+    }
+  });
+  test('every Looking-for-work turn is still verified, with or without the comparison switch', () => {
+    for (const surface of ['spoken', 'typed', undefined]) assert.equal(claimVerifierKind({ modeId: 'looking-for-work', question: 'Why do you want to leave?', draft: 'x', surface }), 'personal');
+    withInterviewPass(() => assert.equal(claimVerifierKind({ modeId: 'looking-for-work', question: 'Why do you want to leave?', draft: 'x' }), 'personal'));
+  });
+  test('the other modes are unchanged by that', () => {
+    assert.equal(claimVerifierKind({ modeId: 'sales', question: 'What does it cost?', draft: 'x' }), 'product');
+    assert.equal(claimVerifierKind({ modeId: 'seminar', question: 'Why a held-out set?', draft: 'x' }), 'personal');
+    assert.equal(claimVerifierKind({ modeId: 'team-meet', question: 'Why them, though?', draft: 'x' }), 'meeting');
+    assert.equal(claimVerifierKind({ modeId: 'general', question: 'How was your weekend?', draft: 'x', surface: 'spoken' }), 'life');
   });
   test('Sales and Call Center verify the product, company and policies', () => {
     assert.equal(claimVerifierKind({ modeId: 'sales', question: 'What does it cost?', draft: 'x' }), 'product');
     assert.equal(claimVerifierKind({ modeId: 'call-center', question: 'Can I get a refund?', draft: 'x' }), 'product');
   });
-  test('Technical interview: a personal question, or a draft that speaks about the speaker\'s own past', () => {
+  test('comparison switch on: Technical interview, a personal question or a draft that speaks about the speaker\'s own past', () => withInterviewPass(() => {
     assert.equal(claimVerifierKind({ modeId: 'technical-interview', question: 'Tell me about a time you debugged a production outage.', draft: 'x' }), 'personal');
     assert.equal(claimVerifierKind({ modeId: 'technical-interview', question: 'Have you ever used Kafka in production?', draft: 'x' }), 'personal');
     assert.equal(claimVerifierKind({ modeId: 'technical-interview', question: 'Which languages are you strongest in, and what have you actually shipped with each?', draft: 'x' }), 'personal');
@@ -39,7 +62,7 @@ describe('which turns are verified', () => {
     assert.equal(claimVerifierKind({ modeId: 'technical-interview', question: 'Walk me through how goroutines get scheduled onto OS threads.', draft: "I've used Go on a side project, and the runtime multiplexes goroutines onto threads." }), 'personal');
     assert.equal(claimVerifierKind({ modeId: 'technical-interview', question: 'What is the time complexity of a heap push?', draft: "It's O(log n): the new element sifts up at most the tree's height." }), null);
     assert.equal(claimVerifierKind({ modeId: 'technical-interview', question: 'Design a rate limiter.', draft: "I'd start with a token bucket per client, refilled at the allowed rate." }), null);
-  });
+  }));
   test('Seminar: every turn, with the research as the subject (2026-10-01)', () => {
     assert.equal(claimVerifierKind({ modeId: 'seminar', question: 'Why bother with a held-out test set?', draft: 'In my own work I always hold out a final split before touching the model.' }), 'personal');
     assert.equal(claimVerifierKind({ modeId: 'seminar', question: 'Why a held-out set?', draft: 'Because cross-validation reuses the data you tuned on, a held-out split is the only unbiased final check.' }), 'personal');

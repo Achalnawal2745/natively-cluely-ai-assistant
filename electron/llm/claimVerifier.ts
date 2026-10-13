@@ -55,8 +55,21 @@ export function claimVerifierKind(input: { modeId: string | null | undefined; qu
   const q = String(input.question ?? '');
   const draft = String(input.draft ?? '');
   if (/```/.test(draft)) return null;
+  // ONE PASS IN TECHNICAL INTERVIEW (2026-10-10, owner's decision: no second pass, nothing added before the first
+  // word). The accepted edit replaces the streamed answer on screen. In the app (Technical Interview, a résumé and a
+  // job description, five behavioural questions, Natively API) it was accepted on 4 of 4 finished passes with no
+  // Real-time prompt and 5 of 5 with one, 1.6 to 3.3 s after the answer had finished. With the pass off the answer was
+  // final 2.0 to 3.6 s after the press, not 4.1 to 6.6 s, and nothing on screen was replaced (10 of 10).
+  // Judged on and off (gpt-6-astra, 2026-10-13, 70 questions a mode): Technical Interview 9.11 with the pass and 9.11
+  // without, 8 hard fails either way, so it is off there. Looking for work 9.31 with it and 9.17 without, hard fails
+  // 2 against 6, so it stays on there: it rescues answers that invent a history when no résumé is loaded (the
+  // edited rows of the two modes with the evidence missing: 5.58 as drafted, 7.49 as shown).
+  // NATIVELY_CLAIM_VERIFIER_INTERVIEW=1 restores the Technical Interview pass for a judged comparison.
   if (mode === 'looking-for-work') return 'personal';
-  if (mode === 'technical-interview') return TI_PERSONAL_RE.test(q) || DRAFT_PERSONAL_RE.test(draft) ? 'personal' : null;
+  if (mode === 'technical-interview') {
+    if (process.env.NATIVELY_CLAIM_VERIFIER_INTERVIEW !== '1') return null;
+    return TI_PERSONAL_RE.test(q) || DRAFT_PERSONAL_RE.test(draft) ? 'personal' : null;
+  }
   // Seminar (2026-10-01): every turn. Its capped answers were claims about the research the paper does not make
   // and an "I don't have that figure" the draft pattern never opened the gate for. Replayed and judged:
   // 8.64 -> 8.99, hard fails 3 -> 1.
