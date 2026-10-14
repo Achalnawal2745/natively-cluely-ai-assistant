@@ -53,21 +53,36 @@ export interface MeetingDetectionDeps {
     notify: (n: OsNotification) => boolean;
     live?: LiveMeetingSource;
     now?: () => number;
+    /** "Last time: …" for a recurring event (recurringMeetings.lastTimeNotificationLine), or null. */
+    lastTimeLine?: (event: MatchableEvent) => string | null;
 }
 
 /** What the notification says, and which event a start links to. */
-export function describeDetection(d: Detection, events: MatchableEvent[] | null, nowMs: number): { body: string; start: MeetingStartRequest } {
+export function describeDetection(
+    d: Detection,
+    events: MatchableEvent[] | null,
+    nowMs: number,
+    lastTimeLine?: (event: MatchableEvent) => string | null,
+): { body: string; start: MeetingStartRequest } {
     const list = events ?? [];
+    // A recurring meeting's notification also recalls last time, on its own line.
+    const withLastTime = (body: string, event: MatchableEvent | null): string => {
+        if (!event || !lastTimeLine) return body;
+        let line: string | null = null;
+        try { line = lastTimeLine(event); } catch { /* never blocks the prompt */ }
+        return line ? `${body}\n${line}` : body;
+    };
     // The call's own link names the event: say so, and start linked to it.
     const exact = d.key ? matchEventByMeetingKeys(list, [d.key], nowMs) : null;
     if (exact) {
-        return { body: `"${exact.title}" is on in ${d.app}.`, start: { title: exact.title, calendarEventId: exact.id, via: 'detected' } };
+        return { body: withLastTime(`"${exact.title}" is on in ${d.app}.`, exact), start: { title: exact.title, calendarEventId: exact.id, via: 'detected' } };
     }
     // Otherwise name the meeting on the calendar now, if exactly one fits; the
     // session links to it at start by the same rule.
     const byTime = matchEventForSession(withoutOtherMeetings(list, d.key ? [d.key] : []), nowMs);
-    const name = byTime.kind === 'linked' ? byTime.event.title : d.title;
-    return { body: name ? `"${name}" is on in ${d.app}.` : `A ${d.app} call started.`, start: { via: 'detected' } };
+    const linked = byTime.kind === 'linked' ? byTime.event : null;
+    const name = linked ? linked.title : d.title;
+    return { body: withLastTime(name ? `"${name}" is on in ${d.app}.` : `A ${d.app} call started.`, linked), start: { via: 'detected' } };
 }
 
 export function wireMeetingDetection(deps: MeetingDetectionDeps): MeetingDetector {
@@ -87,7 +102,7 @@ export function wireMeetingDetection(deps: MeetingDetectionDeps): MeetingDetecto
                 console.log(`[MeetingDetection] ${d.app} call detected; prompt skipped (Undetectable or a disguise is on)`);
                 return;
             }
-            const { body, start } = describeDetection(d, deps.events(), now());
+            const { body, start } = describeDetection(d, deps.events(), now(), deps.lastTimeLine);
             const shown = deps.notify({
                 title: 'Start Natively?',
                 body,

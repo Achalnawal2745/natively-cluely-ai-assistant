@@ -1256,6 +1256,23 @@ export function initializeIpcHandlers(appState: AppState): void {
     return CredentialsManager.getInstance().getSttLanguage();
   });
 
+  // The user's dictionary (Settings > Audio): names and words the transcript
+  // should spell right. See audio/userDictionary.ts and audio/sttContextTerms.ts.
+  safeHandle('user-dictionary-get', async () => {
+    const { getUserDictionary } = require('./audio/userDictionary');
+    return getUserDictionary();
+  });
+
+  safeHandle('user-dictionary-set', async (_, terms: unknown) => {
+    const { setUserDictionary } = require('./audio/userDictionary');
+    const { setSttDictionaryTerms } = require('./audio/sttContextTerms');
+    const saved = setUserDictionary(terms);
+    if (!saved) return { success: false, error: 'settings_store_degraded' };
+    // The next connect (or reconnect) of every provider reads the new list.
+    setSttDictionaryTerms(saved);
+    return { success: true, terms: saved };
+  });
+
   safeHandle('get-ai-response-language', async () => {
     const { CredentialsManager } = require('./services/CredentialsManager');
     return CredentialsManager.getInstance().getAiResponseLanguage();
@@ -16360,6 +16377,30 @@ export function initializeIpcHandlers(appState: AppState): void {
     return CalendarManager.getInstance().getUpcomingEvents();
   });
 
+  // Every calendar source this platform offers (Google, Outlook, Apple Calendar
+  // on macOS, a calendar link), with where each stands, for Settings › Calendar.
+  safeHandle('calendar-get-sources', async () => {
+    const { CalendarManager } = require('./services/CalendarManager');
+    return CalendarManager.getInstance().getSourceStatuses();
+  });
+
+  // Connects one source. `input` is the pasted link for 'ics'. Answers a
+  // sentence written for the row when it did not connect, never a code.
+  safeHandle('calendar-source-connect', async (_, id: unknown, input?: unknown) => {
+    if (id !== 'google' && id !== 'outlook' && id !== 'apple' && id !== 'ics') return { success: false };
+    if (input !== undefined && (typeof input !== 'string' || input.length > 4096)) return { success: false };
+    const { CalendarManager } = require('./services/CalendarManager');
+    const error = await CalendarManager.getInstance().connectSource(id, input);
+    return error ? { success: false, error } : { success: true };
+  });
+
+  safeHandle('calendar-source-disconnect', async (_, id: unknown) => {
+    if (id !== 'google' && id !== 'outlook' && id !== 'apple' && id !== 'ics') return { success: false };
+    const { CalendarManager } = require('./services/CalendarManager');
+    await CalendarManager.getInstance().disconnectSource(id);
+    return { success: true };
+  });
+
   // The calendars whose events sync (ticked in Google Calendar), for Settings → Calendar.
   safeHandle('calendar-get-synced-calendars', async () => {
     const { CalendarManager } = require('./services/CalendarManager');
@@ -16374,6 +16415,88 @@ export function initializeIpcHandlers(appState: AppState): void {
     if (!SettingsManager.getInstance().set('meetingDetectionEnabled', on)) return { success: false, error: 'settings_store_degraded' };
     require('./services/meetingDetection/wireMeetingDetection').setMeetingDetectionActive(on);
     return { success: true };
+  });
+
+  // End meetings automatically when the call ends (Settings › Calendar, next to
+  // Detect meetings). Unset = on. Read at each meeting start, so a change
+  // applies from the next meeting.
+  safeHandle('get-meeting-auto-stop-enabled', async () => SettingsManager.getInstance().get('meetingAutoStopEnabled') ?? true);
+  safeHandle('set-meeting-auto-stop-enabled', async (_, on: boolean) => {
+    if (typeof on !== 'boolean') return { success: false };
+    if (!SettingsManager.getInstance().set('meetingAutoStopEnabled', on)) return { success: false, error: 'settings_store_degraded' };
+    // Off takes effect at once for a running meeting; on, from the next one.
+    if (!on) appState.getMeetingAutoStop?.()?.end();
+    return { success: true };
+  });
+  // The overlay's "stops in 1 minute" notice: Keep going.
+  safeHandle('meeting-auto-stop-keep-going', async () => {
+    appState.getMeetingAutoStop?.()?.keepGoing();
+    return { success: true };
+  });
+  // The user is typing in the overlay: no auto-stop under their hands.
+  // Fire-and-forget from the renderer, throttled there.
+  safeOn('meeting-auto-stop-typing', () => {
+    appState.getMeetingAutoStop?.()?.noteTyping();
+  });
+
+  // ==========================================
+  // The notes window (`?window=notes`, 2026-10-15)
+  // ==========================================
+  // The overlay's Notes button opens or hides it; its own X hides it. The
+  // text goes to main on every change (services/meeting/liveNotesSession.ts),
+  // which keeps it with the running meeting and hands it to the notes at Stop.
+  safeHandle('notes-window:toggle', async () => {
+    return { open: appState.notesWindowHelper.toggle() };
+  });
+  safeHandle('notes-window:close', async () => {
+    appState.notesWindowHelper.hide(true);
+    return { success: true };
+  });
+  safeHandle('notes-window:is-open', async () => appState.notesWindowHelper.isVisible());
+  safeHandle('live-notes:get-state', async () => appState.getLiveNotes().getState());
+  safeOn('live-notes:set-text', (_event, text: unknown) => {
+    if (typeof text !== 'string') return;
+    appState.getLiveNotes().setText(text);
+  });
+  // "Open meeting" in the notes window after Stop: the launcher opens that
+  // meeting's page (App's launcher request, as Settings › About's demo meeting).
+  safeHandle('notes-window:open-meeting', async (_event, meetingId: unknown) => {
+    if (typeof meetingId !== 'string' || !meetingId) return { success: false };
+    const launcherWin = appState.getWindowHelper().getLauncherWindow();
+    if (!launcherWin || launcherWin.isDestroyed()) return { success: false };
+    launcherWin.webContents.send('launcher:open-meeting', meetingId);
+    if (appState.getUndetectable()) {
+      // As settings:open-tab: a launcher show outside switchToLauncher re-drives stealth.
+      launcherWin.showInactive();
+      appState.reassertUndetectableStealth();
+    } else {
+      launcherWin.show();
+      launcherWin.focus();
+    }
+    return { success: true };
+  });
+
+  // Earlier versions of a meeting's notes (one tab each on the meeting page)
+  // and thumbs up / down on the notes (services/meeting/notesRatings.ts).
+  safeHandle('meeting-notes:versions', async (_event, meetingId: unknown) => {
+    if (typeof meetingId !== 'string' || !meetingId) return [];
+    return DatabaseManager.getInstance().getNotesVersions(meetingId);
+  });
+  safeHandle('meeting-notes:rate', async (_event, input: { meetingId?: unknown; rating?: unknown; comment?: unknown; versionId?: unknown }) => {
+    const { rateMeetingNotes } = require('./services/meeting/notesRatings') as typeof import('./services/meeting/notesRatings');
+    if (!input || typeof input.meetingId !== 'string' || (input.rating !== 'up' && input.rating !== 'down')) return { success: false };
+    const ok = rateMeetingNotes(DatabaseManager.getInstance(), {
+      meetingId: input.meetingId,
+      rating: input.rating,
+      comment: typeof input.comment === 'string' ? input.comment : null,
+      versionId: typeof input.versionId === 'number' ? input.versionId : null,
+    });
+    return { success: ok };
+  });
+  safeHandle('meeting-notes:get-rating', async (_event, input: { meetingId?: unknown; versionId?: unknown }) => {
+    const { getMeetingNotesRating } = require('./services/meeting/notesRatings') as typeof import('./services/meeting/notesRatings');
+    if (!input || typeof input.meetingId !== 'string') return null;
+    return getMeetingNotesRating(DatabaseManager.getInstance(), input.meetingId, typeof input.versionId === 'number' ? input.versionId : null);
   });
 
   safeHandle('calendar-refresh', async () => {

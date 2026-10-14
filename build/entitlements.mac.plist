@@ -33,6 +33,15 @@
     <key>com.apple.security.device.audio-input</key>
     <true/>
 
+    <!-- Apple Calendar (EventKit, native-module/src/calendar_events.rs). The Hardened
+         Runtime's "Calendars" resource-access capability: without it a signed build's
+         request is refused without a prompt. Not restricted (no provisioning profile).
+         Paired with NSCalendarsFullAccessUsageDescription / NSCalendarsUsageDescription
+         (Info.plist, package.json build.mac.extendInfo). Top-level only: EventKit is
+         read from the main process. -->
+    <key>com.apple.security.personal-information.calendars</key>
+    <true/>
+
     <!--
       KEYCHAIN ACCESS GROUP — REMOVED 2026-08-19. DO NOT RE-ADD WITHOUT A PROFILE.
 

@@ -108,6 +108,82 @@ export interface AudioDeviceInfo {
   name: string
 }
 
+/** Where the Calendars permission stands; never prompts. */
+export declare function calendarAuthorizationStatus(): string
+
+export interface CalendarEventInfo {
+  /** EKEvent.eventIdentifier: shared by every occurrence of a series. */
+  eventIdentifier?: string
+  /** calendarItemExternalIdentifier: the invite's iCalendar UID on most accounts. */
+  externalId?: string
+  title?: string
+  startMs: number
+  endMs: number
+  /** EKEvent.occurrenceDate: an occurrence's original start. */
+  occurrenceMs?: number
+  isAllDay: boolean
+  /** EKEventStatus. */
+  status: number
+  hasRecurrence: boolean
+  isDetached: boolean
+  location?: string
+  notes?: string
+  url?: string
+  timeZone?: string
+  organizer?: CalendarParticipant
+  attendees: Array<CalendarParticipant>
+}
+
+export interface CalendarParticipant {
+  name?: string
+  /** The participant's URL, usually "mailto:…". */
+  url?: string
+  /** EKParticipantStatus. */
+  status: number
+  /** EKParticipantType. */
+  kind: number
+  isCurrentUser: boolean
+}
+
+export interface CallTree {
+  /** macOS: the Accessibility permission is granted. Windows: always true. */
+  trusted: boolean
+  /** A bound (nodes, depth, time) cut the walk short. */
+  truncated: boolean
+  windows: Array<CallTreeWindow>
+  elapsedMs: number
+}
+
+export interface CallTreeNode {
+  /** 0 for a window's root. */
+  depth: number
+  /**
+   * macOS AXRole (with ":" + AXSubrole when there is one); Windows the
+   * control type's name ("ListItem", "Button", …).
+   */
+  role: string
+  /** macOS AXTitle; Windows Name. */
+  name: string
+  /** macOS AXDescription; Windows HelpText. */
+  description: string
+  /** macOS AXValue (strings only); Windows ItemStatus. */
+  value: string
+  /** macOS AXIdentifier; Windows AutomationId. */
+  id: string
+}
+
+export interface CallTreeOptions {
+  maxNodes?: number
+  maxDepth?: number
+  budgetMs?: number
+  maxWindows?: number
+}
+
+export interface CallTreeWindow {
+  title: string
+  nodes: Array<CallTreeNode>
+}
+
 /**
  * Event payload delivered to the JS callback. Crossing the V8 boundary is
  * not free, so we keep this struct flat (no nested objects) and only include
@@ -162,6 +238,12 @@ export interface CapturedKey {
 export declare function deactivateDodoKey(licenseKey: string, instanceId: string): Promise<unknown>
 
 /**
+ * The occurrences overlapping [start_ms, end_ms]; null without full access or
+ * on another OS. Runs on a worker thread.
+ */
+export declare function getCalendarEvents(startMs: number, endMs: number): Promise<Array<CalendarEventInfo> | null>
+
+/**
  * Returns the platform-native ID of the current default output device.
  * macOS: CoreAudio device UID. Windows: WASAPI device id (eMultimedia/eConsole role).
  * Empty string on error or unsupported platform.
@@ -211,6 +293,18 @@ export interface OverlayBoundsInput {
   width: number
   height: number
 }
+
+/**
+ * The app's windows as flattened accessibility trees; null where this OS has
+ * no reader or the pid is not a running app. Resolves on a worker thread.
+ */
+export declare function readCallTree(pid: number, options?: CallTreeOptions | undefined | null): Promise<CallTree | null>
+
+/**
+ * Asks for calendar access (once: the OS answers at once after the first
+ * time), resolving to the status afterwards. Runs on a worker thread.
+ */
+export declare function requestCalendarAccess(): Promise<string>
 
 /**
  * macOS: whether ScreenCaptureKit can currently enumerate a display (false

@@ -25,6 +25,7 @@ import { OpenAILiveTranscriptItems } from './openaiLiveTranscriptItems';
 import { RealtimeSilenceTail } from './realtimeSilenceTail';
 import { resolveSttModel } from './sttModelCatalog';
 import { isDefaultOpenAiSttBase } from './openaiSttBaseUrl';
+import { currentWhisperGlossaryPrompt, isGlossaryEcho } from './sttContextTerms';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -607,7 +608,7 @@ export class OpenAIStreamingSTT extends EventEmitter {
             : '';
 
         const live = model === LIVE_WS_MODEL;
-        const transcription: { model: string; language?: string; languages?: string[]; delay?: string } = { model };
+        const transcription: { model: string; language?: string; languages?: string[]; delay?: string; prompt?: string } = { model };
         if (live) {
             // The live model takes `languages` (a list) and `delay`; the
             // documented example is exactly this shape.
@@ -615,6 +616,13 @@ export class OpenAIStreamingSTT extends EventEmitter {
             if (lang) transcription.languages = [lang];
         } else if (lang) {
             transcription.language = lang;
+        }
+        // The user's dictionary (sttContextTerms.ts). gpt-4o-transcribe models
+        // document `prompt`; the live model's session documents no such field,
+        // and an unknown field there costs the whole session (see below).
+        if (!live) {
+            const prompt = currentWhisperGlossaryPrompt();
+            if (prompt) transcription.prompt = prompt;
         }
 
         return {
@@ -1251,6 +1259,9 @@ export class OpenAIStreamingSTT extends EventEmitter {
             ? (RECOGNITION_LANGUAGES[this.languageKey]?.iso639 ?? '')
             : '';
         if (lang) form.append('language', lang);
+        // The user's dictionary as a Whisper prompt (sttContextTerms.ts).
+        const prompt = currentWhisperGlossaryPrompt();
+        if (prompt) form.append('prompt', prompt);
 
         const response = await axios.post(this.restEndpoint, form, {
             headers: {
@@ -1261,8 +1272,8 @@ export class OpenAIStreamingSTT extends EventEmitter {
         });
 
         const data = response.data;
-        if (typeof data === 'string') return data;
-        return data?.text ?? '';
+        const text = typeof data === 'string' ? data : (data?.text ?? '');
+        return isGlossaryEcho(text, prompt) ? '' : text;
     }
 
     // ─── Audio Utilities ──────────────────────────────────────────────────────

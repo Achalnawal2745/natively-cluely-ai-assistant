@@ -163,6 +163,7 @@ function sanitizeFindings(value: unknown, allowedTitles?: string[]): Record<stri
         if (ev.length) finding.evidence = ev;
         if ((item as any).source === 'explicit' || (item as any).source === 'inferred') finding.source = (item as any).source;
         if (['high', 'medium', 'low'].includes((item as any).confidence)) finding.confidence = (item as any).confidence;
+        if ((item as any).fromUserNotes === true) finding.fromUserNotes = true;
       }
       findings.push(finding);
       if (findings.length >= 20) break;

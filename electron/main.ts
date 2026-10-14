@@ -1216,6 +1216,8 @@ import { initializeIpcHandlers } from "./ipcHandlers"
 import { WindowHelper } from "./WindowHelper"
 import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
+import { NotesWindowHelper } from "./NotesWindowHelper"
+import { LiveNotesSession } from "./services/meeting/liveNotesSession"
 import { CropperWindowHelper } from "./CropperWindowHelper"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { KeybindManager } from "./services/KeybindManager"
@@ -1234,7 +1236,9 @@ import { isIntelligenceFlagEnabled } from "./intelligence/intelligenceFlags"
 import { buildJudgePrompt } from "./intelligence/autoAnswer/AutoAnswerJudge"
 import { SimpleAutoAnswerEngine } from "./intelligence/autoAnswer/SimpleAutoAnswer"
 import { AutoAnswerUsageTelemetry } from "./intelligence/autoAnswer/AutoAnswerUsageTelemetry"
-import { nameTerms, setSttContextTerms } from "./audio/sttContextTerms"
+import { currentWhisperGlossaryPrompt, nameTerms, setSttContextTerms, setSttDictionaryTerms } from "./audio/sttContextTerms"
+import { getUserDictionary } from "./audio/userDictionary"
+import { LOCAL_STT_PROVIDERS, SttGapRecoveryCoordinator, type RecoveredSegment, type SttSource } from "./audio/sttGapRecovery"
 import { resolveAutoAnswerThresholds } from "./context-intelligence/policies/mode-policy-registry"
 import type { SpeechEdge } from "./audio/speechEdge"
 import { SonioxStreamingSTT } from "./audio/SonioxStreamingSTT"
@@ -1300,6 +1304,8 @@ interface ScreenshotCaptureSession {
   windowMode: ScreenshotWindowMode;
   wasSettingsVisible: boolean;
   wasModelSelectorVisible: boolean;
+  /** The notes window: hidden for the capture like the other Natively windows, back without focus after. */
+  wasNotesVisible: boolean;
   overlayBounds: Electron.Rectangle | null;
   overlayDisplayId: number | null;
   restoreWithoutFocus: boolean;
@@ -1336,8 +1342,11 @@ import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
 import { linkSessionToCalendar, cancelSessionCalendarLink } from './services/calendar/SessionCalendarLinker'
 import { wireExtensionMeetingTabs } from './services/meetingDetection/extensionMeetingTabs'
+import { DesktopCallSpeakers } from './services/meetingDetection/desktopCallSpeakers'
 import { SHORTCUT_TOUR_ACTIONS } from './services/shortcutTourActions'
 import { wireMeetingDetection, registerMeetingDetection, electronNotify, type MeetingStartRequest } from './services/meetingDetection/wireMeetingDetection'
+import { createMeetingAutoStop, inactivityMinutes, registerQuitFlush, type MeetingAutoStop } from './services/meeting/wireMeetingAutoStop'
+import { liveMeetings } from './services/meetingDetection/liveMeetings'
 import { ProviderStatusRegistry } from './services/ProviderStatusRegistry'
 import { decideToggle, decideDockTransition } from './services/toggleStateReducer'
 import { nativePromptsBlocked } from './services/stealthPromptGate'
@@ -1414,6 +1423,10 @@ export class AppState {
   public settingsWindowHelper: SettingsWindowHelper
   public modelSelectorWindowHelper: ModelSelectorWindowHelper
   public cropperWindowHelper: CropperWindowHelper
+  // The notes window (`?window=notes`) and the text typed in it for the
+  // running meeting (2026-10-15; services/meeting/liveNotesSession.ts).
+  public notesWindowHelper: NotesWindowHelper
+  private liveNotes: LiveNotesSession
   private screenshotHelper: ScreenshotHelper
   public processingHelper: ProcessingHelper
 
@@ -1474,6 +1487,9 @@ export class AppState {
   public autoStartTrialForMeeting: (() => void) | null = null;
   public autoTrialSettled: (() => boolean) | null = null;
   private _meetingGeneration = 0;
+  // Reads who speaks in a Zoom / Teams desktop call while a meeting runs
+  // (services/meetingDetection/desktopCallSpeakers.ts). One per meeting.
+  private desktopCallSpeakers: DesktopCallSpeakers | null = null;
   // Serializes start/stop so two transitions can never interleave. This is the
   // ONLY mutual-exclusion layer: _meetingGeneration, the _audioInitPromise
   // abort-and-await and _pendingTeardown each guard a hazard INSIDE a
@@ -1672,6 +1688,7 @@ export class AppState {
     this.settingsWindowHelper = new SettingsWindowHelper()
     this.modelSelectorWindowHelper = new ModelSelectorWindowHelper()
     this.cropperWindowHelper = new CropperWindowHelper()
+    this.notesWindowHelper = new NotesWindowHelper()
 
     // 3. Initialize other helpers
     this.screenshotHelper = new ScreenshotHelper(this.view)
@@ -1685,6 +1702,11 @@ export class AppState {
     this.settingsWindowHelper.setContentProtection(this.isUndetectable);
     this.modelSelectorWindowHelper.setContentProtection(this.isUndetectable);
     this.cropperWindowHelper.setContentProtection(this.isUndetectable);
+    this.notesWindowHelper.setContentProtection(this.isUndetectable);
+    // The overlay's Notes button shows whether the window is open.
+    this.notesWindowHelper.onVisibilityChange((visible) => {
+      this.sendToWindow(this.windowHelper.getOverlayWindow(), 'notes-window-visibility', visible);
+    });
 
     if (process.platform === 'win32' || process.platform === 'darwin') {
       this.cropperWindowHelper.preload();
@@ -2175,6 +2197,11 @@ export class AppState {
 
     // Initialize IntelligenceManager with LLMHelper
     this.intelligenceManager = new IntelligenceManager(this.processingHelper.getLLMHelper())
+    this.liveNotes = new LiveNotesSession({
+      setLive: (text) => this.intelligenceManager.setLiveUserNotes(text),
+      saveEnded: (meetingId, text) => { DatabaseManager.getInstance().setMeetingUserNotes(meetingId, text); },
+      broadcast: (state) => this.sendToWindow(this.notesWindowHelper.getWindow(), 'live-notes-state', state),
+    })
 
     // Initialize ThemeManager
     this.themeManager = ThemeManager.getInstance()
@@ -3363,6 +3390,53 @@ export class AppState {
   private _audioTestStarting = false;               // P2-12: in-flight guard against concurrent calls
   private googleSTT: STTProvider | null = null; // Interviewer
   private googleSTT_User: STTProvider | null = null; // User
+
+  /**
+   * Transcript gap recovery (audio/sttGapRecovery.ts): the last 120 s of each
+   * source's PCM, outages opened by provider errors or the stall watchdog,
+   * and the missed audio transcribed again in the background and put back at
+   * its original time. Per source: the provider actually running, and
+   * whether its connection streams (the stall watchdog's scope).
+   */
+  private readonly _sttGapProvider: Record<SttSource, { effective: string; streaming: boolean }> = {
+    mic: { effective: '', streaming: false },
+    system: { effective: '', streaming: false },
+  };
+  private readonly sttGap = new SttGapRecoveryCoordinator({
+    transcribers: (source) => {
+      const { buildRecoveryTranscribers } = require('./audio/sttRecoveryTranscribers');
+      let localOnly = false;
+      try { localOnly = !!this.processingHelper?.getLLMHelper?.()?.isLocalOnly?.(); } catch { /* not local-only */ }
+      return buildRecoveryTranscribers(source, { effectiveProvider: this._sttGapProvider[source].effective, localOnly });
+    },
+    onRecovered: (seg) => this.insertRecoveredTranscript(seg),
+    restartStt: (source) => {
+      const stt = source === 'system' ? this.googleSTT : this.googleSTT_User;
+      if (!stt || !this.isMeetingActive) return;
+      stt.stop();
+      stt.start();
+    },
+    watchdogEnabled: (source) => this._sttGapProvider[source].streaming,
+  });
+
+  /** A recovered line goes into the session at the time it was said; it triggers no answer. */
+  private insertRecoveredTranscript(seg: RecoveredSegment): void {
+    if (!this.isMeetingActive && !this._isDraining) return;
+    const speaker = seg.source === 'system' ? 'interviewer' : 'user';
+    const inserted = this.intelligenceManager.insertRecoveredTranscript({
+      speaker,
+      text: seg.text,
+      timestamp: seg.timestamp,
+      final: true,
+      origin: 'stt',
+      marker: 'recovered',
+      sttProvider: seg.transcriberId,
+      punctuationSource: punctuationSourceFor(seg.transcriberId, true),
+    });
+    if (inserted && this.ragManager) {
+      this.ragManager.feedLiveTranscript([{ speaker, text: seg.text, timestamp: seg.timestamp }]);
+    }
+  }
   // ── AUTO ANSWER (Settings > General, default OFF) ────────────────────────
   // `handleSuggestionTrigger` — the method IntelligenceEngine documents as
   // "the primary auto-trigger path" — had no production caller: the only call
@@ -3471,6 +3545,58 @@ export class AppState {
     // (the stricter MEETING bar), not the compiled-in interview constants.
   }, undefined, resolveAutoAnswerThresholds(null));
   private autoAnswerEmbedder: { embed(text: string): Promise<number[]> } | null = null;
+
+  /**
+   * End meetings automatically when the call ends (services/meeting/
+   * MeetingEndDetector.ts): the call's app lets go of the microphone and the
+   * calendar or a quick model check agrees, its browser tab closes, or nothing
+   * is said for 15 min (an overlay notice with Keep going comes first). It
+   * stops through endMeeting(), the user's own Stop, so the notes are written.
+   */
+  private readonly meetingAutoStop: MeetingAutoStop = createMeetingAutoStop({
+    platform: process.platform,
+    self: { pid: process.pid, execPath: process.execPath },
+    // Lazy: the native module loads on first use, not at construction.
+    native: { getMicUsers: () => (loadNativeModule() as any)?.getMicUsers?.() ?? null },
+    live: liveMeetings,
+    metadata: () => this.intelligenceManager?.liveMeetingMetadata?.() ?? null,
+    activityCount: () => this.intelligenceManager?.getAnswerCount?.() ?? 0,
+    speakerNames: () => {
+      let me = 'Me';
+      let them = 'Speaker 1';
+      try {
+        const { calendarSpeakerLabels } = require('./services/calendar/calendarSessionMatch');
+        const labels = calendarSpeakerLabels(this.intelligenceManager?.liveMeetingMetadata?.()?.calendarEvent, this.currentUserName() ?? undefined);
+        if (labels?.me) me = labels.me;
+        if (labels?.speaker_1) them = labels.speaker_1;
+      } catch { /* the channel names */ }
+      return { me, them };
+    },
+    settings: () => ({
+      enabled: SettingsManager.getInstance().get('meetingAutoStopEnabled') ?? true,
+      inactivityMinutes: inactivityMinutes(SettingsManager.getInstance().get('meetingInactivityStopMinutes')),
+    }),
+    // The Auto Answer judge's ladder: the user's fast model, then a small
+    // model per provider, each honouring the data-scope settings. Bounded by
+    // the check's own 4 s deadline through `signal`.
+    generate: (prompt, signal) => {
+      const llm = this.processingHelper?.getLLMHelper?.();
+      if (!llm) return Promise.reject(new Error('no model'));
+      return llm.generateJudgeVerdict(prompt, { signal });
+    },
+    stopMeeting: (reason) => {
+      if (!this.isMeetingActive) return;
+      console.log(`[Main] Auto-stop: ending the meeting (${reason}).`);
+      this.endMeeting().catch((err) => console.error('[Main] Auto-stop endMeeting failed:', err));
+    },
+    notify: (stopsAt) => {
+      this.sendToWindow(this.getWindowHelper().getOverlayWindow(), 'meeting-auto-stop-notice', { stopsAt });
+    },
+  });
+
+  public getMeetingAutoStop(): MeetingAutoStop {
+    return this.meetingAutoStop;
+  }
 
   /** The user's name: the active résumé's, else the connected Calendar account's. */
   private currentUserName(): string | null {
@@ -3713,22 +3839,29 @@ export class AppState {
       : stt instanceof GoogleSTT ? 'google'
       : sttProvider;
 
-    // Speaker diarization on the MEETING-AUDIO channel (2026-08-25). That
-    // channel can carry several voices — an interviewer plus a colleague, or a
-    // video with two speakers — and without labels the judge has to infer from
-    // wording who asked what, which is the deepest remaining source of wrong
-    // verdicts. Providers that diarize surface `speakerId` per segment; the
-    // Auto Answer engine passes those labels to the judge, and providers that
-    // do not simply never send one (the prompt is then unchanged).
-    // NATIVELY_AUTO_ANSWER_DIARIZE=off disables it.
-    if (speaker === 'interviewer'
-        && (process.env.NATIVELY_AUTO_ANSWER_DIARIZE || '').toLowerCase() !== 'off'
-        && typeof (stt as any).setDiarize === 'function') {
-      try {
-        (stt as any).setDiarize(true);
-        if (this._verboseLogging) console.log(`[AutoAnswer] speaker diarization requested on ${effectiveSttId}`);
-      } catch { /* optional capability; never block the meeting */ }
+    // Gap recovery (sttGapRecovery.ts): which provider replays a missed span,
+    // and whether the stall watchdog applies. Streaming connections only: a
+    // REST provider (Groq, Azure, IBM, OpenAI on a custom endpoint) has no
+    // connection to stall, and a local model none to drop.
+    const gapSource: SttSource = speaker === 'interviewer' ? 'system' : 'mic';
+    this._sttGapProvider[gapSource] = {
+      effective: effectiveSttId,
+      streaming: ['deepgram', 'soniox', 'elevenlabs', 'natively', 'nvidia_nim', 'google'].includes(effectiveSttId)
+        || (effectiveSttId === 'openai' && !CredentialsManager.getInstance().getOpenAiSttBaseUrl()),
+    };
+    // Local Whisper: the user's dictionary as its prompt (sttContextTerms.ts).
+    // Empty without a dictionary, which leaves the model exactly as before.
+    if (sttProvider === 'local-whisper' && typeof (stt as any).setContext === 'function') {
+      try { (stt as any).setContext(currentWhisperGlossaryPrompt()); } catch { /* a hint, never a blocker */ }
     }
+
+    // Speaker labels for Auto Answer's judge come from the provider's own
+    // diarization where it is on: Deepgram with the speakerDiarizationV1 flag
+    // (set where the Deepgram instance is built, above), and the Natively relay
+    // when it sends a speaker. A blanket `setDiarize(true)` used to sit here; no
+    // provider has that method (Deepgram's is setDiarization), so it never ran,
+    // and switching diarization on for every Deepgram meeting would change the
+    // live path and its cost without the flag's opt-in. Removed 2026-10-15.
 
     // Auto Answer V3 provider endpoints (Deepgram speech_final / UtteranceEnd,
     // Soniox <end>, OpenAI server VAD). Interviewer channel only; additive
@@ -3750,6 +3883,10 @@ export class AppState {
       if (!this.isMeetingActive && !this._isDraining) {
         return;
       }
+
+      if (this.isMeetingActive) this.meetingAutoStop.noteTranscript(speaker, segment.text, segment.isFinal);
+      // Any text proves the connection works: closes an open outage (sttGapRecovery.ts).
+      this.sttGap.onTranscript(gapSource, segment.text, segment.isFinal);
 
       this.intelligenceManager.handleTranscript({
         speaker: speaker,
@@ -3904,7 +4041,9 @@ export class AppState {
         return;
       }
 
-      // Retryable: network drop, timeout, 5xx, 400, 429, WS drop
+      // Retryable: network drop, timeout, 5xx, 400, 429, WS drop. The audio
+      // from here until text comes back is kept for recovery (sttGapRecovery.ts).
+      this.sttGap.onProviderError(gapSource);
       _consecutiveErrors++;
       const maxErrors = 5;
 
@@ -4053,6 +4192,8 @@ export class AppState {
   private wireSystemCapture(capture: SystemAudioCapture, label: string = ''): void {
     const prefix = label ? `[Main] ${label} ` : '[Main] ';
     let chunkCount = 0;
+    // Rate of the PCM this capture emits, for gap recovery (read once, then on change).
+    let gapRate = 0;
     // Watchdog: if no chunks arrive within 8s of capture start, the most likely
     // causes are (a) Screen Recording permission was revoked between the TCC
     // check and SCK init, (b) the meeting app routes audio to a device the
@@ -4211,12 +4352,18 @@ export class AppState {
       // transcript (F-102).
       if (this.systemAudioCapture === capture) {
         this.googleSTT?.write(chunk);
+        // Gap recovery's ring buffer (sttGapRecovery.ts): a copy, nothing waits.
+        if (this.sttGap.isActive()) {
+          if (!gapRate) gapRate = capture.getSampleRate();
+          this.sttGap.onAudio('system', chunk, gapRate);
+        }
         // Smart Turn ring buffer (256 KB, interviewer channel only). Cheap
         // int16 copy; skipped entirely while Auto Answer is off.
       }
     });
     capture.on('sample_rate_changed', (rate: number) => {
       console.log(`${prefix}SystemAudioCapture rate updated dynamically to ${rate}Hz`);
+      gapRate = rate;
       if (this.systemAudioCapture === capture) {
         this.googleSTT?.setSampleRate(rate);
       }
@@ -4260,6 +4407,8 @@ export class AppState {
   private wireMicCapture(capture: MicrophoneCapture, label: string = ''): void {
     const prefix = label ? `[Main] ${label} ` : '[Main] ';
     let chunkCount = 0;
+    // Rate of the PCM this capture emits, for gap recovery (read once, then on change).
+    let gapRate = 0;
     // Mirror of the system-audio stuck watchdog: if the cpal callback never
     // produces samples within STUCK_WATCHDOG_MS of start (USB mic that
     // disappears on open, exclusive-mode contention with another app,
@@ -4427,10 +4576,16 @@ export class AppState {
       // feed the user STT socket.
       if (this.microphoneCapture === capture) {
         this.googleSTT_User?.write(chunk);
+        // Gap recovery's ring buffer (sttGapRecovery.ts): a copy, nothing waits.
+        if (this.sttGap.isActive()) {
+          if (!gapRate) gapRate = capture.getSampleRate();
+          this.sttGap.onAudio('mic', chunk, gapRate);
+        }
       }
     });
     capture.on('sample_rate_changed', (rate: number) => {
       console.log(`${prefix}MicrophoneCapture rate updated dynamically to ${rate}Hz`);
+      gapRate = rate;
       if (this.microphoneCapture === capture) {
         this.googleSTT_User?.setSampleRate(rate);
       }
@@ -6656,6 +6811,25 @@ export class AppState {
     this.autoAnswerUsage.meetingStarted();
     // The user's name as a transcription hint, before any STT connects (sttContextTerms.ts).
     try { setSttContextTerms(nameTerms(this.currentUserName())); } catch { /* a hint, never a blocker */ }
+    // The user's dictionary (Settings > Audio) beside it, for every provider with a vocabulary input.
+    try { setSttDictionaryTerms(getUserDictionary()); } catch { /* a hint, never a blocker */ }
+    // The transcript goes to disk as it grows, so a quit or crash mid-meeting
+    // is recovered at the next launch (services/meeting/LiveMeetingJournal.ts).
+    try { this.intelligenceManager.beginLiveMeeting(); } catch (e) { console.warn('[Main] live meeting journal unavailable:', (e as Error)?.message); }
+    // The notes window's page belongs to this meeting now; someone who keeps
+    // the window open gets it back, without it taking focus.
+    try {
+      this.liveNotes.meetingStarted();
+      this.notesWindowHelper.reopenForMeeting();
+    } catch (e) { console.warn('[Main] notes window not reopened:', (e as Error)?.message); }
+    this.meetingAutoStop.start({ ambientChat: this._ambientChatEnabled, undetectable: this.isUndetectable });
+    // Gap recovery for cloud transcription; a local model has no connection to lose.
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      const provider = CredentialsManager.getInstance().getSttProvider();
+      if (provider !== 'none' && !LOCAL_STT_PROVIDERS.has(provider)) this.sttGap.startMeeting();
+      else this.sttGap.endMeeting();
+    } catch { /* recovery is extra; the meeting runs without it */ }
     try { require('./services/FunnelTelemetry').funnelTelemetry.meetingStarted(this.intelligenceManager.getAnswerCount()); } catch { /* analytics never blocks a meeting */ }
     // No AI set up: the free trial starts by itself. Below the funnel line on
     // purpose, so `meeting_started.ai` still says what the meeting began with.
@@ -6668,6 +6842,7 @@ export class AppState {
       // follow-up recipients). Decides at once from the cached list; never
       // delays the start. See services/calendar/SessionCalendarLinker.ts.
       linkSessionToCalendar(metadata, () => this.isMeetingActive);
+      this.startDesktopCallSpeakers(metadata, meetingGeneration);
     }
     // Every meeting gets its own conversation history, whether or not a mode
     // is active (the dynamic-action session id below exists only WITH a mode,
@@ -6888,8 +7063,55 @@ export class AppState {
     return this._meetingLifecycle.stop(() => this.endMeetingTransition());
   }
 
+  /**
+   * Who speaks in a Zoom / Teams desktop call: read from the app's window while
+   * the meeting runs, so the saved transcript names the other side's lines (the
+   * same roster the Meet page fills). Only with "Speaker labels" on and audio
+   * being captured. The session takes the call's key when no meeting tab gave
+   * one. macOS reads need the Accessibility permission, never asked for here.
+   */
+  private startDesktopCallSpeakers(metadata: any, generation: number): void {
+    this.desktopCallSpeakers?.stop();
+    this.desktopCallSpeakers = null;
+    if (this._ambientChatEnabled || !isIntelligenceFlagEnabled('speakerLabelsV1')) return;
+    try {
+      const native = loadNativeModule() as any;
+      const dumpDir = process.env.NATIVELY_DUMP_CALL_TREE === '1' && !app.isPackaged
+        ? path.join(app.getPath('userData'), 'call-tree-dumps')
+        : null;
+      const speakers = new DesktopCallSpeakers({
+        platform: process.platform,
+        native,
+        self: { pid: process.pid, execPath: process.execPath },
+        selfNames: () => {
+          const name = this.currentUserName();
+          return name ? [name] : [];
+        },
+        onCall: (key) => {
+          if (generation !== this._meetingGeneration || !this.isMeetingActive) return;
+          if (metadata && typeof metadata === 'object' && !metadata.callKey) metadata.callKey = key;
+        },
+        // Development only: records the trees a real call produces, to pin as
+        // test fixtures (they hold participants' names; never in a packaged build).
+        dump: dumpDir
+          ? (appName, platform, tree) => {
+              fs.mkdirSync(dumpDir, { recursive: true });
+              fs.writeFileSync(path.join(dumpDir, `${appName}-${platform}-${Date.now()}.json`), JSON.stringify(tree, null, 1));
+            }
+          : undefined,
+      });
+      speakers.start();
+      this.desktopCallSpeakers = speakers;
+    } catch (e: any) {
+      console.warn('[Main] desktop call names unavailable:', e?.message);
+    }
+  }
+
   private async endMeetingTransition(): Promise<void> {
     cancelSessionCalendarLink();
+    // No more speaking reports once Stop is pressed; the save closes what was open.
+    this.desktopCallSpeakers?.stop();
+    this.desktopCallSpeakers = null;
     // Idempotency guard: a double-click on Stop, or a Stop racing with a
     // global-shortcut reset, can deliver two endMeeting() calls within ms of
     // each other. Without this, both invocations would run the synchronous
@@ -6905,6 +7127,7 @@ export class AppState {
 
     this.cancelAutoAnswer();
     this.autoAnswerUsage.meetingEnded();
+    this.meetingAutoStop.end();
     try { require('./services/FunnelTelemetry').funnelTelemetry.meetingEnded(this.intelligenceManager.getAnswerCount()); } catch { /* analytics never blocks a meeting */ }
     // Cover the window between here and `_pendingTeardown` assignment, during which
     // the new in-flight-audio-init await below yields the event loop.
@@ -6978,6 +7201,7 @@ export class AppState {
     this.isMeetingActive = false;
     this._meetingGeneration++;
     this._isDraining = true;
+    this.sttGap.endMeeting();
     this.broadcastMeetingState();
 
     // ─── ABORT + AWAIT IN-FLIGHT AUDIO INIT (before any capture teardown) ───
@@ -7105,6 +7329,8 @@ export class AppState {
         //    intelligenceManager.stopMeeting itself runs LLM in background.
         const stopResult = await this.intelligenceManager.stopMeeting();
         const meetingId = stopResult?.meetingId ?? null;
+        // The notes window says its notes are going into the meeting notes.
+        try { this.liveNotes.meetingEnded(meetingId); } catch { /* the window keeps its text */ }
 
         // 5. RAG cleanup — same logic as before, just inside the BG IIFE.
         if (meetingId) {
@@ -7531,6 +7757,11 @@ export class AppState {
     return AppState.instance;
   }
 
+  /** The notes window's text and phase (services/meeting/liveNotesSession.ts). */
+  public getLiveNotes(): LiveNotesSession {
+    return this.liveNotes;
+  }
+
   // Getters and Setters
   public getMainWindow(): BrowserWindow | null {
     return this.windowHelper.getMainWindow()
@@ -7695,6 +7926,7 @@ export class AppState {
       windowMode: this.windowHelper.getCurrentWindowMode(),
       wasSettingsVisible: !!settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isVisible(),
       wasModelSelectorVisible: !!modelSelectorWindow && !modelSelectorWindow.isDestroyed() && modelSelectorWindow.isVisible(),
+      wasNotesVisible: this.notesWindowHelper.isVisible(),
       overlayBounds: this.windowHelper.getLastOverlayBounds(),
       overlayDisplayId: this.windowHelper.getLastOverlayDisplayId(),
       restoreWithoutFocus: process.platform === 'darwin' || !restoreFocus,
@@ -7752,6 +7984,10 @@ export class AppState {
   }
 
   private hideWindowsForScreenshot(session: ScreenshotCaptureSession): void {
+    if (session.wasNotesVisible) {
+      this.notesWindowHelper.hide(false);
+    }
+
     if (session.wasModelSelectorVisible) {
       this.modelSelectorWindowHelper.hideWindow();
     }
@@ -7791,6 +8027,10 @@ export class AppState {
         const { x, y } = modelSelectorWindow.getBounds();
         this.modelSelectorWindowHelper.showWindow(x, y, { activate });
       }
+    }
+
+    if (session.wasNotesVisible) {
+      this.notesWindowHelper.open({ activate: false });
     }
 
     // LAST, and the ordering is forced in BOTH directions:
@@ -8145,6 +8385,7 @@ export class AppState {
     this.settingsWindowHelper.setContentProtection(state)
     this.modelSelectorWindowHelper.setContentProtection(state)
     this.cropperWindowHelper.setContentProtection(state)
+    this.notesWindowHelper.setContentProtection(state)
     foreignWindowCaptureGuard?.sync(state)
 
     // Content-protection re-assertion loop (Final Round StealthService pattern):
@@ -8159,6 +8400,7 @@ export class AppState {
       this.windowHelper.syncOverlayInteractionPolicy();
       this.settingsWindowHelper.syncActivationPolicy();
       this.modelSelectorWindowHelper.syncActivationPolicy();
+      this.notesWindowHelper.syncActivationPolicy();
       // The tray must follow undetectable state on Windows too. On macOS the
       // _enforceDockState loop hides the tray alongside the dock and restores
       // both on the way out — but that loop returns immediately off darwin, and
@@ -8412,6 +8654,7 @@ export class AppState {
     this.settingsWindowHelper.reassertContentProtection();
     this.modelSelectorWindowHelper.reassertContentProtection();
     this.cropperWindowHelper.reassertContentProtection();
+    this.notesWindowHelper.reassertContentProtection();
   }
 
   public getUndetectable(): boolean {
@@ -8698,6 +8941,7 @@ export class AppState {
       { label: 'settings', win: this.settingsWindowHelper.getSettingsWindow() },
       { label: 'model-selector', win: this.modelSelectorWindowHelper.getWindow() },
       { label: 'cropper', win: this.cropperWindowHelper.getCropperWindow() },
+      { label: 'notes', win: this.notesWindowHelper.getWindow() },
     ];
   }
 
@@ -8829,6 +9073,15 @@ export class AppState {
       this.sendToWindow(cropperWin, 'disguise-changed', mode);
     }
 
+    // The notes window is created lazily, maybe after the last disguise apply.
+    const notesWin = this.notesWindowHelper.getWindow();
+    if (notesWin) {
+      this.guardWindowTitle(notesWin);
+      this.guardWindowProtection(notesWin);
+      notesWin.setTitle(appName.trim());
+      this.sendToWindow(notesWin, 'disguise-changed', mode);
+    }
+
     // Cancel any stale forceUpdate timeouts from previous disguise changes
     for (const timer of this._disguiseTimers) {
       clearTimeout(timer);
@@ -8870,6 +9123,7 @@ export class AppState {
       this.windowHelper.getOverlayWindow(),
       this.settingsWindowHelper.getSettingsWindow(),
       this.modelSelectorWindowHelper.getWindow(),
+      this.notesWindowHelper.getWindow(),
     ];
     const sent = new Set<number>();
     for (const win of windows) {
@@ -9780,8 +10034,26 @@ if (process.env.THINKING_MATRIX === '1') {
     },
     requestStart: requestMeetingStart,
     notify: electronNotify,
+    lastTimeLine: (event) => require('./services/meeting/recurringMeetings').lastTimeNotificationLine(event),
   });
   registerMeetingDetection(meetingDetector, PhoneMirrorService.getInstance());
+
+  // A meeting still running when the app quits (or Windows ends the session,
+  // or macOS shuts down) is written to disk for the next launch to recover and
+  // write notes for; no notes are generated during the quit itself
+  // (services/meeting/LiveMeetingJournal.ts). Between those moments the
+  // transcript reaches disk at least every 15 s anyway.
+  registerQuitFlush({
+    platform: process.platform,
+    app: app as any,
+    powerMonitor: (() => { try { return require('electron').powerMonitor; } catch { return null; } })(),
+    existingWindows: () => BrowserWindow.getAllWindows() as any,
+    flush: (endedBy) => {
+      // Notes typed after a meeting ended reach that meeting's copy too.
+      try { appState.getLiveNotes().flushEndedSave(); } catch { /* best effort */ }
+      return appState.getIntelligenceManager().flushLiveMeeting(endedBy);
+    },
+  });
   meetingDetector.setEnabled(meetingDetectionOn);
 
   // One-time macOS screen recording permission prompt.
@@ -10365,6 +10637,7 @@ if (process.env.THINKING_MATRIX === '1') {
     // A meeting still running when the app quits never reaches endMeeting, so
     // its funnel end is recorded here: written to the queue file synchronously
     // and sent at the next launch. Does nothing when no meeting is running.
+    // (Its transcript is written for recovery by registerQuitFlush, above.)
     try { require('./services/FunnelTelemetry').funnelTelemetry.meetingEnded(appState.getIntelligenceManager().getAnswerCount()); } catch { /* analytics never blocks a quit */ }
 
     // 2026-07-08: TRUNCATE the SQLite WAL file early in shutdown.

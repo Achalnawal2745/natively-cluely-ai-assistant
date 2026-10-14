@@ -36,6 +36,12 @@ export interface NoteBullet {
   text: string;
   evidence?: EvidenceRef[];
   confidence?: Confidence;
+  /**
+   * The line restates or fills in a point the user typed in their own notes
+   * during the meeting (2026-10-15). Absent: written from the transcript only.
+   * The meeting page shows these lines in the primary text colour.
+   */
+  fromUserNotes?: boolean;
 }
 
 export interface MeetingNoteSection {
@@ -52,6 +58,8 @@ export interface DecisionItem {
   timestampMs?: number;
   evidence?: EvidenceRef[];
   confidence: Confidence;
+  /** From a point in the user's own notes (see NoteBullet.fromUserNotes). */
+  fromUserNotes?: boolean;
 }
 
 export interface ActionItem {
@@ -64,6 +72,12 @@ export interface ActionItem {
   evidence?: EvidenceRef[];
   confidence: Confidence;
   status?: 'open' | 'done' | 'deferred';
+  /** Also in the previous meeting of this series (2026-10-15; absent on older notes). */
+  carriedOver?: boolean;
+  /** Whose it is: the user's side ("ours") or the other side of the call ("theirs"). */
+  party?: 'ours' | 'theirs';
+  /** From a point in the user's own notes (see NoteBullet.fromUserNotes). */
+  fromUserNotes?: boolean;
 }
 
 export interface QuestionItem {
@@ -73,6 +87,10 @@ export interface QuestionItem {
   status: 'open' | 'answered' | 'deferred';
   evidence?: EvidenceRef[];
   confidence?: Confidence;
+  /** Also open in the previous meeting of this series (2026-10-15). */
+  carriedOver?: boolean;
+  /** From a point in the user's own notes (see NoteBullet.fromUserNotes). */
+  fromUserNotes?: boolean;
 }
 
 export interface RiskItem {
@@ -561,6 +579,7 @@ export function sanitizeDecisions(value: unknown, max: number, t?: Track): Decis
       ...(ts !== undefined ? { timestampMs: ts } : {}),
       evidence: sanitizeEvidenceArray(item?.evidence, 3),
       confidence: normalizeConfidence(item?.confidence),
+      ...(item?.fromUserNotes === true ? { fromUserNotes: true } : {}),
     } as DecisionItem;
   }).filter((d: DecisionItem) => d.text), max);
 }
@@ -577,6 +596,9 @@ export function sanitizeActions(value: unknown, max: number, t?: Track): ActionI
       evidence: sanitizeEvidenceArray(item?.evidence, 3),
       confidence: normalizeConfidence(item?.confidence),
       ...(VALID_ACTION_STATUS.has(item?.status) ? { status: item.status } : {}),
+      ...(item?.carriedOver === true ? { carriedOver: true } : {}),
+      ...(item?.party === 'ours' || item?.party === 'theirs' ? { party: item.party } : {}),
+      ...(item?.fromUserNotes === true ? { fromUserNotes: true } : {}),
     } as ActionItem;
   }).filter((a: ActionItem) => a.text), max);
 }
@@ -588,6 +610,8 @@ export function sanitizeQuestions(value: unknown, max: number): QuestionItem[] {
     status: VALID_QUESTION_STATUS.has(item?.status) ? item.status : 'open',
     evidence: sanitizeEvidenceArray(item?.evidence, 3),
     ...(item?.confidence ? { confidence: normalizeConfidence(item.confidence) } : {}),
+    ...(item?.carriedOver === true ? { carriedOver: true } : {}),
+    ...(item?.fromUserNotes === true ? { fromUserNotes: true } : {}),
   } as QuestionItem)).filter((q: QuestionItem) => q.text), max);
 }
 
@@ -608,6 +632,7 @@ function sanitizeBullets(value: unknown, max: number): NoteBullet[] {
       text: cleanNoteText(text),
       evidence: sanitizeEvidenceArray(item?.evidence, 3),
       ...(item?.confidence ? { confidence: normalizeConfidence(item.confidence) } : {}),
+      ...(item?.fromUserNotes === true ? { fromUserNotes: true } : {}),
     } as NoteBullet;
   }).filter((b: NoteBullet) => b.text).slice(0, max);
 }

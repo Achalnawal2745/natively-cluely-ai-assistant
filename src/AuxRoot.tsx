@@ -38,6 +38,7 @@ import { getMeetingInterfaceTheme, type MeetingInterfaceTheme } from './lib/meet
 const CropperWindow = React.lazy(() => import('./components/Cropper'));
 const SettingsPopup = React.lazy(() => import('./components/SettingsPopup'));
 const ModelSelectorWindow = React.lazy(() => import('./components/ModelSelectorWindow'));
+const NotesWindow = React.lazy(() => import('./components/NotesWindow'));
 
 /** Routes this root can serve. Keep in sync with LIGHT_ROUTES in main.tsx. */
 export type AuxRoute =
@@ -45,7 +46,8 @@ export type AuxRoute =
   | 'overlay-toggle'
   | 'cropper'
   | 'settings'
-  | 'model-selector';
+  | 'model-selector'
+  | 'notes';
 
 /** One client for this renderer, mirroring App's module-level instance. */
 const queryClient = new QueryClient();
@@ -118,6 +120,14 @@ const AuxRoot: React.FC<{ route: AuxRoute }> = ({ route }) => {
     return (
       <PanelShell context="ModelSelector" className="h-full min-h-0 w-full overflow-hidden">
         <ModelSelectorWindow />
+      </PanelShell>
+    );
+  }
+
+  if (route === 'notes') {
+    return (
+      <PanelShell context="NotesWindow" className="h-full min-h-0 w-full overflow-hidden">
+        <NotesWindow />
       </PanelShell>
     );
   }

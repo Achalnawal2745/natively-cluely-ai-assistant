@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { AlertCircle, ArrowUpRight, CalendarRange, Check, Info, Loader2, RefreshCw, Video } from 'lucide-react';
+import { AlertCircle, ArrowUpRight, CalendarDays, CalendarRange, Check, Info, Link2, Loader2, PhoneOff, RefreshCw, Video } from 'lucide-react';
 import { useLanguage, useT } from '../../i18n';
 import { useResolvedTheme } from '../../hooks/useResolvedTheme';
 import { Collapse, CollapseItem, Presence, SettingsMotionReady, SwapLabel, useMotionReadyAfter, useSettledFlag } from './SettingsRow';
 import { SettingsToggle } from './SettingsToggle';
 import { readCalendarSnapshot, unfinishedEvents, writeCalendarSnapshot } from '../../lib/calendarSnapshot.mjs';
 import './CalendarSettings.css';
+import { isMac } from '../../utils/platformUtils';
 
 /*
   Settings › Calendar, in the language of Profile Intelligence and the Modes
@@ -24,6 +25,16 @@ interface CalendarStatus {
   connected: boolean;
   email?: string;
   name?: string;
+}
+
+/** A calendar source as main reports it (CalendarManager.getSourceStatuses). */
+type SourceId = 'google' | 'outlook' | 'apple' | 'ics';
+interface CalendarSource {
+  id: SourceId;
+  state: 'connected' | 'disconnected' | 'unconfigured' | 'notAllowed';
+  account?: string;
+  detail?: string;
+  lastRefresh?: { at: number; ok: boolean };
 }
 
 interface SyncedCalendar {
@@ -143,7 +154,43 @@ const DigitPop: React.FC<{ value: number }> = ({ value }) => {
   );
 };
 
+/** Microsoft's four squares: the account is a Microsoft one (Outlook, Microsoft 365). */
+const MicrosoftMark: React.FC<{ size?: number }> = ({ size = 16 }) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true" style={{ flexShrink: 0 }}>
+    <path fill="#F25022" d="M2 2h9.5v9.5H2z" />
+    <path fill="#7FBA00" d="M12.5 2H22v9.5h-9.5z" />
+    <path fill="#00A4EF" d="M2 12.5h9.5V22H2z" />
+    <path fill="#FFB900" d="M12.5 12.5H22V22h-9.5z" />
+  </svg>
+);
+
 const GOOGLE_CALENDAR_URL = 'https://calendar.google.com/';
+// macOS only: the Apple Calendar row never exists elsewhere, and this scheme opens nothing there.
+const APPLE_CALENDAR_PRIVACY_URL: string | null = isMac ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars' : null;
+
+/** What each source row says about itself while it is not connected. */
+const SOURCE_COPY: Record<SourceId, { title: string; hint: string }> = {
+  google: { title: 'Google Calendar', hint: 'Gmail or Google Workspace' },
+  outlook: { title: 'Outlook', hint: 'Microsoft 365 or Outlook.com' },
+  apple: { title: 'Apple Calendar', hint: 'Every calendar in the Calendar app' },
+  ics: { title: 'Calendar link', hint: 'A private .ics address from any calendar' },
+};
+
+const SourceMark: React.FC<{ id: SourceId; size?: number }> = ({ id, size = 16 }) => {
+  if (id === 'google') return <GoogleMark size={size} />;
+  if (id === 'outlook') return <MicrosoftMark size={size} />;
+  if (id === 'apple') return <CalendarDays size={size} style={{ flexShrink: 0 }} aria-hidden="true" />;
+  return <Link2 size={size} style={{ flexShrink: 0 }} aria-hidden="true" />;
+};
+
+/** "Updated just now", "Updated 4 min ago", or the plain word for a refresh that failed. */
+function refreshLabel(last: CalendarSource['lastRefresh'], now: number, lang: string, t: (s: string) => string): string | null {
+  if (!last) return null;
+  if (!last.ok) return t('Couldn’t update');
+  const mins = Math.max(0, Math.round((now - last.at) / 60_000));
+  if (mins < 1) return t('Updated just now');
+  return `${t('Updated')} ${new Intl.RelativeTimeFormat(lang, { numeric: 'auto', style: 'short' }).format(-mins, 'minute')}`;
+}
 
 export const CalendarSettings: React.FC = () => {
   const t = useT();
@@ -163,7 +210,12 @@ export const CalendarSettings: React.FC = () => {
     if (status === null) return;
     writeCalendarSnapshot({ status, events, calendars: status.connected ? calendars : null });
   }, [status, events, calendars]);
-  const [busy, setBusy] = useState<'connecting' | 'disconnecting' | null>(null);
+  // Which source is connecting or disconnecting, if any (one at a time).
+  const [busy, setBusy] = useState<{ id: SourceId; kind: 'connecting' | 'disconnecting' } | null>(null);
+  // Every source this computer offers (Apple Calendar on macOS only: main leaves it out elsewhere).
+  const [sources, setSources] = useState<CalendarSource[] | null>(null);
+  // The calendar link being typed, or null while its field is closed.
+  const [icsDraft, setIcsDraft] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshTurns, setRefreshTurns] = useState(0);
   // A manual Refresh ends on "Up to date" with a check for a moment, so a click
@@ -174,14 +226,15 @@ export const CalendarSettings: React.FC = () => {
     const timer = window.setTimeout(() => setRefreshed(false), 1600);
     return () => window.clearTimeout(timer);
   }, [refreshed]);
-  const [error, setError] = useState<string | null>(null);
-  // Disconnecting throws away the Google sign-in, so the first click asks, in
-  // the row itself (the pill turns red, the line asks, Cancel appears), and the
-  // second disconnects. The question lapses after a few seconds on its own.
-  const [confirming, setConfirming] = useState(false);
+  // A refused connect, per source, in the sentence main wrote (never a code).
+  const [errors, setErrors] = useState<Partial<Record<SourceId, string>>>({});
+  // Disconnecting throws away the sign-in (or the link), so the first click
+  // asks, in the row itself (the pill turns red, the line asks, Cancel
+  // appears), and the second disconnects. The question lapses on its own.
+  const [confirming, setConfirming] = useState<SourceId | null>(null);
   useEffect(() => {
     if (!confirming) return;
-    const timer = window.setTimeout(() => setConfirming(false), 6000);
+    const timer = window.setTimeout(() => setConfirming(null), 6000);
     return () => window.clearTimeout(timer);
   }, [confirming]);
 
@@ -235,6 +288,27 @@ export const CalendarSettings: React.FC = () => {
       .catch(() => setDetect(was));
   }, []);
 
+  // End meetings automatically when the call ends (main's MeetingEndDetector).
+  // Same save-first pattern as Detect meetings.
+  const [autoStop, setAutoStop] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    window.electronAPI?.getMeetingAutoStopEnabled?.()
+      .then((on) => { if (live) setAutoStop(on !== false); })
+      .catch(() => { if (live) setAutoStop(true); });
+    return () => { live = false; };
+  }, []);
+  const autoStopRef = useRef(autoStop);
+  autoStopRef.current = autoStop;
+  const toggleAutoStop = useCallback(() => {
+    const was = autoStopRef.current;
+    if (was === null) return;
+    setAutoStop(!was);
+    window.electronAPI?.setMeetingAutoStopEnabled?.(!was)
+      .then((r) => { if (!r?.success) setAutoStop(was); })
+      .catch(() => setAutoStop(was));
+  }, []);
+
   // Stealth-gated calendar polling: no calendar egress while undetectable
   const [isDetectable, setIsDetectable] = useState(true);
   useEffect(() => {
@@ -262,65 +336,114 @@ export const CalendarSettings: React.FC = () => {
     return () => { live = false; };
   }, []);
 
+  // Where every source stands. Asked on open, after each connect or
+  // disconnect, with each minute's refresh (the "Updated" line), and when the
+  // window comes back (from System Settings, after allowing Calendars).
+  const loadSources = useCallback(() => window.electronAPI?.getCalendarSources?.()
+    .then((list) => { if (Array.isArray(list)) setSources(list); })
+    .catch(() => {}), []);
+  useEffect(() => {
+    void loadSources();
+    const onFocus = () => { void loadSources(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [loadSources]);
+
   // Connected or disconnected elsewhere (the Launcher's Connect, a grant revoked
   // during a refresh): the pane follows.
   useEffect(() => window.electronAPI?.onCalendarConnectionChanged?.((isConnected) => {
     window.electronAPI?.getCalendarStatus?.()
       .then((s) => setStatus(s ?? { connected: isConnected }))
       .catch(() => setStatus({ connected: isConnected }));
+    void loadSources();
     if (!isConnected) {
-      setConfirming(false);
+      setConfirming(null);
       setEvents(null);
       setCalendars([]);
     }
-  }), []);
+  }), [loadSources]);
 
   // While connected: the next 7 days, every minute (the Launcher's cadence), and
   // the calendars they come from. Stealth-gated: no calendar egress while undetectable.
   const loadEvents = useCallback(() => window.electronAPI?.getUpcomingEvents?.()
     .then((list) => setEvents(list || []))
-    .catch((err) => console.error('[CalendarSettings] Failed to fetch upcoming events:', err)), []);
+    .catch((err) => console.error('[CalendarSettings] Failed to fetch upcoming events:', err))
+    .finally(() => { void loadSources(); }), [loadSources]);
   useEffect(() => {
     if (!connected || !isDetectable) return;
     let live = true;
     void loadEvents();
     const interval = window.setInterval(() => { if (live && isDetectable) void loadEvents(); }, 60_000);
-    window.electronAPI?.getSyncedCalendars?.()
-      .then((list) => { if (live) setCalendars(list || []); })
-      .catch((err) => console.error('[CalendarSettings] Failed to fetch synced calendars:', err));
     return () => { live = false; window.clearInterval(interval); };
   }, [connected, loadEvents]);
 
-  const connect = async () => {
-    setBusy('connecting');
-    setError(null);
+  // The calendars ticked in Google Calendar: only Google has that list.
+  const googleConnected = sources
+    ? sources.some((src) => src.id === 'google' && src.state === 'connected')
+    : connected;
+  useEffect(() => {
+    if (!googleConnected || !isDetectable) {
+      if (!googleConnected) setCalendars([]);
+      return;
+    }
+    let live = true;
+    window.electronAPI?.getSyncedCalendars?.()
+      .then((list) => { if (live) setCalendars(list || []); })
+      .catch((err) => console.error('[CalendarSettings] Failed to fetch synced calendars:', err));
+    return () => { live = false; };
+  }, [googleConnected]);
+
+  const connectSource = async (id: SourceId) => {
+    // The calendar link first opens its field; Add then connects with what was pasted.
+    if (id === 'ics' && icsDraft === null) {
+      setIcsDraft('');
+      return;
+    }
+    setBusy({ id, kind: 'connecting' });
+    setErrors((e) => ({ ...e, [id]: undefined }));
     try {
-      const res = await window.electronAPI.calendarConnect();
-      if (res.success) setStatus(await window.electronAPI.getCalendarStatus());
-      else if (res.error) setError(res.error);
+      // Google keeps its own path (the Launcher's Connect uses it too).
+      const res = id === 'google'
+        ? await window.electronAPI.calendarConnect()
+        : await window.electronAPI.calendarSourceConnect?.(id, id === 'ics' ? (icsDraft ?? '') : undefined);
+      if (res?.success) {
+        if (id === 'ics') setIcsDraft(null);
+        setStatus(await window.electronAPI.getCalendarStatus());
+      } else {
+        setErrors((e) => ({ ...e, [id]: res?.error || t('Natively couldn’t connect this calendar. Try again in a minute.') }));
+      }
     } catch (err: any) {
-      setError(err?.message || t('Could not connect to Google Calendar.'));
+      console.error('[CalendarSettings] Connect failed:', err);
+      setErrors((e) => ({ ...e, [id]: t('Natively couldn’t connect this calendar. Try again in a minute.') }));
     } finally {
       setBusy(null);
+      void loadSources();
     }
   };
 
-  const disconnect = async () => {
-    if (!confirming) {
-      setConfirming(true);
+  const disconnectSource = async (id: SourceId) => {
+    if (confirming !== id) {
+      setConfirming(id);
       return;
     }
-    setConfirming(false);
-    setBusy('disconnecting');
+    setConfirming(null);
+    setBusy({ id, kind: 'disconnecting' });
     try {
-      await window.electronAPI.calendarDisconnect();
-      setStatus(await window.electronAPI.getCalendarStatus());
-      setEvents(null);
-      setCalendars([]);
+      if (id === 'google') await window.electronAPI.calendarDisconnect();
+      else await window.electronAPI.calendarSourceDisconnect?.(id);
+      const next = await window.electronAPI.getCalendarStatus();
+      setStatus(next);
+      if (!next?.connected) {
+        setEvents(null);
+        setCalendars([]);
+      } else {
+        void loadEvents();
+      }
     } catch (err) {
       console.error('[CalendarSettings] Disconnect failed:', err);
     } finally {
       setBusy(null);
+      void loadSources();
     }
   };
 
@@ -376,86 +499,133 @@ export const CalendarSettings: React.FC = () => {
   const hasLinks = sorted.some((ev) => !!ev.link);
   const firstMins = sorted.length ? Math.round((new Date(sorted[0].startTime).getTime() - now) / 60_000) : null;
   const next = firstMins === null ? null : nextLabel(firstMins, lang, t);
-  const connectLabel = busy === 'connecting' ? t('Connecting…') : t('Connect Google Calendar');
-  const disconnectLabel = busy === 'disconnecting' ? t('Disconnecting…') : t('Disconnect');
+  // Before main answers (an older main has no list), Google alone, as before.
+  const sourceList: CalendarSource[] = sources ?? [{ id: 'google', state: status?.connected ? 'connected' : 'disconnected', account: status?.name || status?.email, detail: status?.name ? status?.email : undefined }];
 
-  const accountRow = (
-    <div className="cp-file">
-      <GoogleMark />
-      <span className="cp-file-main">
-        <Presence kind="text" id={confirming ? 'ask' : 'account'}>
-          {confirming ? (
-            <span className="cp-row-title" style={{ fontWeight: 500 }}>{t('Disconnect this account from Natively?')}</span>
+  /*
+    One row per calendar source, in the shape of the account row this pane
+    always had (PI's attached-file row): the source's mark, what it is or which
+    account, and one pill. Connected rows say when they last updated and
+    disconnect with the same in-row question. A row that cannot connect here
+    says why in one plain line.
+  */
+  const sourceRow = (src: CalendarSource) => {
+    const copy = SOURCE_COPY[src.id];
+    const isBusy = busy?.id === src.id;
+    const asking = confirming === src.id;
+    const linked = src.state === 'connected';
+    const disconnectLabel = isBusy && busy?.kind === 'disconnecting' ? t('Disconnecting…') : t('Disconnect');
+    const connectLabel = isBusy && busy?.kind === 'connecting' ? t('Connecting…') : src.id === 'ics' && icsDraft !== null ? t('Add') : t('Connect');
+    const refreshed = linked ? refreshLabel(src.lastRefresh, now, lang, t) : null;
+    const note = src.state === 'unconfigured'
+      ? (src.id === 'outlook' ? t('Not available in this version yet') : t('Needs a newer version of Natively'))
+      : src.state === 'notAllowed'
+        ? t('Natively isn’t allowed to read your calendars')
+        : t(copy.hint);
+    return (
+      <div key={src.id}>
+        <div className="cp-file">
+          <SourceMark id={src.id} />
+          <span className="cp-file-main">
+            <Presence kind="text" id={asking ? 'ask' : linked ? 'account' : src.state}>
+              {asking ? (
+                <span className="cp-row-title" style={{ fontWeight: 500 }}>
+                  {src.id === 'ics' ? t('Remove this calendar link from Natively?') : t('Disconnect this account from Natively?')}
+                </span>
+              ) : linked ? (
+                <>
+                  <span className="cp-row-title" style={{ fontWeight: 500 }}>
+                    {src.account || (src.id === 'google' ? t('Google account') : t(copy.title))}
+                  </span>
+                  {src.detail && <span className="cp-row-detail"> · {src.detail}</span>}
+                </>
+              ) : (
+                <>
+                  <span className="cp-row-title" style={{ fontWeight: 500 }}>{t(copy.title)}</span>
+                  <span className="cp-row-detail"> · {note}</span>
+                </>
+              )}
+            </Presence>
+          </span>
+          {refreshed && !asking && <span className="cp-time">{refreshed}</span>}
+          <Presence kind="control" id={asking || (src.id === 'ics' && icsDraft !== null && !linked) ? 'cancel' : null}>
+            <button
+              type="button"
+              className="cp-pill cp-pill--sm"
+              onClick={() => { if (asking) setConfirming(null); else { setIcsDraft(null); setErrors((e) => ({ ...e, ics: undefined })); } }}
+            >
+              {t('Cancel')}
+            </button>
+          </Presence>
+          {linked ? (
+            <button
+              type="button"
+              className={`cp-pill cp-pill--sm cp-pill--danger${asking ? ' is-armed' : ''}`}
+              onClick={() => disconnectSource(src.id)}
+              disabled={busy !== null}
+            >
+              <SwapLabel id={disconnectLabel} sizers={[t('Disconnect'), t('Disconnecting…')]}>{disconnectLabel}</SwapLabel>
+            </button>
+          ) : src.state === 'notAllowed' ? (
+            <button type="button" className="cp-pill cp-pill--sm" onClick={() => { if (APPLE_CALENDAR_PRIVACY_URL) window.electronAPI?.openExternal?.(APPLE_CALENDAR_PRIVACY_URL); }}>
+              {t('Open System Settings')}
+              <ArrowUpRight size={12} className="cp-arrow" />
+            </button>
           ) : (
-            <>
-              <span className="cp-row-title" style={{ fontWeight: 500 }}>{status?.name || status?.email || t('Google account')}</span>
-              {status?.name && status?.email && <span className="cp-row-detail"> · {status.email}</span>}
-            </>
+            <button
+              type="button"
+              className="cp-pill cp-pill--sm"
+              onClick={() => connectSource(src.id)}
+              disabled={busy !== null || src.state === 'unconfigured' || (src.id === 'ics' && icsDraft !== null && !icsDraft.trim())}
+            >
+              <SwapLabel id={connectLabel} sizers={[t('Connect'), t('Connecting…'), t('Add')]}>{connectLabel}</SwapLabel>
+            </button>
           )}
-        </Presence>
-      </span>
-      <Presence kind="control" id={confirming ? 'cancel' : null}>
-        <button type="button" className="cp-pill cp-pill--sm" onClick={() => setConfirming(false)}>{t('Cancel')}</button>
-      </Presence>
-      <button
-        type="button"
-        className={`cp-pill cp-pill--sm cp-pill--danger${confirming ? ' is-armed' : ''}`}
-        onClick={disconnect}
-        disabled={busy !== null}
-      >
-        <SwapLabel id={disconnectLabel} sizers={[t('Disconnect'), t('Disconnecting…')]}>{disconnectLabel}</SwapLabel>
-      </button>
-    </div>
-  );
-  const connectBox = (
-    <div className="cp-empty">
-      <p>{t('Connect Google Calendar to see your next meetings here and in the Launcher.')}</p>
-      <button type="button" className="cp-pill cp-pill--lg" onClick={connect} disabled={busy !== null}>
-        <Presence kind="icon" id={busy === 'connecting' ? 'busy' : 'idle'}>
-          {busy === 'connecting' ? <Loader2 size={14} className="animate-spin" /> : <GoogleMark size={14} />}
-        </Presence>
-        <SwapLabel id={connectLabel} sizers={[t('Connect Google Calendar'), t('Connecting…')]}>{connectLabel}</SwapLabel>
-      </button>
-    </div>
-  );
+        </div>
+        {/* The calendar link's field: paste, then Add. The address is a secret,
+            so it is never shown again once added (the row names the calendar). */}
+        <Collapse open={src.id === 'ics' && !linked && icsDraft !== null}>
+          <div className="pt-2">
+            <input
+              type="url"
+              className="cp-input"
+              value={icsDraft ?? ''}
+              onChange={(e) => setIcsDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && icsDraft?.trim()) void connectSource('ics'); }}
+              placeholder={t('Paste a webcal:// or https:// calendar link')}
+              aria-label={t('Calendar link')}
+              spellCheck={false}
+              autoComplete="off"
+            />
+          </div>
+        </Collapse>
+        <Collapse open={!!errors[src.id] && !linked}>
+          <div className="pt-2">
+            {/* Transitions.dev "Error state shake", the one every Settings alert
+                plays (.t-notice-shake): keyed by the message, so a new refusal
+                shakes again and a re-render does not. */}
+            <div key={errors[src.id] ?? ''} className="cp-notice t-notice-shake" role="alert">
+              <AlertCircle size={14} />
+              <span>{errors[src.id]}</span>
+            </div>
+          </div>
+        </Collapse>
+      </div>
+    );
+  };
 
   return (
     <SettingsMotionReady.Provider value={motionReady}>
       <div className="cal-pane space-y-6 animated fadeIn" data-theme={theme} data-entered={entered || undefined} data-settings-stagger>
-        {/* ── The account ── */}
+        {/* ── The calendars ── */}
         <section>
-          <h3 className="cp-label">{t('Google Calendar')}</h3>
-          <p className="cp-desc">{t('Your next meetings, here and in the Launcher, ready to join.')}</p>
-          {/* Connecting and disconnecting swap these two in place: one folds as
-              the other grows (the shared Collapse, 250ms smooth-out), so the
-              section resizes instead of jumping between a 130px box and a row.
-              Under reduced motion the two folds would overlap as fades (both
-              shown, then one gone: two jumps), so it is one swap with a fade. */}
-          {reduceMotion ? (
-            status === null ? null : (
-              <div key={connected ? 'account' : 'empty'} className="pt-4 cp-fade-in">{connected ? accountRow : connectBox}</div>
-            )
-          ) : (
-            <>
-              <Collapse open={connected} skipStagger>
-                <div className="pt-4">{accountRow}</div>
-              </Collapse>
-              <Collapse open={status !== null && !connected} skipStagger>
-                <div className="pt-4">{connectBox}</div>
-              </Collapse>
-            </>
-          )}
-          <Collapse open={!!error && !connected}>
-            <div className="pt-3">
-              {/* Transitions.dev "Error state shake", the one every Settings alert
-                  plays (.t-notice-shake): keyed by the message, so a new refusal
-                  shakes again and a re-render does not. */}
-              <div key={error ?? ''} className="cp-notice t-notice-shake" role="alert">
-                <AlertCircle size={14} />
-                <span>{error}</span>
-              </div>
+          <h3 className="cp-label">{t('Calendars')}</h3>
+          <p className="cp-desc">{t('Your next meetings, here and in the Launcher, ready to join. A meeting in two calendars shows once.')}</p>
+          {status === null ? null : (
+            <div className={`pt-4 cp-sources${reduceMotion ? ' cp-fade-in' : ''}`}>
+              {sourceList.map(sourceRow)}
             </div>
-          </Collapse>
+          )}
         </section>
 
         {/* ── The next 7 days ── */}
@@ -664,6 +834,27 @@ export const CalendarSettings: React.FC = () => {
             </div>
             <p className="cp-desc" style={{ margin: 0 }}>
               {t('Offers to start Natively when a Zoom, Teams, Meet or Webex call begins.')}
+            </p>
+          </div>
+        </section>
+
+        {/* ── End meetings automatically ── */}
+        <section>
+          <div className="cp-card">
+            <div className="cp-card-header">
+              <span className="cp-card-icon"><PhoneOff size={12} /></span>
+              <h4 className="cp-card-label">{t('End meetings automatically when the call ends')}</h4>
+              <span className="ml-auto flex items-center">
+                <SettingsToggle
+                  checked={!!autoStop}
+                  onChange={toggleAutoStop}
+                  label={t('End meetings automatically when the call ends')}
+                  disabled={autoStop === null}
+                />
+              </span>
+            </div>
+            <p className="cp-desc" style={{ margin: 0 }}>
+              {t('Stops Natively and writes your notes when you leave the call, or after 15 minutes with nothing said.')}
             </p>
           </div>
         </section>

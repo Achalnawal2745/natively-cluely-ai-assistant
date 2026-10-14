@@ -274,6 +274,27 @@
   font-size: 13px;
 }
 
+/* ── The calendar sources: one account row each, 8px apart ── */
+.cp-sources { display: flex; flex-direction: column; gap: 8px; }
+.cp-sources .cp-time { flex-shrink: 0; }
+
+/* The calendar link's field: the account row's border and radius, as a text input. */
+.cp-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border: 1px solid var(--cp-input-border);
+  border-radius: var(--cp-r-lg);
+  background: var(--cp-btn-bg);
+  color: var(--cp-primary);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 150ms var(--cp-ease-out);
+}
+.cp-input::placeholder { color: var(--cp-tertiary); }
+.cp-input:focus { border-color: var(--cp-btn-bg-hover); }
+
 /* ── Not connected: PI's empty upload box ── */
 .cp-empty {
   border: 1px solid var(--cp-input-border);

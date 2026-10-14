@@ -349,6 +349,11 @@ const App: React.FC = () => {
     setIsSettingsOpen(false);
     setLauncherRequest({ kind: 'meeting', id, seq: Date.now() });
   }, []);
+  // The notes window's "Open meeting" after Stop (main sends it to the launcher only).
+  useEffect(() => {
+    const off = window.electronAPI?.onLauncherOpenMeeting?.((id) => { if (id) openLauncherMeeting(id); });
+    return () => { off?.(); };
+  }, [openLauncherMeeting]);
 
   const openModesExclusive = useCallback(() => {
     if (!activeManagerPanel) rememberManagerOpener();

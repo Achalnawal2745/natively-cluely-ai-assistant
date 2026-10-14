@@ -88,8 +88,10 @@ test('IPC and meeting summary logs avoid answer and LLM response snippets', () =
   assert.doesNotMatch(ipc, /console\.log[\s\S]{0,140}result\.substring\(/);
   assert.doesNotMatch(ipc, /console\.log[\s\S]{0,140}getLastAssistantMessage\(\)\?\.substring\(/);
 
-  assert.match(persistence, /LLM summary response received', \{ length: jsonStr\.length \}/);
-  assert.match(persistence, /Failed to parse summary JSON', \{ responseLength: jsonStr\.length, error: e \}/);
+  // 2026-10-15: parsing moved to v2FallbackNotes.parseV2SummaryResponse; the logs
+  // around it still carry lengths only.
+  assert.match(persistence, /LLM summary response received', \{ length: (?:jsonStr|generatedSummary)\.length \}/);
+  assert.match(persistence, /Failed to parse summary JSON', \{ responseLength: (?:jsonStr|generatedSummary)\.length(?:, error: e)? \}/);
   assert.doesNotMatch(persistence, /Raw LLM summary response/);
   assert.doesNotMatch(persistence, /Raw response:', jsonStr\.substring/);
 

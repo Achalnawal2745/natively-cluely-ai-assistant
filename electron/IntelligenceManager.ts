@@ -126,6 +126,15 @@ export class IntelligenceManager extends EventEmitter {
         this.session.setMeetingMetadata(metadata);
     }
 
+    /**
+     * The running session's metadata (title, calendarEvent, callKey…), or null.
+     * Read by the automatic stop (main: meetingAutoStop) for the calendar end,
+     * the call's tab and the speakers' names.
+     */
+    liveMeetingMetadata(): any {
+        return this.session.getMeetingMetadata();
+    }
+
     addTranscript(segment: import('./SessionTracker').TranscriptSegment, skipRefinementCheck: boolean = false): void {
         if (skipRefinementCheck) {
             // Direct add without refinement detection
@@ -134,6 +143,7 @@ export class IntelligenceManager extends EventEmitter {
             // Let the engine handle transcript + refinement detection
             this.engine.handleTranscript(segment, false);
         }
+        if (segment?.final) this.persistence.noteLiveChange(true);
     }
 
     addAssistantMessage(
@@ -221,6 +231,14 @@ export class IntelligenceManager extends EventEmitter {
 
     handleTranscript(segment: import('./SessionTracker').TranscriptSegment): void {
         this.engine.handleTranscript(segment);
+        // The live copy on disk follows finished lines (LiveMeetingJournal: a
+        // timer, never a write on this path).
+        if (segment?.final) this.persistence.noteLiveChange(true);
+    }
+
+    /** A line recovered after a transcription outage, at its original time (SessionTracker.insertRecoveredTranscript). */
+    insertRecoveredTranscript(segment: import('./SessionTracker').TranscriptSegment): boolean {
+        return this.session.insertRecoveredTranscript(segment);
     }
 
     async handleSuggestionTrigger(trigger: import('./SessionTracker').SuggestionTrigger): Promise<void> {
@@ -378,6 +396,24 @@ export class IntelligenceManager extends EventEmitter {
 
     async recoverUnprocessedMeetings(): Promise<void> {
         return this.persistence.recoverUnprocessedMeetings();
+    }
+
+    /** The notes window's text for the running (or next) meeting; Stop passes it to the notes. */
+    setLiveUserNotes(text: string): void {
+        this.persistence.setLiveUserNotes(text);
+    }
+
+    /** A meeting started: its transcript is kept on disk as it grows (LiveMeetingJournal). */
+    beginLiveMeeting(startedAt?: number): string {
+        return this.persistence.beginLiveMeeting(startedAt);
+    }
+
+    /**
+     * Write the running meeting now, synchronously, for the next launch to
+     * recover (quit, the OS ending the session). No notes are written here.
+     */
+    flushLiveMeeting(endedBy: 'quit' | 'os_session_end'): boolean {
+        return this.persistence.flushLiveMeeting(endedBy);
     }
 
     /** Called with the meeting id each time a meeting's notes are saved or regenerated. */

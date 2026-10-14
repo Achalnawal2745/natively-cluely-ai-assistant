@@ -46,6 +46,20 @@ export interface NativeModule {
   // can't say. Optional: a binary without them means no native signals.
   getMicUsers?: () => Array<{ pid?: number; bundleId?: string; path?: string }> | null;
   getVisibleWindows?: () => Array<{ pid: number; owner: string; title: string; path?: string }> | null;
+  // Who speaks in a desktop call (native-module/src/call_tree.rs): the app's
+  // windows as flattened accessibility trees, read on a worker thread. macOS
+  // AX (needs Accessibility; `trusted: false` without it, never a prompt),
+  // Windows UI Automation. Null for a pid that is not a running app or on
+  // another OS. Optional: a binary without it means no desktop call names.
+  readCallTree?: (
+    pid: number,
+    options?: { maxNodes?: number; maxDepth?: number; budgetMs?: number; maxWindows?: number } | null,
+  ) => Promise<{
+    trusted: boolean;
+    truncated: boolean;
+    elapsedMs: number;
+    windows: Array<{ title: string; nodes: Array<{ depth: number; role: string; name: string; description: string; value: string; id: string }> }>;
+  } | null>;
   // Stealth keyboard interception. macOS: CGEventTap. Windows:
   // WH_KEYBOARD_LL low-level hook (native-module/src/keyboard_hook_windows.rs)
   // exposing this IDENTICAL surface. Engaged by StealthKeyboardManager; the

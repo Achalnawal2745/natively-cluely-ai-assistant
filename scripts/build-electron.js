@@ -73,10 +73,22 @@ if (!calendarClientSecret) {
   console.warn(`[build-electron] ${CALENDAR_SECRET_ENV} is not set (env or .env): calendar sync will not connect in this build.`);
 }
 
+// Outlook calendar's Microsoft app registration (a public client: an ID, no
+// secret), baked in the same way. Not a secret, so it may also live in .env.
+// Empty leaves the Outlook row in Settings disabled with a one-line note; see
+// docs/microsoft-calendar-setup.md.
+const { resolveMicrosoftCalendarConfig, MICROSOFT_ID_EXPRESSION, MICROSOFT_TENANT_EXPRESSION } = require('./lib/microsoft-calendar-client.cjs');
+const microsoftCalendar = resolveMicrosoftCalendarConfig(rootDir);
+if (!microsoftCalendar.clientId) {
+  console.warn('[build-electron] MICROSOFT_CALENDAR_CLIENT_ID is not set (env or .env): the Outlook calendar row will be disabled in this build.');
+}
+
 const buildOptions = {
   entryPoints,
   define: {
     [CALENDAR_SECRET_EXPRESSION]: JSON.stringify(calendarClientSecret),
+    [MICROSOFT_ID_EXPRESSION]: JSON.stringify(microsoftCalendar.clientId),
+    [MICROSOFT_TENANT_EXPRESSION]: JSON.stringify(microsoftCalendar.tenant),
   },
   bundle: true,           // resolve all static + dynamic imports so postProcessor
                          // is inlined and the path rewrite works (vs bundle:false

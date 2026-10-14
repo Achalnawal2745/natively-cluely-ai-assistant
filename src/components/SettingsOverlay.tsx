@@ -17,6 +17,7 @@ import { AboutSection } from './AboutSection';
 import { ErrorBoundary } from './ErrorBoundary';
 import { HelpSettings } from './settings/HelpSettings';
 import { AIProvidersSettings, AIP_CSS, AipModelList, AipPassedCheck } from './settings/AIProvidersSettings';
+import { SpeechDictionarySettings } from './settings/SpeechDictionarySettings';
 import { PlansSettings } from './settings/PlansSettings';
 import { PhoneMirrorSettings } from './settings/PhoneMirrorSettings';
 import { RetrievalSettings } from './settings/RetrievalSettings';
@@ -4271,6 +4272,9 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                             )}
                                         </div>
                                     </div>
+
+                                    {/* ── Dictionary Section ── */}
+                                    <SpeechDictionarySettings sttProvider={sttProvider} />
 
                                     {/* ── Audio Configuration Section ── */}
                                     <div>
