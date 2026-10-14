@@ -156,18 +156,31 @@ class TokenEndpointError extends Error {
     }
 }
 
-/** Formats an error into a human-readable reason for the loopback callback page. */
+/**
+ * A connect failure whose message is written for the person signing in. The
+ * callback page and the calendar card in Settings both show it as it is; what
+ * went wrong underneath is its `cause`, for the log.
+ */
+class CalendarConnectError extends Error { }
+
+/**
+ * The reason given for a failed exchange, on the loopback callback page and in
+ * Settings. Only sentences written for people reach either: Natively's own, or
+ * Google's. Anything else ("fetch failed", "invalid_client … (HTTP 400)")
+ * stays in the log.
+ */
 function oauthCallbackErrorReason(err: unknown): string {
+    if (err instanceof CalendarConnectError) return err.message;
     if (err instanceof TokenEndpointError) {
         if (err.code === 'invalid_grant') {
             return 'Google didn’t accept the sign-in code. It may have expired.';
         }
-        return describeOAuthError(err.code, err.description);
+        // Google answered: its own sentence when it sent one. A bare code
+        // ("unauthorized_client") or status is for the log, and the connection is not at fault.
+        return err.description?.slice(0, 300) || 'Google couldn’t finish the sign-in. Try again in a minute.';
     }
-    if (err instanceof Error && err.message) {
-        return err.message;
-    }
-    return 'Google didn’t accept the sign-in code. It may have expired.';
+    // No answer from Google at all: offline, or the request timed out.
+    return 'Natively couldn’t finish signing in. Check your connection and try again.';
 }
 
 /** POSTs a form to Google's token endpoint and returns the JSON body, or throws TokenEndpointError. */
@@ -180,7 +193,16 @@ async function postTokenEndpoint(form: Record<string, string>): Promise<any> {
     });
     const body = await response.json().catch(() => ({} as any));
     if (!response.ok) {
-        throw new TokenEndpointError(response.status, body.error || 'token_request_failed', body.error_description);
+        // A Google front end that is down answers { error: { code, message, status } },
+        // not the OAuth pair of strings, so neither field is trusted to be one.
+        const code = typeof body?.error === 'string' && body.error ? body.error : 'token_request_failed';
+        const description = [body?.error_description, body?.error?.message].find((d) => typeof d === 'string' && d.trim());
+        throw new TokenEndpointError(response.status, code, description?.trim());
+    }
+    // A 200 with no token in it (a proxy's own page, an empty body) is a failure
+    // too: connecting on it leaves a calendar that looks connected and never syncs.
+    if (typeof body?.access_token !== 'string' || !body.access_token) {
+        throw new TokenEndpointError(response.status, 'token_request_failed');
     }
     return body;
 }
@@ -297,8 +319,9 @@ export class CalendarManager extends EventEmitter {
                     return;
                 }
                 if (error) {
-                    respond({ kind: 'error', reason: describeOAuthError(error, qs.get('error_description')) });
-                    finish(() => reject(new Error(error)));
+                    const reason = describeOAuthError(error, qs.get('error_description'));
+                    respond({ kind: 'error', reason });
+                    finish(() => reject(new CalendarConnectError(reason, { cause: new Error(error) })));
                     return;
                 }
                 try {
@@ -306,14 +329,15 @@ export class CalendarManager extends EventEmitter {
                     respond({ kind: 'connected' });
                     finish(() => resolve());
                 } catch (err) {
-                    respond({ kind: 'error', reason: oauthCallbackErrorReason(err) });
-                    finish(() => reject(err));
+                    const reason = oauthCallbackErrorReason(err);
+                    respond({ kind: 'error', reason });
+                    finish(() => reject(err instanceof CalendarConnectError ? err : new CalendarConnectError(reason, { cause: err })));
                 }
             });
 
             // 5-minute hard timeout — if the user never completes consent, free the port.
             const timeout = setTimeout(() => {
-                finish(() => reject(new Error('Calendar auth timed out — port released.')));
+                finish(() => reject(new CalendarConnectError('Sign-in wasn’t finished within five minutes. Connect again.')));
             }, 5 * 60 * 1000);
 
             // 127.0.0.1, not every interface: the callback carries an auth code
@@ -332,7 +356,7 @@ export class CalendarManager extends EventEmitter {
             });
 
             server.on('error', (err) => {
-                finish(() => reject(err));
+                finish(() => reject(new CalendarConnectError('Calendar sign-in could not open a local callback port.', { cause: err })));
             });
         });
     }
@@ -398,7 +422,7 @@ export class CalendarManager extends EventEmitter {
             // only, no identity means "Connected as User".
             const granted = typeof data.scope === 'string' ? data.scope.split(' ') : null;
             if (granted && !granted.some((scope: string) => ACCEPTED_EVENT_SCOPES.has(scope))) {
-                throw new Error('Natively needs access to your calendar events. Connect again and allow it.');
+                throw new CalendarConnectError('Natively needs access to your calendar events. Connect again and allow it.');
             }
             this.handleTokenResponse(data);
         } catch (error) {
@@ -447,7 +471,14 @@ export class CalendarManager extends EventEmitter {
         if (identity.email) this.accountEmail = identity.email;
         if (identity.name) this.accountName = identity.name;
         this.isConnected = true;
-        this.saveTokens();
+        // A save that fails (a locked file, a full disk) is not a failed sign-in:
+        // the tokens work from memory, and the next refresh saves again. Without
+        // this the page said "couldn't sign in" over a calendar that was connected.
+        try {
+            this.saveTokens();
+        } catch (error) {
+            console.error('[CalendarManager] Could not save the calendar tokens; connected for this session:', error);
+        }
         this.emit('connection-changed', true);
 
         // Initial fetch

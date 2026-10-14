@@ -59,6 +59,8 @@ function setup({ tokenResponse, savedTokens, calendarList, eventsByCalendar, env
     const fetchCalls = [];
     // Flip `net.offline` mid-test: Google's requests then fail the way fetch does with no network.
     const net = { offline: false };
+    // Flip `storage.failing` mid-test: saving the tokens then throws the way a locked file does.
+    const storage = { failing: false };
     const originalLoad = Module._load;
     const originalFetch = globalThis.fetch;
     const previousEnv = {
@@ -78,7 +80,10 @@ function setup({ tokenResponse, savedTokens, calendarList, eventsByCalendar, env
             app: { getPath: () => userData, isPackaged: false },
             safeStorage: {
                 isEncryptionAvailable: () => true,
-                encryptString: (s) => Buffer.from(`enc:${s}`),
+                encryptString: (s) => {
+                    if (storage.failing) throw new Error('EPERM: operation not permitted, rename calendar_tokens.enc.tmp');
+                    return Buffer.from(`enc:${s}`);
+                },
                 decryptString: (b) => b.toString().slice(4),
             },
             shell: { openExternal: async (u) => { opened.push(u); } },
@@ -135,7 +140,7 @@ function setup({ tokenResponse, savedTokens, calendarList, eventsByCalendar, env
         }
         delete require.cache[require.resolve(compiled)];
     };
-    return { cm, opened, fetchCalls, userData, net, restore };
+    return { cm, opened, fetchCalls, userData, net, storage, restore };
 }
 
 async function waitFor(predicate, ms = 3000) {
@@ -230,7 +235,8 @@ test('connect: Google\'s error comes back as a readable failure', async () => {
         await hitRedirect(auth.searchParams.get('redirect_uri'), { code: 'c', state: auth.searchParams.get('state') });
         const outcome = await settled;
         assert.ok(outcome instanceof Error);
-        assert.match(outcome.message, /invalid_client/);
+        assert.equal(outcome.message, 'The OAuth client was not found.', 'Settings shows Google’s sentence, not a code and a status');
+        assert.match(outcome.cause.message, /invalid_client.*HTTP 400/, 'the code and status stay with the error for the log');
         assert.equal(env.cm.getConnectionStatus().connected, false);
     } finally {
         await env.restore();
@@ -291,12 +297,7 @@ test('refresh: a network failure keeps the connection and the stored tokens', as
 
 /** Runs the connect flow to completion against the given token response. */
 async function connect(env) {
-    const flow = env.cm.startAuthFlow();
-    const settled = flow.then(() => 'resolved', (e) => e);
-    await waitFor(() => env.opened.length === 1);
-    const auth = new URL(env.opened[0]);
-    await hitRedirect(auth.searchParams.get('redirect_uri'), { code: 'c', state: auth.searchParams.get('state') });
-    return settled;
+    return (await connectWithPage(env)).outcome;
 }
 
 test('identity: the id_token names the connected account, and it survives a restart', async () => {
@@ -318,13 +319,13 @@ test('identity: the id_token names the connected account, and it survives a rest
     }
 });
 
-/** Runs the connect flow to completion and returns both the outcome and the callback page response. */
-async function connectWithPage(env) {
+/** Runs the connect flow to completion and returns both the outcome and the callback page response. `redirect` is what Google sends back. */
+async function connectWithPage(env, redirect = { code: 'c' }) {
     const flow = env.cm.startAuthFlow();
     const settled = flow.then(() => 'resolved', (e) => e);
     await waitFor(() => env.opened.length === 1);
     const auth = new URL(env.opened[0]);
-    const page = await hitRedirect(auth.searchParams.get('redirect_uri'), { code: 'c', state: auth.searchParams.get('state') });
+    const page = await hitRedirect(auth.searchParams.get('redirect_uri'), { ...redirect, state: auth.searchParams.get('state') });
     const outcome = await settled;
     return { outcome, page };
 }
@@ -356,6 +357,116 @@ test('granular consent: broader calendar scopes (e.g. calendar.readonly) satisfy
         const outcome = await connect(env);
         assert.equal(outcome, 'resolved');
         assert.equal(env.cm.getConnectionStatus().connected, true);
+    } finally {
+        await env.restore();
+    }
+});
+
+test('token endpoint: an error body in Google\'s API shape still answers the callback page and ends the flow', async () => {
+    // A Google front end that is down answers { error: { code, message, status } }, not the OAuth { error: "…" } pair.
+    const env = setup({ tokenResponse: { status: 503, body: {
+        error: { code: 503, message: 'The service is currently unavailable.', status: 'UNAVAILABLE' },
+    } } });
+    try {
+        const { outcome, page } = await connectWithPage(env);
+        assert.ok(outcome instanceof Error, 'connected on a failed exchange');
+        assert.equal(page.status, 200);
+        assert.match(page.body, /Couldn’t sign in/);
+        assert.match(page.body, /The service is currently unavailable\./, 'Google’s own sentence is the reason');
+        assert.equal(outcome.message, 'The service is currently unavailable.', 'Settings says what the page says');
+        assert.doesNotMatch(page.body, /\[object Object\]/);
+        assert.equal(env.cm.getConnectionStatus().connected, false);
+    } finally {
+        await env.restore();
+    }
+});
+
+test('token endpoint: with no answer from Google, the callback page words the failure instead of printing "fetch failed"', async () => {
+    const env = setup({ tokenResponse: new TypeError('fetch failed') });
+    try {
+        const { outcome, page } = await connectWithPage(env);
+        assert.ok(outcome instanceof Error, 'connected with no token');
+        assert.match(page.body, /Natively couldn’t finish signing in\. Check your connection and try again\./);
+        assert.doesNotMatch(page.body, /fetch failed/);
+        assert.doesNotMatch(page.body, /sign-in code/, 'a network failure is not an expired code');
+        assert.equal(outcome.message, 'Natively couldn’t finish signing in. Check your connection and try again.', 'Settings says what the page says');
+        assert.equal(outcome.cause.message, 'fetch failed', 'the real failure stays with the error for the log');
+        assert.equal(env.cm.getConnectionStatus().connected, false);
+    } finally {
+        await env.restore();
+    }
+});
+
+test('connect: declining on Google\'s screen reaches Settings as a sentence, the same one the page shows', async () => {
+    const env = setup({ tokenResponse: { status: 200, body: { access_token: 'x', expires_in: 3600 } } });
+    try {
+        const { outcome, page } = await connectWithPage(env, { error: 'access_denied' });
+        assert.ok(outcome instanceof Error);
+        assert.equal(outcome.message, 'Access was declined on the consent screen.');
+        assert.match(page.body, /Access was declined on the consent screen\./);
+        assert.equal(outcome.cause.message, 'access_denied');
+        assert.equal(env.fetchCalls.filter((c) => c.url === TOKEN_URL).length, 0);
+    } finally {
+        await env.restore();
+    }
+});
+
+test('token endpoint: an answer from Google with no reason in it is not blamed on the connection, and no code is shown', async () => {
+    const env = setup({ tokenResponse: { status: 400, body: { error: 'unauthorized_client' } } });
+    try {
+        const { outcome, page } = await connectWithPage(env);
+        assert.equal(outcome.message, 'Google couldn’t finish the sign-in. Try again in a minute.');
+        assert.match(page.body, /Google couldn’t finish the sign-in\. Try again in a minute\./);
+        assert.doesNotMatch(page.body, /unauthorized_client|Check your connection/);
+        assert.match(outcome.cause.message, /unauthorized_client.*HTTP 400/, 'the code stays with the error for the log');
+        assert.equal(env.cm.getConnectionStatus().connected, false);
+    } finally {
+        await env.restore();
+    }
+});
+
+test('token endpoint: a 200 with no token in it is a failed sign-in, not a connected calendar that never syncs', async () => {
+    const env = setup({ tokenResponse: { status: 200, body: {} } });
+    try {
+        const { outcome, page } = await connectWithPage(env);
+        assert.ok(outcome instanceof Error, 'connected with no access token');
+        assert.match(page.body, /Couldn’t sign in/);
+        assert.equal(env.cm.getConnectionStatus().connected, false);
+        assert.equal(fs.existsSync(path.join(env.userData, 'calendar_tokens.enc')), false);
+    } finally {
+        await env.restore();
+    }
+});
+
+test('refresh: a 200 with no token in it keeps the connection and the stored tokens', async () => {
+    const env = setup({
+        savedTokens: { accessToken: 'old', refreshToken: 'rt-keep', expiryDate: Date.now() - 1000 },
+        tokenResponse: { status: 200, body: {} },
+    });
+    try {
+        await env.cm.getUpcomingEvents(true);
+        assert.equal(env.cm.getConnectionStatus().connected, true);
+        const saved = fs.readFileSync(path.join(env.userData, 'calendar_tokens.enc')).toString();
+        assert.match(saved, /"accessToken":"old"/, 'the good tokens are not overwritten with an empty answer');
+    } finally {
+        await env.restore();
+    }
+});
+
+test('token save: a save that fails does not turn a good sign-in into a failed one, and the next refresh saves', async () => {
+    const env = setup({ tokenResponse: { status: 200, body: { access_token: 'at', refresh_token: 'rt', expires_in: 3600 } } });
+    const tokenFile = path.join(env.userData, 'calendar_tokens.enc');
+    try {
+        env.storage.failing = true;
+        const { outcome, page } = await connectWithPage(env);
+        assert.equal(outcome, 'resolved');
+        assert.match(page.body, /Google Calendar connected/);
+        assert.equal(env.cm.getConnectionStatus().connected, true);
+        assert.equal(fs.existsSync(tokenFile), false);
+
+        env.storage.failing = false;
+        await env.cm.refreshAccessToken();
+        assert.match(fs.readFileSync(tokenFile).toString(), /"refreshToken":"rt"/);
     } finally {
         await env.restore();
     }
