@@ -7983,7 +7983,7 @@ export class AppState {
       {
         label: `Toggle Window (${displayToggle})`,
         click: () => {
-          this.toggleMainWindow()
+          this.toggleMainWindow(true)
         }
       },
       {

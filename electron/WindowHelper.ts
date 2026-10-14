@@ -2543,16 +2543,25 @@ export class WindowHelper {
         ),
       };
     }
-    const target = shortcutRestoreBounds(
+    const changingDisplay = screen.getDisplayMatching(bounds).id !== display.id;
+    let target = shortcutRestoreBounds(
       restoreBounds,
       display.workArea,
-      screen.getDisplayMatching(bounds).id !== display.id,
+      changingDisplay,
       {
         launcher: launcher && !this.launcherFilled,
         // Keep the separate pill above the overlay clear of the menu bar too.
         topInset: launcher ? 0 : Math.max(0, this.pillSize.height + WindowHelper.PILL_GAP - OVERLAY_PANEL_INSET),
       },
     );
+    if (launcher && changingDisplay && (this.launcherFilled || this.launcherZoomed)) {
+      // A filled or zoomed launcher fills the new display as well. Its restore
+      // box moves with it, so un-maximizing does not jump back to the old one.
+      target = this.launcherFilled ? { ...display.workArea } : zoomedLauncherBounds(display.workArea);
+      if (this.launcherNormalBounds) {
+        this.launcherNormalBounds = shortcutRestoreBounds(this.launcherNormalBounds, display.workArea, true, { launcher: true });
+      }
+    }
     win.setBounds(target, false);
     const actual = win.getBounds();
     if (launcher) {

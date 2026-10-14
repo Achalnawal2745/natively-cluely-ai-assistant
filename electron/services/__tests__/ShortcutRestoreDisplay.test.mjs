@@ -206,6 +206,23 @@ test('small-to-large launcher restore centers the final native minimum size', ()
   assert.deepEqual(window.getMinimumSize(), [1200, 800]);
 });
 
+test('a filled launcher fills the new display and its restore box moves with it', () => {
+  const { helper, window } = helperFixture();
+  window.setBounds({ ...primary.workArea });
+  helper.launcherFilled = true;
+  helper.launcherNormalBounds = { ...original };
+  helper.toggleMainWindow(true);
+  assert.deepEqual(window.getBounds(), secondary.workArea);
+  assert.deepEqual(helper.launcherNormalBounds, { x: -1560, y: -925, width: 1200, height: 800 });
+});
+
+test('a zoomed launcher is re-zoomed on the new display', () => {
+  const { helper, window } = helperFixture();
+  helper.launcherZoomed = true;
+  helper.toggleMainWindow(true);
+  assert.deepEqual(window.getBounds(), { x: -1672, y: -1000, width: 1425, height: 950 });
+});
+
 test('ordinary drags refresh launcher minimum on both small and large displays', () => {
   const { helper, window, fakeElectron, listeners, calls } = helperFixture();
   helper.overlayWindow = null;
