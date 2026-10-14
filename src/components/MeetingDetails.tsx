@@ -34,7 +34,7 @@ import { ConfirmDialog } from './ui/ConfirmDialog';
 import { NotesVersionTabs } from './meeting/NotesVersionTabs';
 import { NoteSource } from './meeting/NoteSource';
 import { NotesRating } from './meeting/NotesRating';
-import { noteLineTime, notesWereEdited, versionTabs, type VersionKey } from './meeting/notesView';
+import { noteLineTime, notesContentKey, notesWereEdited, versionTabs, type VersionKey } from './meeting/notesView';
 
 registerPrismLanguages();
 
@@ -1788,14 +1788,10 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const meeting = useMemo<Meeting>(() => (shownVersion
         ? { ...baseMeeting, detailedSummary: { ...shownVersion.detailedSummary, speakerLabels: baseMeeting.detailedSummary?.speakerLabels } }
         : baseMeeting), [baseMeeting, shownVersion]);
-    // Changes whenever the notes on screen change (Regenerate keeps the meeting
-    // and version, not the words), so the rating reloads for the new notes.
-    const notesContentKey = useMemo(() => {
-        const text = JSON.stringify(meeting.detailedSummary ?? null) || '';
-        let h = 2166136261;
-        for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
-        return `${text.length}:${(h >>> 0).toString(36)}`;
-    }, [meeting.detailedSummary]);
+    // Changes when what the notes SAY changes (Regenerate keeps the meeting and
+    // version, not the words), so the rating reloads for new notes, but not for
+    // a follow-up draft or a speaker rename.
+    const ratedNotesKey = useMemo(() => notesContentKey(meeting.detailedSummary), [meeting.detailedSummary]);
     const [activeTab, setActiveTab] = useState<NotesTab>('summary');
     // How the tab panel arrives after the reader switches tabs (see switchTab):
     // from the side of travel, or a plain fade. null until the first switch, so
@@ -3080,7 +3076,7 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                     <NotesRating
                                         meetingId={meeting.id}
                                         versionId={versionKey === 'current' ? null : versionKey}
-                                        contentKey={notesContentKey}
+                                        contentKey={ratedNotesKey}
                                         isLight={isLight}
                                         t={t}
                                     />

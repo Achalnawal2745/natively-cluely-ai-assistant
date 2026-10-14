@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 const {
     SOURCE_WINDOW_MS, noteLineTime, toClockMs, meetingStartOf, selectSourceLines, splitOnQuote,
-    notesWereEdited, notesLabel, versionTabs, continueListOnEnter,
+    notesWereEdited, notesLabel, versionTabs, continueListOnEnter, notesContentKey,
 } = await import('../notesView.ts');
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -196,5 +196,25 @@ describe('wiring (source contracts)', () => {
         assert.match(NOTES_WINDOW, /Your notes are going into the meeting notes\./);
         assert.match(NOTES_WINDOW, /notesWindowOpenMeeting\?\.\(meetingId\)/);
         assert.doesNotMatch(NOTES_WINDOW, /\.focus\(/);
+    });
+});
+
+describe('notesContentKey (the rating reloads for new words, not for a follow-up)', () => {
+    const notes = {
+        schemaVersion: 3, overview: 'Pricing agreed.', tldr: ['54 seats'],
+        sectionsV3: [{ title: 'Pricing', bullets: [{ text: 'annual upfront' }] }],
+        actionItemsV3: [{ text: 'Send the order form' }], decisions: [{ text: '24 months' }], openQuestions: [],
+    };
+    test('a follow-up draft, a speaker rename or bookkeeping does not change it', () => {
+        const k = notesContentKey(notes);
+        assert.equal(notesContentKey({ ...notes, followUpDraft: { subject: 'Thanks', body: 'Hi Renata' } }), k);
+        assert.equal(notesContentKey({ ...notes, speakerLabels: { speaker_1: 'Renata Voss' } }), k);
+        assert.equal(notesContentKey({ ...notes, userEditedAt: 123 }), k);
+    });
+    test('regenerated words change it', () => {
+        const k = notesContentKey(notes);
+        assert.notEqual(notesContentKey({ ...notes, overview: 'Pricing agreed at 18% off.' }), k);
+        assert.notEqual(notesContentKey({ ...notes, sectionsV3: [{ title: 'Pricing', bullets: [{ text: 'quarterly in advance' }] }] }), k);
+        assert.notEqual(notesContentKey({ ...notes, actionItemsV3: [{ text: 'Send the order form by Thursday' }] }), k);
     });
 });

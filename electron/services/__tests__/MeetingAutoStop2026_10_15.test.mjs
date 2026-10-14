@@ -529,17 +529,25 @@ test('quit flush: a throwing flush never throws out of the quit handler', () => 
     assert.ok(logs.some((l) => /flush on before-quit failed: disk full/.test(l)));
 });
 
-test('wiring: the extension connected with no meeting tab left means the call\'s tab was closed', () => {
-    let tabs = [{ key: 'meet:abc-defg-hij', provider: 'meet', via: 'browser', seenAt: 1 }];
-    let reporting = true;
-    const w = wiring({ live: { list: () => tabs, keys: () => tabs.map((t) => t.key), isReporting: () => reporting, on() {}, off() {} } });
+test('wiring: only the browser that showed the call can say its tab closed', () => {
+    const { LiveMeetings } = require(dist('meetingDetection/liveMeetings.js'));
+    const live = new LiveMeetings();
+    const chrome = {}, arc = {};
+    const call = { key: 'meet:abc-defg-hij', provider: 'meet', via: 'browser', seenAt: 1 };
+    const w = wiring({ live });
     w.auto.start({ ambientChat: false, undetectable: false });
-    const signals = w.auto.detector.deps.signals;
-    assert.equal(signals.callTabOpen('meet:abc-defg-hij'), true);
-    tabs = [];
-    assert.equal(signals.callTabOpen('meet:abc-defg-hij'), false, 'last tab closed: an answer, not "unknown"');
-    reporting = false;
-    assert.equal(signals.callTabOpen('meet:abc-defg-hij'), null, 'no extension at all: still no answer');
+    const tab = (k) => w.auto.detector.deps.signals.callTabOpen(k);
+    assert.equal(tab(call.key), null, 'never shown: nothing is known');
+    live.set(chrome, [call]);
+    live.set(arc, []);
+    assert.equal(tab(call.key), true);
+    live.set(chrome, null);
+    assert.equal(tab(call.key), null, 'the browser hosting the call disconnected: unknown, not closed (another browser still reports)');
+    live.set(chrome, [call]);
+    live.set(chrome, []);
+    assert.equal(tab(call.key), false, 'the same browser, still connected, no longer lists it: the tab was closed');
+    live.clearAll();
+    assert.equal(tab(call.key), null);
     w.auto.end();
 });
 

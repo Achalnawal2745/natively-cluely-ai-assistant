@@ -29,8 +29,12 @@ export interface LiveMeeting {
 /** What the linker reads; LiveMeetings in the app, a fake in tests. */
 export interface LiveMeetingSource {
     list(): LiveMeeting[];
-    /** Whether any source is connected and reporting, even with no meeting tab open. */
-    isReporting?(): boolean;
+    /**
+     * Is this call's tab open? true: listed now; false: the source that showed
+     * it is still connected and no longer lists it (the tab was closed); null:
+     * that source is gone or never showed it (nothing is known).
+     */
+    tabState?(key: string): boolean | null;
     keys(): string[];
     on(event: 'change', listener: () => void): unknown;
     off(event: 'change', listener: () => void): unknown;
@@ -42,6 +46,8 @@ export class LiveMeetings extends EventEmitter implements LiveMeetingSource {
     private bySource = new Map<unknown, LiveMeeting[]>();
     /** Sources still connected: an empty list means "no meeting tab", null means "gone". */
     private reporting = new Set<unknown>();
+    /** Which source last listed each call, so only that source closing it counts. */
+    private reporterOf = new Map<string, unknown>();
     private last = '[]';
 
     /** A source's complete current list (an empty list or null removes it). */
@@ -50,17 +56,23 @@ export class LiveMeetings extends EventEmitter implements LiveMeetingSource {
         else this.bySource.delete(source);
         if (meetings === null) this.reporting.delete(source);
         else this.reporting.add(source);
+        for (const m of meetings ?? []) if (m.key) this.reporterOf.set(m.key, source);
         this.changed();
     }
 
     clearAll(): void {
         this.bySource.clear();
         this.reporting.clear();
+        this.reporterOf.clear();
         this.changed();
     }
 
-    isReporting(): boolean {
-        return this.reporting.size > 0;
+    tabState(key: string): boolean | null {
+        if (this.list().some((m) => m.key === key)) return true;
+        const source = this.reporterOf.get(key);
+        if (source === undefined) return null;
+        // Another browser still reporting proves nothing about this call's tab.
+        return this.reporting.has(source) ? false : null;
     }
 
     list(): LiveMeeting[] {

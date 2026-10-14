@@ -97,12 +97,13 @@ export function createMeetingAutoStop(deps: MeetingAutoStopDeps): MeetingAutoSto
             const key = deps.metadata()?.callKey;
             return typeof key === 'string' && key ? key : null;
         },
-        // Only an answer when the extension is reporting at all. A connected
-        // extension with no meeting tab left is an answer (the call's tab was
-        // closed); no extension at all is not (meeting detection off, browser closed).
+        // Only an answer from the browser that showed the call: it still being
+        // connected without the tab means the tab was closed; that browser gone
+        // (or another one reporting) says nothing about this call.
         callTabOpen: (key) => {
+            if (deps.live.tabState) return deps.live.tabState(key);
             const all = deps.live.list();
-            if (all.length === 0) return deps.live.isReporting?.() ? false : null;
+            if (all.length === 0) return null;
             return all.some((m) => m.key === key);
         },
         speakerNames: deps.speakerNames,

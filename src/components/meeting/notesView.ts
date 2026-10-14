@@ -124,6 +124,30 @@ export function notesWereEdited(detailed: unknown): boolean {
     return typeof at === 'number' && Number.isFinite(at) && at > 0;
 }
 
+/**
+ * What the notes SAY, as a short key: the same fields the rating's hash reads
+ * in main (notesVersions.notesContentHash). The follow-up draft, speaker renames
+ * and bookkeeping are left out, so a follow-up finishing while the user writes a
+ * thumbs-down comment does not reset the rating.
+ */
+export function notesContentKey(detailed: unknown): string {
+    const d = (detailed && typeof detailed === 'object') ? detailed as any : {};
+    const texts = (v: unknown) => (Array.isArray(v) ? v : []).map((x: any) => (typeof x === 'string' ? x : String(x?.text ?? ''))).filter(Boolean);
+    const content = JSON.stringify({
+        overview: typeof d.overview === 'string' ? d.overview : '',
+        tldr: texts(d.tldr),
+        sections: (Array.isArray(d.sectionsV3) ? d.sectionsV3 : Array.isArray(d.sections) ? d.sections : [])
+            .map((s: any) => [String(s?.title ?? ''), texts(s?.bullets)]),
+        actions: texts(d.actionItemsV3 ?? d.actionItems),
+        decisions: texts(d.decisions),
+        questions: texts(d.openQuestions),
+        keyPoints: d.schemaVersion === 3 ? [] : texts(d.keyPoints),
+    });
+    let h = 2166136261;
+    for (let i = 0; i < content.length; i++) h = Math.imul(h ^ content.charCodeAt(i), 16777619);
+    return `${content.length}:${(h >>> 0).toString(36)}`;
+}
+
 /** The tab name for notes: the mode they were written in. */
 export function notesLabel(detailed: unknown): string {
     const mode = (detailed as any)?.mode;
