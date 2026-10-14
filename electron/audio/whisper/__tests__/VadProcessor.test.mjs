@@ -174,6 +174,41 @@ describe('VadProcessor — segment close on hangover', () => {
     assert.equal(vad.currentSegmentId(), 2);
   });
 
+  test('a burst shorter than 4 voiced frames is dropped when the hangover closes it', () => {
+    // The minimum counts voiced frames only. Counting the hangover too made
+    // every closed segment at least 11 frames long, so a single 30 ms noise
+    // burst reached Whisper as a 330 ms segment.
+    for (const n of [1, 2, 3]) {
+      const vad = new VadProcessor();
+      assert.deepEqual(vad.push(concat(speech(n), silence(HANGOVER))), [], `${n} voiced frame(s)`);
+      assert.equal(vad.isInSpeech(), false);
+      assert.equal(vad.peekOpenSegment(), null);
+    }
+  });
+
+  test('exactly 4 voiced frames are kept', () => {
+    const vad = new VadProcessor();
+    const out = vad.push(concat(speech(4), silence(HANGOVER)));
+    assert.equal(out.length, 1);
+    assert.equal(out[0].durationMs, (4 + HANGOVER) * FRAME_MS);
+  });
+
+  test('voiced frames split by short gaps add up toward the minimum', () => {
+    const vad = new VadProcessor();
+    const out = vad.push(concat(speech(2), silence(3), speech(2), silence(HANGOVER)));
+    assert.equal(out.length, 1);
+    assert.equal(out[0].durationMs, (2 + 3 + 2 + HANGOVER) * FRAME_MS);
+  });
+
+  test('a dropped burst does not disturb the next utterance', () => {
+    const vad = new VadProcessor();
+    const out = vad.push(concat(speech(1), silence(HANGOVER), speech(5, 0.2), silence(HANGOVER)));
+    assert.equal(out.length, 1);
+    assert.equal(out[0].durationMs, (5 + HANGOVER) * FRAME_MS);
+    assert.ok(Math.abs(out[0].samples[0] - 0.2) < 1e-6);
+    assert.equal(vad.currentSegmentId(), 2);
+  });
+
   test('emitted segments are copies: mutating the input afterwards does not change them', () => {
     const vad = new VadProcessor();
     const input = concat(speech(4), silence(HANGOVER));
@@ -402,6 +437,13 @@ describe('VadProcessor — flush and reset', () => {
       assert.deepEqual(vad.flush(), [], `${n} frame(s) is below the minimum`);
       assert.equal(vad.isInSpeech(), false);
     }
+  });
+
+  test('flush() does not count hangover frames toward the 4-frame minimum', () => {
+    const vad = new VadProcessor();
+    vad.push(concat(speech(2), silence(2)));
+    assert.deepEqual(vad.flush(), []);
+    assert.equal(vad.isInSpeech(), false);
   });
 
   test('reset() drops the open segment without emitting it', () => {

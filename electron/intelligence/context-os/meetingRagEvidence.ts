@@ -43,6 +43,7 @@ export function meetingChunksToEvidenceItems(input: {
   const cap = capabilityFor(contract, 'meeting_rag_chunk');
   if (!cap || !cap.permissions.useAsEvidence) {
     for (const c of chunks) {
+      if (!hasUsableText(c)) continue;
       rejected.push({
         sourceKind: 'meeting_rag_chunk',
         sourceId: `${c.meetingId}:${c.chunkIndex}`,
@@ -62,7 +63,7 @@ export function meetingChunksToEvidenceItems(input: {
 
   let idx = 0;
   for (const c of chunks) {
-    if (!c || typeof c.text !== 'string' || !c.text.trim()) continue;
+    if (!hasUsableText(c)) continue;
 
     if (!allowCrossMeeting && scopeMeetingId && c.meetingId !== scopeMeetingId) {
       rejected.push({
@@ -74,7 +75,8 @@ export function meetingChunksToEvidenceItems(input: {
       continue;
     }
 
-    const similarity = typeof c.similarity === 'number' ? c.similarity : 0;
+    // NaN would pass the gate (NaN < floor is false), so only a finite score counts.
+    const similarity = Number.isFinite(c.similarity) ? c.similarity : 0;
     if (similarity < MEETING_RAG_MIN_SIMILARITY) {
       rejected.push({
         sourceKind: 'meeting_rag_chunk',
@@ -106,11 +108,15 @@ export function meetingChunksToEvidenceItems(input: {
       score: {
         vector: similarity,
         propertyMatch: canProve ? 1 : 0,
-        final: typeof c.finalScore === 'number' ? c.finalScore : similarity,
+        final: Number.isFinite(c.finalScore) ? (c.finalScore as number) : similarity,
       },
       reasonIncluded: 'meeting RAG chunk under meeting_rag_chunk capability',
     });
   }
 
   return { items, rejected, confident: items.length > 0 };
+}
+
+function hasUsableText(c: ScoredChunk | null | undefined): c is ScoredChunk {
+  return !!c && typeof c.text === 'string' && !!c.text.trim();
 }

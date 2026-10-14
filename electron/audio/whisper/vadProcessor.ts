@@ -75,10 +75,14 @@ export class VadProcessor {
 
       if (this.inSpeech) {
         this.speechBuffer.push(window.slice());
-        this.speechFrameCount++;
         this.speechDurationMs += 30;
 
-        if (!isSpeech) {
+        // Only voiced frames count toward MIN_SPEECH_FRAMES. Counting the
+        // hangover too made every closed segment at least 11 frames long, so
+        // the minimum never rejected a noise burst.
+        if (isSpeech) {
+          this.speechFrameCount++;
+        } else {
           this.hangoverCount--;
         }
 
@@ -151,6 +155,8 @@ export class VadProcessor {
     if (tail.length > 0) {
       this.inSpeech = true;
       this.speechBuffer = tail;
+      // The tail comes from a segment that already passed the minimum, so it
+      // counts in full: a short word right after the cut is still sent.
       this.speechFrameCount = tail.length;
       this.speechDurationMs = tail.length * 30;
       this.hangoverCount = HANGOVER_FRAMES;

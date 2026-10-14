@@ -74,6 +74,15 @@ describe('meetingChunksToEvidenceItems — capability check', () => {
     });
   });
 
+  test('without the capability, null chunks and chunks without usable text are skipped, not thrown on', () => {
+    const out = meetingChunksToEvidenceItems({
+      chunks: [null, undefined, chunk({ text: '' }), chunk({ text: 123 }), chunk()],
+      contract: contract([]),
+    });
+    assert.deepEqual(out.rejected.map((r) => [r.sourceId, r.reason]), [['m1:0', 'forbidden_source']]);
+    assert.equal(out.confident, false);
+  });
+
   test('a capability for a different source kind does not grant meeting RAG', () => {
     const out = meetingChunksToEvidenceItems({
       chunks: [chunk()],
@@ -228,6 +237,20 @@ describe('meetingChunksToEvidenceItems — confidence gate', () => {
       assert.equal(out.items.length, 0, String(s));
       assert.equal(out.rejected[0].reason, 'low_confidence', String(s));
     }
+  });
+
+  test('a NaN or infinite similarity counts as 0 and is rejected', () => {
+    for (const similarity of [NaN, Infinity, -Infinity]) {
+      const out = meetingChunksToEvidenceItems({ chunks: [chunk({ similarity })], contract: contract() });
+      assert.equal(out.items.length, 0, String(similarity));
+      assert.equal(out.rejected[0].reason, 'low_confidence');
+      assert.equal(out.confident, false);
+    }
+  });
+
+  test('a NaN finalScore falls back to similarity', () => {
+    const out = meetingChunksToEvidenceItems({ chunks: [chunk({ similarity: 0.6, finalScore: NaN })], contract: contract() });
+    assert.equal(out.items[0].score.final, 0.6);
   });
 
   test('confident is true as soon as one chunk clears the gate', () => {

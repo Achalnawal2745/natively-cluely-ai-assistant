@@ -65,6 +65,16 @@ describe('resampleToF32 — 16 kHz passthrough', () => {
     assert.deepEqual(resampleToF32(view, 16000), f32([0.5, -0.5]));
   });
 
+  test('a trailing half-sample is ignored instead of throwing', () => {
+    // An odd byte count made the sample count fractional, and
+    // new Float32Array(1.5) throws: inside LocalWhisperSTT.write() that would
+    // escape the audio callback.
+    const odd = Buffer.concat([pcm([16384, -16384]), Buffer.from([0x7f])]);
+    assert.deepEqual(resampleToF32(odd, 16000), f32([0.5, -0.5]));
+    assert.deepEqual(resampleToF32(Buffer.from([0x7f]), 16000), f32([]));
+    assert.deepEqual(resampleToF32(Buffer.concat([pcm([0, 0, 0, 0, 0, 0]), Buffer.from([1])]), 48000), f32([0, 0]));
+  });
+
   test('does not modify the input buffer', () => {
     const buf = pcm([100, -200, 300, -400, 500, -600]);
     const before = Buffer.from(buf);

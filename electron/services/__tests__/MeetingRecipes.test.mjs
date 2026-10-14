@@ -88,6 +88,13 @@ describe('generateRecipe: follow-up-email', () => {
         assert.ok(expected.includes('- Adopt tiered pricing'));
     });
 
+    test('a whitespace-only draft uses the fallback, so the follow-up email is not dropped', () => {
+        const summary = makeSummary({ followUpDraft: { body: '  \n\t ' } });
+        const expected = buildFollowUpBody(summary.decisions, summary.actionItems, undefined);
+        assert.equal(generateRecipe(summary, 'follow-up-email'), expected);
+        assert.equal(generateBuiltInRecipes(summary, null)['follow-up-email'], expected.trim());
+    });
+
     test('the fallback follows the summary mode, preferring summaryModeUsed', () => {
         const base = makeSummary();
         const both = generateRecipe(

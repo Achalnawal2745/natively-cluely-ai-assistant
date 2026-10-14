@@ -7,7 +7,10 @@ export function resampleToF32(chunk: Buffer, inputSampleRate: number): Float32Ar
   const TARGET_RATE = 16000;
 
   // Parse Int16LE samples from the buffer
-  const inputSamples = chunk.byteLength / 2; // 2 bytes per Int16 sample
+  // 2 bytes per Int16 sample. Capture always delivers whole samples; a stray
+  // trailing byte is ignored rather than making the length fractional, which
+  // would throw out of the caller's audio callback.
+  const inputSamples = Math.floor(chunk.byteLength / 2);
   const input = new Float32Array(inputSamples);
   for (let i = 0; i < inputSamples; i++) {
     // Normalize Int16 to [-1, 1]
