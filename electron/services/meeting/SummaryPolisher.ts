@@ -226,15 +226,24 @@ function normalizeForCompare(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9%$.]/g, ' ').replace(/(?<!\d)\.|\.(?!\d)/g, ' ').replace(/\s+/g, ' ');
 }
 
-/** Every number in the text as its digits alone: "$31.16" → "3116", "1,300" → "1300". */
-function digitRuns(s: string): Set<string> {
-  return new Set((s.match(/\d[\d,.]*\d|\d/g) || []).map((n) => n.replace(/\D/g, '')));
+/**
+ * Every number in the text by its value: "$31.16" → 31.16, "1,300" → 1300.
+ * Only a thousands separator is dropped, never a decimal point, so "$50.00"
+ * and "$5,000" stay different numbers.
+ */
+function numberValues(s: string): Set<number> {
+  const out = new Set<number>();
+  for (const raw of s.match(/\d[\d,]*(?:\.\d+)?/g) || []) {
+    const v = Number(raw.replace(/,(?=\d{3}(?!\d))/g, ''));
+    if (Number.isFinite(v)) out.add(v);
+  }
+  return out;
 }
 
 export function newSignificantTokens(polished: string, grounded: string): string[] {
   const groundedNorm = normalizeForCompare(grounded);
   const groundedSet = new Set(groundedNorm.split(' ').filter(Boolean));
-  const groundedDigits = digitRuns(grounded);
+  const groundedNumbers = numberValues(grounded);
   // Names with an apostrophe ("O'Brien") read as one word on both sides.
   const groundedJoined = new Set(normalizeForCompare(grounded.replace(/['’](?!s\b)/g, '')).split(' ').filter(Boolean));
   const offending: string[] = [];
@@ -275,8 +284,8 @@ export function newSignificantTokens(polished: string, grounded: string): string
       // number contained within a grounded token (e.g. "soc2" vs "soc2")
       if (isNumberLike && groundedNorm.includes(lowerCore)) continue;
       // the same number written another way ("$31.16" vs "31.16", "1,300" vs "1300")
-      const digits = lowerCore.replace(/\D/g, '');
-      if (isNumberLike && digits && groundedDigits.has(digits)) continue;
+      const values = [...numberValues(raw)];
+      if (isNumberLike && values.length > 0 && values.every((v) => groundedNumbers.has(v))) continue;
       if (seen.has(lowerCore)) continue;
       seen.add(lowerCore);
       offending.push(raw);

@@ -77,6 +77,8 @@ export interface MeetingAutoStop {
     noteTyping(): void;
     noteActivity(): void;
     keepGoing(): void;
+    /** Undetectable switched during the meeting: the inactivity stop follows it. */
+    setUndetectable(on: boolean): void;
     readonly detector: MeetingEndDetector | null;
 }
 
@@ -95,11 +97,12 @@ export function createMeetingAutoStop(deps: MeetingAutoStopDeps): MeetingAutoSto
             const key = deps.metadata()?.callKey;
             return typeof key === 'string' && key ? key : null;
         },
-        // Only an answer when the extension is reporting at all: with no tabs
-        // from anyone there is nothing to say (meeting detection off, browser closed).
+        // Only an answer when the extension is reporting at all. A connected
+        // extension with no meeting tab left is an answer (the call's tab was
+        // closed); no extension at all is not (meeting detection off, browser closed).
         callTabOpen: (key) => {
             const all = deps.live.list();
-            if (all.length === 0) return null;
+            if (all.length === 0) return deps.live.isReporting?.() ? false : null;
             return all.some((m) => m.key === key);
         },
         speakerNames: deps.speakerNames,
@@ -145,6 +148,9 @@ export function createMeetingAutoStop(deps: MeetingAutoStopDeps): MeetingAutoSto
         },
         noteTranscript(speaker, text, final) {
             detector?.noteTranscript(speaker === 'user' ? 'me' : 'them', text, final);
+        },
+        setUndetectable(on) {
+            detector?.setInactivityEnabled(!on);
         },
         noteTyping() {
             detector?.noteTyping();

@@ -123,6 +123,25 @@ test('RRULE in a zone keeps the wall time across a DST change', () => {
     assert.deepEqual(startsOf(cal.events), ['2026-10-26T13:00:00.000Z', '2026-11-02T14:00:00.000Z']);
 });
 
+test('a cancelled occurrence with no DTSTART still removes its slot', () => {
+    const cal = read(ics(
+        ...vevent('UID:nostart', 'DTSTART:20261102T160000Z', 'DTEND:20261102T163000Z', 'RRULE:FREQ=WEEKLY;COUNT=3', 'SUMMARY:Sync'),
+        ...vevent('UID:nostart', 'RECURRENCE-ID:20261109T160000Z', 'STATUS:CANCELLED', 'SUMMARY:Sync'),
+        // An override with no start that is not cancelled adds nothing and breaks nothing.
+        ...vevent('UID:nostart', 'RECURRENCE-ID:20261116T160000Z', 'SUMMARY:Sync'),
+    ));
+    assert.deepEqual(startsOf(cal.events.filter((e) => e.iCalUID === 'nostart')), ['2026-11-02T16:00:00.000Z']);
+});
+
+test('BYHOUR / BYMINUTE / BYSECOND are not expanded into a different schedule', () => {
+    for (const part of ['BYHOUR=9,17', 'BYMINUTE=0,30', 'BYSECOND=0']) {
+        const rule = parseRRule(`FREQ=DAILY;COUNT=4;${part}`);
+        assert.equal(rule.supported, false, part);
+    }
+    const cal = read(ics(...vevent('UID:hours', 'DTSTART:20261102T090000Z', 'DTEND:20261102T093000Z', 'RRULE:FREQ=DAILY;COUNT=4;BYHOUR=9,17', 'SUMMARY:Twice a day')));
+    assert.deepEqual(startsOf(cal.events), ['2026-11-02T09:00:00.000Z'], 'only the first meeting, never a wrong series');
+});
+
 test('EXDATE removes an occurrence; RECURRENCE-ID moves one and cancels another', () => {
     const cal = read(ics(
         ...vevent('UID:ex', 'DTSTART:20261109T080000Z', 'DTEND:20261109T083000Z', 'RRULE:FREQ=DAILY;COUNT=4', 'EXDATE:20261110T080000Z', 'SUMMARY:WithExdate'),

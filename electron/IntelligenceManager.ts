@@ -238,7 +238,11 @@ export class IntelligenceManager extends EventEmitter {
 
     /** A line recovered after a transcription outage, at its original time (SessionTracker.insertRecoveredTranscript). */
     insertRecoveredTranscript(segment: import('./SessionTracker').TranscriptSegment): boolean {
-        return this.session.insertRecoveredTranscript(segment);
+        const inserted = this.session.insertRecoveredTranscript(segment);
+        // Recovered words reach the live journal like any final line, or a crash
+        // in a quiet stretch afterwards would lose them a second time.
+        if (inserted) this.persistence.noteLiveChange(true);
+        return inserted;
     }
 
     async handleSuggestionTrigger(trigger: import('./SessionTracker').SuggestionTrigger): Promise<void> {

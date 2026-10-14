@@ -46,3 +46,17 @@ test('a separate dated task with an owner or a quote stays', () => {
 test('no deadlines: the tasks come back as they were', () => {
   assert.deepEqual(foldDeadlines(TASKS, []), TASKS);
 });
+
+test('two different tasks that share words are never merged', () => {
+  const tasks = [{ text: 'Review pricing proposal', owner: 'Priya', explicitness: 'explicit', evidence: quote('I will review the pricing proposal'), confidence: 'high' }];
+  const out = foldDeadlines(tasks, [{ text: 'Review security proposal', owner: 'Priya', deadline: 'Friday', explicitness: 'explicit', evidence: quote('security proposal by Friday'), confidence: 'medium' }]);
+  assert.equal(out.length, 2, 'the security review stays its own task');
+  assert.equal(out[0].deadline, undefined, 'and its date is not given to the pricing review');
+});
+
+test('a deadline with another owner is not folded into this owner\'s task', () => {
+  const tasks = [{ text: 'Send the revised order form', owner: 'Daniel Okafor', explicitness: 'explicit', evidence: quote('I will send it'), confidence: 'high' }];
+  const out = foldDeadlines(tasks, [{ text: 'Revised order form sent by Thursday', owner: 'Renata Voss', deadline: 'Thursday', explicitness: 'explicit', evidence: quote('send me the form by Thursday'), confidence: 'medium' }]);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].deadline, undefined);
+});

@@ -235,19 +235,44 @@ test('poller: an unsupported OS or a binary without the reader stays idle', asyn
 
 // ── Saving: one other person, and colliding ids ─────────────────────────────
 
-test('nameCallLines: one other person in the call names every other-side line', () => {
+test('nameCallLines: one person on the Meet page names every other-side line', () => {
+    const roster = new CallRoster();
+    roster.report('meet:abc-defg-hij', [{ name: 'Priya Nair', speaking: true }], 1_000);
+    roster.report('meet:abc-defg-hij', [{ name: 'Priya Nair', speaking: false }], 3_000);
+    const transcript = [
+        { speaker: 'interviewer', text: 'first line from her', timestamp: 3_100 },
+        { speaker: 'interviewer', text: 'said while the mark was off', timestamp: 60_000 },
+        { speaker: 'user', text: 'mine', timestamp: 61_000 },
+    ];
+    const named = nameCallLines(transcript, 'meet:abc-defg-hij', 0, 70_000, roster);
+    assert.deepEqual(named.transcript.map((l) => l.speakerId ?? null), ['speaker_2', 'speaker_2', null]);
+    assert.deepEqual(named.labels, { speaker_2: 'Priya Nair' });
+    assert.equal(named.confidence.speaker_2, 1);
+});
+
+test('nameCallLines: one name from the desktop reader is not a one-to-one call (the reader can stop short)', () => {
     const roster = new CallRoster();
     roster.report('zoom-app:1', [{ name: 'Priya Nair', speaking: true }], 1_000);
     roster.report('zoom-app:1', [{ name: 'Priya Nair', speaking: false }], 3_000);
     const transcript = [
         { speaker: 'interviewer', text: 'first line from her', timestamp: 3_100 },
         { speaker: 'interviewer', text: 'said while the mark was off', timestamp: 60_000 },
-        { speaker: 'user', text: 'mine', timestamp: 61_000 },
     ];
     const named = nameCallLines(transcript, 'zoom-app:1', 0, 70_000, roster);
-    assert.deepEqual(named.transcript.map((l) => l.speakerId ?? null), ['speaker_2', 'speaker_2', null]);
-    assert.deepEqual(named.labels, { speaker_2: 'Priya Nair' });
-    assert.equal(named.confidence.speaker_2, 1);
+    assert.equal(named.transcript[0].speakerId, 'speaker_2', 'the line her speaking mark covers is hers');
+    assert.equal(named.transcript[1].speakerId, undefined, 'a line nobody marked is not given to her');
+});
+
+test('nameCallLines: two provider voices on the other side are never one person', () => {
+    const roster = new CallRoster();
+    roster.report('meet:abc-defg-hij', [{ name: 'Priya Nair', speaking: false }], 1_000);
+    const transcript = [
+        { speaker: 'interviewer', speakerId: 'voice_a', text: 'one voice', timestamp: 10_000 },
+        { speaker: 'interviewer', speakerId: 'voice_b', text: 'another voice', timestamp: 20_000 },
+    ];
+    const named = nameCallLines(transcript, 'meet:abc-defg-hij', 0, 30_000, roster);
+    assert.ok(!Object.values(named.labels).includes('Priya Nair') || named.transcript.every((l) => l.speakerId !== Object.keys(named.labels).find((k) => named.labels[k] === 'Priya Nair')),
+        'no line is named from the one listed person');
 });
 
 test('nameCallLines: a provider voice id equal to a call id is dropped, not misread as that person', () => {

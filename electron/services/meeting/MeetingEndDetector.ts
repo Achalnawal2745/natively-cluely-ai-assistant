@@ -210,6 +210,19 @@ export class MeetingEndDetector {
         this.noteActivity();
     }
 
+    /**
+     * Undetectable switched during the meeting: the inactivity stop follows it
+     * (a stop shows the launcher). Off clears a notice already on screen; back on
+     * counts the silence from now, so it never stops at once.
+     */
+    setInactivityEnabled(on: boolean): void {
+        if (this.o.inactivityEnabled === on) return;
+        (this.o as { inactivityEnabled: boolean }).inactivityEnabled = on;
+        if (on) this.lastActivityAt = this.now();
+        else this.clearWarning();
+        this.log(`inactivity stop ${on ? 'on' : 'off'}`);
+    }
+
     /** Keep going on the notice (or any other resume): hold every stop for a minute. */
     noteResume(): void {
         if (!this.watching) return;

@@ -362,6 +362,23 @@ test('refresh: a dead grant disconnects and deletes the tokens; a network failur
     assert.deepEqual(revoked.p.status(), { id: 'outlook', state: 'disconnected' });
 });
 
+test('refresh: a response that comes back after Disconnect is thrown away, never saved', async () => {
+    const ctx = await signIn();
+    let answer;
+    ctx.deps.fetch = async (url) => {
+        if (url === TOKEN_URL) return new Promise((resolve) => { answer = () => resolve(json({ access_token: 'AT9', refresh_token: 'RT9', expires_in: 3600 })); });
+        return json({ value: [] });
+    };
+    ctx.clock.now += 2 * 3600_000;
+    const pending = ctx.p.fetchEvents(0, 1);
+    await waitFor(() => typeof answer === 'function');
+    await ctx.p.disconnect();
+    answer();
+    assert.equal(await pending, null);
+    assert.equal(ctx.p.isConnected(), false, 'the old refresh does not reconnect the account');
+    assert.equal(fs.existsSync(path.join(ctx.deps.userDataDir, OUTLOOK_TOKEN_FILE)), false, 'and writes no tokens');
+});
+
 test('failed sign-in: the sentence in Settings and on the callback page has no AADSTS code, trace id or HTTP status', async () => {
     const cases = [
         [() => json({ error: 'invalid_request', error_description: 'AADSTS50011: The redirect URI does not match.\r\nTrace ID: 1-2-3\r\nCorrelation ID: 4' }, 400), 'The redirect URI does not match.'],

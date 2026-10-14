@@ -296,7 +296,9 @@ export function parseRRule(text: string): RRule | null {
         : undefined;
     const interval = Math.max(1, Math.min(1000, parseInt(parts.INTERVAL ?? '1', 10) || 1));
     const count = parts.COUNT ? parseInt(parts.COUNT, 10) : undefined;
-    const unsupportedPart = ['BYYEARDAY', 'BYWEEKNO'].some((k) => k in parts);
+    // Parts the expansion does not implement: rather than expand a different
+    // schedule (BYHOUR=9,17 would give one slot a day), the series shows its first meeting only.
+    const unsupportedPart = ['BYYEARDAY', 'BYWEEKNO', 'BYHOUR', 'BYMINUTE', 'BYSECOND'].some((k) => k in parts);
     return {
         freq: (known ? freq : 'DAILY') as RRule['freq'],
         interval,
@@ -499,14 +501,17 @@ export function readIcsCalendar(text: string, fromMs: number, toMs: number, opti
 
     for (const vevent of vevents) {
         const uid = boundedString(textOf(vevent, 'UID'), 200);
-        const startProp = prop(vevent, 'DTSTART');
-        if (!uid || !startProp) continue;
+        if (!uid) continue;
+        // An override is read before asking for a start: a cancelled occurrence
+        // often has no DTSTART, and its RECURRENCE-ID alone removes the slot.
         const recurrenceProp = prop(vevent, 'RECURRENCE-ID');
         if (recurrenceProp) {
             const rid = parseTime(recurrenceProp.value, recurrenceProp.params, ctx);
             if (rid) overrides.push({ vevent, uid, recurrenceEpoch: epochOf(rid, ctx.floatingZone) });
             continue;
         }
+        const startProp = prop(vevent, 'DTSTART');
+        if (!startProp) continue;
         const start = parseTime(startProp.value, startProp.params, ctx);
         if (!start) continue;
         masters.set(uid, { vevent, uid, start, durationMs: durationOf(vevent, start, ctx) });
@@ -561,7 +566,8 @@ export function readIcsCalendar(text: string, fromMs: number, toMs: number, opti
     for (const o of overrides) {
         const master = masters.get(o.uid);
         if (cancelled(o.vevent) || (master && cancelled(master.vevent))) continue;
-        const startProp = prop(o.vevent, 'DTSTART')!;
+        const startProp = prop(o.vevent, 'DTSTART');
+        if (!startProp) continue; // removes its slot, adds nothing
         const start = parseTime(startProp.value, startProp.params, ctx);
         if (!start || start.kind === 'date') continue;
         const startMs = epochOf(start, ctx.floatingZone);

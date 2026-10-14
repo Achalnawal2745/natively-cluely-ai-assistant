@@ -60,3 +60,10 @@ test('a word that ends a source sentence matches the same word in the rewrite', 
   // A decimal is still one number, not "31" and "16".
   assert.ok(newSignificantTokens('It costs $31.17.', '- 54 seats at $31.16.').some((t) => t.includes('31.17')));
 });
+
+test('a number is compared by value: a moved decimal point is a different number', () => {
+  const grounded = '- The onboarding package is $50.00 a seat; the deal is 1,300 seats.';
+  assert.deepEqual(newSignificantTokens('Onboarding is $50 a seat for 1300 seats.', grounded), []);
+  assert.ok(newSignificantTokens('Onboarding is $5,000 a seat.', grounded).some((t) => t.includes('5,000')), 'a hundredfold price change is caught');
+  assert.ok(newSignificantTokens('Onboarding is $500.0 a seat.', grounded).some((t) => t.includes('500')));
+});

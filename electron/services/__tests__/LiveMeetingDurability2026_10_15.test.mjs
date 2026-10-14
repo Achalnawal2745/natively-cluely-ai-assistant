@@ -411,3 +411,11 @@ describe('a meeting left behind, recovered', () => {
         assert.equal(readDb((d) => d.prepare('SELECT COUNT(*) AS n FROM live_meeting_journal').get().n), 0);
     });
 });
+
+test('a line recovered after a transcription outage reaches the live journal like any final line', () => {
+    const src = fs.readFileSync(path.join(REPO, 'electron/IntelligenceManager.ts'), 'utf8');
+    const body = src.slice(src.indexOf('insertRecoveredTranscript(segment'), src.indexOf('handleSuggestionTrigger('));
+    assert.match(body, /const inserted = this\.session\.insertRecoveredTranscript\(segment\)/);
+    assert.match(body, /if \(inserted\) this\.persistence\.noteLiveChange\(true\)/,
+        'without it, a crash in a quiet stretch after recovery loses the recovered words again');
+});

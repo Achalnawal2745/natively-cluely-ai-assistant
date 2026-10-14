@@ -92,6 +92,7 @@ const NotesWindow: React.FC = () => {
             </div>
             <textarea
                 ref={areaRef}
+                aria-label="Meeting notes"
                 value={text}
                 onChange={(e) => commit(e.target.value)}
                 onKeyDown={onKeyDown}

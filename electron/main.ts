@@ -8387,6 +8387,8 @@ export class AppState {
     this.cropperWindowHelper.setContentProtection(state)
     this.notesWindowHelper.setContentProtection(state)
     foreignWindowCaptureGuard?.sync(state)
+    // A meeting already running: its inactivity stop follows (a stop shows the launcher).
+    try { this.meetingAutoStop.setUndetectable(state) } catch { /* auto-stop never blocks stealth */ }
 
     // Content-protection re-assertion loop (Final Round StealthService pattern):
     // setContentProtection is silently undoable (activation-policy flips,

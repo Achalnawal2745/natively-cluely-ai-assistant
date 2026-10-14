@@ -131,17 +131,24 @@ export class MeetingSummaryReducer {
  */
 export function foldDeadlines(actionItems: ActionItem[], deadlines: ActionItem[]): ActionItem[] {
   const out = actionItems.map(item => ({ ...item }));
-  const words = (text: string) => new Set(normalize(text || '').split(' ').filter(w => w.length > 3));
-  const overlap = (a: Set<string>, b: Set<string>) => {
-    if (a.size === 0 || b.size === 0) return 0;
-    let shared = 0;
-    for (const w of a) if (b.has(w)) shared++;
-    return shared / Math.min(a.size, b.size);
+  const words = (text: string) => new Set(normalize(text || '').split(' ').filter(w => w.length > 2));
+  const sameOwner = (a?: string, b?: string) => !a || !b || normalize(a) === normalize(b);
+  // A deadline restates a task when, once that task's own words and the words of
+  // a date ("Thursday", "sent", "due") are taken away, nothing of it is left:
+  // "Revised order form to be sent by Thursday" restates "Send a revised order
+  // form …", but "Review security proposal" never restates "Review pricing
+  // proposal" ("security" is left over), however many words they share.
+  const restates = (task: ActionItem, d: ActionItem) => {
+    if (!sameOwner(task.owner, d.owner)) return false;
+    if (similar(task.text, d.text)) return true;
+    const taskWords = words(task.text);
+    const dateWords = words(d.deadline || '');
+    const left = [...words(d.text)].filter(w => !taskWords.has(w) && !dateWords.has(w) && !DEADLINE_FILLER.has(w));
+    return left.length === 0 && [...words(d.text)].some(w => taskWords.has(w));
   };
   for (const d of deadlines) {
     if (!d || !d.text) continue;
-    const dWords = words(d.text);
-    const task = out.find(item => similar(item.text, d.text) || overlap(words(item.text), dWords) >= 0.5);
+    const task = out.find(item => restates(item, d));
     if (task) {
       if (!task.deadline && d.deadline) task.deadline = d.deadline;
       continue;
@@ -151,6 +158,14 @@ export function foldDeadlines(actionItems: ActionItem[], deadlines: ActionItem[]
   }
   return out;
 }
+
+/** Words a deadline adds to its task without naming a different task. */
+const DEADLINE_FILLER = new Set([
+  'due', 'date', 'deadline', 'sent', 'send', 'sending', 'delivered', 'deliver', 'shared', 'share', 'done', 'finished', 'complete', 'completed',
+  'end', 'day', 'days', 'week', 'weeks', 'month', 'months', 'next', 'this', 'today', 'tomorrow', 'tonight', 'eod', 'eow', 'before', 'after', 'until',
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+]);
 
 function flatMap<T>(atoms: ChunkMeetingAtoms[], mapper: (atom: ChunkMeetingAtoms) => T[]): T[] {
   return atoms.flatMap(mapper).filter(Boolean);

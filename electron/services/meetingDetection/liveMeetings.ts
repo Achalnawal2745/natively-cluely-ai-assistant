@@ -29,6 +29,8 @@ export interface LiveMeeting {
 /** What the linker reads; LiveMeetings in the app, a fake in tests. */
 export interface LiveMeetingSource {
     list(): LiveMeeting[];
+    /** Whether any source is connected and reporting, even with no meeting tab open. */
+    isReporting?(): boolean;
     keys(): string[];
     on(event: 'change', listener: () => void): unknown;
     off(event: 'change', listener: () => void): unknown;
@@ -38,18 +40,27 @@ const rank = (m: LiveMeeting) => (m.audible ? 2 : 0) + (m.focused ? 1 : 0);
 
 export class LiveMeetings extends EventEmitter implements LiveMeetingSource {
     private bySource = new Map<unknown, LiveMeeting[]>();
+    /** Sources still connected: an empty list means "no meeting tab", null means "gone". */
+    private reporting = new Set<unknown>();
     private last = '[]';
 
     /** A source's complete current list (an empty list or null removes it). */
     set(source: unknown, meetings: LiveMeeting[] | null): void {
         if (meetings && meetings.length > 0) this.bySource.set(source, meetings);
         else this.bySource.delete(source);
+        if (meetings === null) this.reporting.delete(source);
+        else this.reporting.add(source);
         this.changed();
     }
 
     clearAll(): void {
         this.bySource.clear();
+        this.reporting.clear();
         this.changed();
+    }
+
+    isReporting(): boolean {
+        return this.reporting.size > 0;
     }
 
     list(): LiveMeeting[] {

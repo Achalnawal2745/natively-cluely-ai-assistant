@@ -48,7 +48,13 @@ export function nameCallLines<T extends LineLike>(
         }
         return line;
     });
-    if (participants.length === 1) {
+    // One name means a one-to-one call only when the list is the whole call: the
+    // Meet page reports everyone, but the Zoom / Teams desktop reader can stop
+    // short and records only names it recognises. Two provider voices on the
+    // other side also prove it is not one person.
+    const otherVoices = new Set(transcript.filter((l) => isOtherSide(l.speaker) && l.speakerId).map((l) => l.speakerId));
+    const listIsWholeCall = !/^(zoom|teams)-app:/.test(callKey);
+    if (participants.length === 1 && listIsWholeCall && otherVoices.size <= 1) {
         const only = participants[0];
         const id = Object.keys(labels).find((k) => labels[k] === only) ?? `speaker_${Object.keys(labels).length + 2}`;
         labels[id] = only;

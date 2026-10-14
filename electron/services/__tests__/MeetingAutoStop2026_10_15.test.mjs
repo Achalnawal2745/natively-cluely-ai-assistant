@@ -528,3 +528,30 @@ test('quit flush: a throwing flush never throws out of the quit handler', () => 
     assert.doesNotThrow(() => app.emit('before-quit'));
     assert.ok(logs.some((l) => /flush on before-quit failed: disk full/.test(l)));
 });
+
+test('wiring: the extension connected with no meeting tab left means the call\'s tab was closed', () => {
+    let tabs = [{ key: 'meet:abc-defg-hij', provider: 'meet', via: 'browser', seenAt: 1 }];
+    let reporting = true;
+    const w = wiring({ live: { list: () => tabs, keys: () => tabs.map((t) => t.key), isReporting: () => reporting, on() {}, off() {} } });
+    w.auto.start({ ambientChat: false, undetectable: false });
+    const signals = w.auto.detector.deps.signals;
+    assert.equal(signals.callTabOpen('meet:abc-defg-hij'), true);
+    tabs = [];
+    assert.equal(signals.callTabOpen('meet:abc-defg-hij'), false, 'last tab closed: an answer, not "unknown"');
+    reporting = false;
+    assert.equal(signals.callTabOpen('meet:abc-defg-hij'), null, 'no extension at all: still no answer');
+    w.auto.end();
+});
+
+test('detector: Undetectable switched on mid-meeting turns the inactivity stop off and clears its notice', () => {
+    const u = rig({ sig: { mic: null }, options: { inactivityMs: 60_000, warningMs: 30_000 } });
+    u.advance(40_000);
+    assert.ok(u.warns.some((w) => typeof w === 'number'), 'the notice is up');
+    u.d.setInactivityEnabled(false);
+    assert.equal(u.warns.at(-1), null, 'and cleared');
+    u.advance(10 * 60_000);
+    assert.equal(u.stops.length, 0, 'no inactivity stop while Undetectable is on');
+    u.d.setInactivityEnabled(true);
+    u.advance(20_000);
+    assert.equal(u.stops.length, 0, 'switched back on, the silence counts from now');
+});

@@ -41,6 +41,12 @@ interface StoredTokens {
 export class MicrosoftCalendarProvider implements CalendarEventProvider {
     readonly id = 'outlook' as const;
     private tokens: StoredTokens | null = null;
+    /**
+     * Bumped on every connect and disconnect. A token response that comes back
+     * after the user disconnected (or reconnected) belongs to a connection that
+     * no longer exists and is thrown away, never saved.
+     */
+    private connection = 0;
 
     constructor(
         private readonly deps: CalendarProviderDeps,
@@ -100,6 +106,7 @@ export class MicrosoftCalendarProvider implements CalendarEventProvider {
                 const tokens = this.tokensFrom(data, null);
                 const me = await this.fetchMe(tokens.accessToken);
                 if (me) Object.assign(tokens, me);
+                this.connection++;
                 this.tokens = tokens;
                 this.save();
                 this.deps.onConnectionChanged();
@@ -111,6 +118,7 @@ export class MicrosoftCalendarProvider implements CalendarEventProvider {
 
     async disconnect(): Promise<void> {
         const was = this.isConnected();
+        this.connection++;
         this.tokens = null;
         removeSecretFile(this.deps, OUTLOOK_TOKEN_FILE);
         if (was) this.deps.onConnectionChanged();
@@ -170,17 +178,21 @@ export class MicrosoftCalendarProvider implements CalendarEventProvider {
     /** True when a fresh access token is in hand. A dead grant disconnects; a network failure keeps the tokens. */
     private async refresh(): Promise<boolean> {
         if (!this.tokens) return false;
+        const connection = this.connection;
         try {
             const data = await postMicrosoftToken(this.deps.fetch, this.config(), {
                 grant_type: 'refresh_token',
                 refresh_token: this.tokens.refreshToken,
             });
+            // Disconnected (or reconnected) while the refresh was out: not ours to save.
+            if (connection !== this.connection || !this.tokens) return false;
             this.tokens = this.tokensFrom(data, this.tokens);
             this.save();
             return true;
         } catch (error) {
             console.error('[Calendar] Outlook token refresh failed:', error);
-            if (error instanceof MicrosoftTokenError && MICROSOFT_DEAD_GRANT_ERRORS.has(error.code)) {
+            if (connection === this.connection
+                && error instanceof MicrosoftTokenError && MICROSOFT_DEAD_GRANT_ERRORS.has(error.code)) {
                 await this.disconnect();
             }
             return false;

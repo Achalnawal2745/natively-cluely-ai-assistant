@@ -11,9 +11,11 @@ export const NotesRating: React.FC<{
     meetingId: string;
     /** The earlier version shown, or null for the current notes. */
     versionId: number | null;
+    /** Changes with the notes' words: regenerated notes are unrated until rated. */
+    contentKey?: string;
     isLight: boolean;
     t: (s: string) => string;
-}> = ({ meetingId, versionId, isLight, t }) => {
+}> = ({ meetingId, versionId, contentKey, isLight, t }) => {
     const [rating, setRating] = useState<'up' | 'down' | null>(null);
     const [comment, setComment] = useState('');
     const [askWhy, setAskWhy] = useState(false);
@@ -30,7 +32,7 @@ export const NotesRating: React.FC<{
             })
             .catch(() => { /* unrated */ });
         return () => { live = false; };
-    }, [meetingId, versionId]);
+    }, [meetingId, versionId, contentKey]);
 
     const save = (next: 'up' | 'down', withComment?: string) => {
         setRating(next);
