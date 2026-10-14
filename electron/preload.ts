@@ -262,7 +262,6 @@ interface ElectronAPI {
     hasAgentRouterKey?: boolean;
     disabledProviders?: string[];
     cloudEnabledModels?: Record<string, string[]>;
-    cloudFetchedModels?: Record<string, { id: string; label: string }[]>;
     hasNativelyKey: boolean;
     googleServiceAccountPath: string | null;
     sttProvider: string;
@@ -3039,10 +3038,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Dynamic Model Discovery & Live Catalog
   fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude' | 'deepseek' | 'nvidia_nim' | 'openrouter' | 'fluxion' | 'agentrouter', apiKey: string) =>
     ipcRenderer.invoke('fetch-provider-models', provider, apiKey),
-  refreshLiveCatalog: (provider?: string, force?: boolean) =>
-    ipcRenderer.invoke('refresh-live-catalog', provider, force),
-  getLiveCatalog: (provider: string) =>
-    ipcRenderer.invoke('get-live-catalog', provider),
   onLiveCatalogUpdated: (callback: (data: { provider?: string; models?: any[] }) => void) => {
     const subscription = (_: any, data: { provider?: string; models?: any[] }) => callback(data);
     ipcRenderer.on('models-catalog-updated', subscription);

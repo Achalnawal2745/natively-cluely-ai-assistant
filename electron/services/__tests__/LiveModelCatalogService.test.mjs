@@ -123,6 +123,25 @@ describe('LiveModelCatalogService', () => {
     assert.deepEqual(mockCm.getCloudFetchedModels('openai'), oldModels);
   });
 
+  test('refreshProvider with no key leaves the stored catalogue alone and fetches nothing', async () => {
+    const mockCm = new MockCredentialsManager();
+    const stored = [{ id: 'gpt-5.4', label: 'gpt-5.4' }];
+    const fetchedAt = Date.now() - 1000;
+    mockCm.setCloudFetchedModels('openai', stored, fetchedAt);
+
+    let fetched = false;
+    const service = new LiveModelCatalogService({
+      credentialsManager: mockCm,
+      fetcher: async () => { fetched = true; return []; },
+    });
+
+    const result = await service.refreshProvider('openai', true);
+    assert.equal(result.success, false);
+    assert.equal(fetched, false);
+    assert.deepEqual(mockCm.getCloudFetchedModels('openai'), stored);
+    assert.equal(mockCm.getCloudFetchedAt().openai, fetchedAt);
+  });
+
   test('credential rotation does not reuse old in-flight request and discards old results', async () => {
     const mockCm = new MockCredentialsManager();
     mockCm.credentials.apiKeys.openai = 'old-key';

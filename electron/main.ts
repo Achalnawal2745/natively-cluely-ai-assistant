@@ -10029,8 +10029,9 @@ if (process.env.THINKING_MATRIX === '1') {
 
   logStartupPhase('initializeApp:complete');
 
-  // Synchronize Live Model Catalog across configured AI providers in background
-  setTimeout(() => {
+  // Refresh each keyed provider's model catalogue once it is a day old, off the
+  // launch path. Cleared on quit so it never starts network calls mid-shutdown.
+  const catalogRefreshTimer = setTimeout(() => {
     try {
       const { LiveModelCatalogService } = require('./services/LiveModelCatalogService');
       LiveModelCatalogService.getInstance().refreshAllConfiguredProviders().catch((err: any) => {
@@ -10040,6 +10041,7 @@ if (process.env.THINKING_MATRIX === '1') {
       console.warn('[Main] Could not initiate background live model catalog refresh:', e?.message);
     }
   }, 15000);
+  app.once('before-quit', () => clearTimeout(catalogRefreshTimer));
 
   maybeForceDevPermissionBanner(appState);
 

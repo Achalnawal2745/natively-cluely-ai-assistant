@@ -5,6 +5,7 @@
 
 import axios from 'axios';
 import { DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_PRO_MODEL, isDeepseekModelId } from '../llm/deepseekModels';
+import { isOpenAiModelId } from '../llm/openaiModels';
 import { AGENTROUTER_MODELS_URL, agentRouterCatalogue, agentRouterHttpHeaders } from '../llm/agentRouter';
 import { getVisionCapabilityStore } from '../llm/visionCapabilityStore';
 import { parseOpenRouterVision } from '../llm/providerVisionData';
@@ -241,18 +242,30 @@ async function fetchNvidiaNimModels(apiKey: string): Promise<ProviderModel[]> {
 // ─── OpenAI ──────────────────────────────────────────────────────────────────
 
 export function filterOpenAIModels(models: any[]): ProviderModel[] {
+    // /v1/models lists everything the key can reach, and most of it cannot
+    // answer a chat completion: image, speech, transcription, search and
+    // moderation models, plus the Responses-only family (`*-pro`, `*-codex`,
+    // `*-deep-research`), which 400 on /chat/completions. Each one listed here
+    // would sit in the picker and fail the turn it is picked for.
     const excludePatterns = [
-        'embedding', 'whisper', 'tts', 'dall-e', 'realtime', 'audio',
-        'babbage', 'davinci', 'moderation', 'canary', 'instruct'
+        'embedding', 'whisper', 'tts', 'dall-e', 'realtime', 'audio', 'transcribe',
+        'image', 'search', 'deep-research', 'codex', 'computer-use',
+        'babbage', 'davinci', 'moderation', 'canary', 'instruct',
     ];
+    const ids = new Set((models || []).map((m: any) => (m?.id || '').toLowerCase()));
     const filtered = (models || []).filter((m: any) => {
         const id = (m?.id || '').toLowerCase();
-        if (!id) return false;
+        if (!isOpenAiModelId(id)) return false;
         if (excludePatterns.some(p => id.includes(p))) return false;
-        // Include chat models: gpt-4*, gpt-5*, gpt-6*, chatgpt-*, o1*, o2*, o3*, o4*, etc.
-        if (id.includes('gpt-') || id.startsWith('chatgpt-')) return true;
-        if (/^o\d+/.test(id)) return true;
-        return false;
+        if (/-pro(?:-|$)/.test(id)) return false;
+        // Floor: gpt-4o and newer. gpt-3.5 and the original gpt-4 / gpt-4-turbo
+        // are still listed but superseded by everything above them.
+        if (/^gpt-(?:3|4(?:-|$))/.test(id)) return false;
+        // `gpt-4o-2024-11-20` is a pinned copy of `gpt-4o`; when the alias is in
+        // the list the snapshot only doubles the row.
+        const snapshot = id.match(/^(.*)-\d{4}-\d{2}-\d{2}$/);
+        if (snapshot && ids.has(snapshot[1])) return false;
+        return true;
     });
 
     return filtered
@@ -487,7 +500,7 @@ async function fetchDeepSeekModels(apiKey: string): Promise<ProviderModel[]> {
 // ─── Gemini ──────────────────────────────────────────────────────────────────
 
 export function filterGeminiModels(models: any[]): ProviderModel[] {
-    const excludePatterns = ['nano', 'custom', 'computer-use', 'banana', 'tts', 'embedding', 'aqa', 'vision'];
+    const excludePatterns = ['nano', 'custom', 'computer-use', 'banana', 'tts', 'embedding', 'aqa', 'vision', 'image'];
 
     const filtered = (models || []).filter((m: any) => {
         const name = (m?.name || '').toLowerCase();
@@ -501,8 +514,10 @@ export function filterGeminiModels(models: any[]): ProviderModel[] {
         // Must NOT match any exclude patterns
         if (excludePatterns.some(p => combined.includes(p))) return false;
 
-        // Match gemini-1.5, gemini-2, gemini-2.5, gemini-3, gemini-4, etc.
-        return /gemini-(1\.5|[2-9])/.test(combined);
+        // Gemini 2.5 and above (gemini-2.5-*, gemini-3-*, ...). 1.5 is retired and
+        // 2.0 is the experimental and image-generation generation; both were
+        // left out on purpose before this list was fetched automatically.
+        return /gemini-([3-9]|2\.5)/.test(combined);
     });
 
     return filtered
@@ -523,4 +538,3 @@ async function fetchGeminiModels(apiKey: string): Promise<ProviderModel[]> {
 
     return filterGeminiModels(response.data?.models || []);
 }
-

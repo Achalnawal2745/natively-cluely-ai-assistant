@@ -114,6 +114,7 @@ import { stripPriorAssistantTurns } from './llm/conversationHistoryPolicy';
 import { performanceHooks, applyAdaptiveTtft, secondaryStreamObserver } from './llm/performance/wiring';
 import { estimateTokens as _estimatePerfTokens } from './llm/modelCapabilities';
 import { DEEPSEEK_DEFAULT_MODEL, isDeepseekModelId } from './llm/deepseekModels';
+import { isOpenAiModelId } from './llm/openaiModels';
 import { mintTurnId } from './llm/turnIdentity';
 import type { StreamRouteOptions } from './llm/streamContextPolicy';
 import { buildProfileJitPrompt } from './llm/ProfileJitPromptBuilder';
@@ -593,7 +594,9 @@ export function initializeIpcHandlers(appState: AppState): void {
     settleExpiredTrial('credentials changed');
   };
 
-  const broadcastLiveCatalogUpdated = (provider?: string, models?: any[]): void => {
+  // Separate from credentials-changed: a refreshed catalogue is not a credential
+  // change, so it must not settle trials or re-run the credential listeners.
+  const broadcastLiveCatalogUpdated = (provider?: string, models?: { id: string; label?: string }[]): void => {
     BrowserWindow.getAllWindows().forEach((win) => {
       if (!win.isDestroyed()) {
         win.webContents.send('models-catalog-updated', { provider, models });
@@ -603,14 +606,16 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   try {
     const { LiveModelCatalogService } = require('./services/LiveModelCatalogService');
-    LiveModelCatalogService.getInstance().setOnUpdated((provider: string, models: any[]) => {
+    LiveModelCatalogService.getInstance().setOnUpdated((provider: string, models: { id: string; label: string }[]) => {
       broadcastLiveCatalogUpdated(provider, models);
     });
   } catch (e: any) {
     console.warn('[IPC] Could not initialize LiveModelCatalogService update listener:', e?.message);
   }
 
-  const triggerLiveCatalogRefresh = (provider: string, apiKey?: string) => {
+  // A saved key re-reads that provider's catalogue (forced: the old one belonged
+  // to the previous key). Not awaited, so a slow /models never delays the save.
+  const triggerLiveCatalogRefresh = (provider: import('./services/LiveModelCatalogService').LiveCatalogProvider, apiKey?: string) => {
     if (apiKey?.trim()) {
       try {
         const { LiveModelCatalogService } = require('./services/LiveModelCatalogService');
@@ -618,8 +623,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       } catch { /* optional */ }
     }
   };
-
-
 
   /**
    * Re-sync the runtime after the stored Natively credential changed OUTSIDE the
@@ -733,16 +736,14 @@ export function initializeIpcHandlers(appState: AppState): void {
         if (modelId.startsWith('ollama-')) return 'ollama';
         if (modelId.startsWith('gemini-') || modelId.startsWith('models/')) return 'gemini';
         if (isKnownGroqModel(modelId)) return 'groq';
-        // o4- included deliberately: modelFetcher.ts admits /^o[134]/, so o4-* ids reach
-        // here. Omitting it made providerFamily return 'unknown', so the disabled-provider
-        // check below never matched and switching OpenAI off did NOT hide o4 models from
-        // routing. Keep this a superset of the fetcher's admitted prefixes.
-        if (modelId.startsWith('gpt-') || /^o\d+/.test(modelId) || modelId.startsWith('o1-') || modelId.startsWith('o3-') || modelId.startsWith('o4-') || modelId.startsWith('chatgpt-') || modelId.includes('openai')) return 'openai';
+        // isOpenAiModelId is the predicate the fetcher admits ids with, so every
+        // fetched OpenAI id classifies here. A gap made providerFamily return
+        // 'unknown' and switching OpenAI off did NOT hide o4 models from routing.
+        if (isOpenAiModelId(modelId) || modelId.includes('openai')) return 'openai';
         if (modelId.startsWith('claude-')) return 'claude';
         // THE shared predicate (deepseekModels.ts); the `/^deepseek-v/i` that
         // stood here missed `deepseek-flash`, DeepSeek's current id.
         if (isDeepseekModelId(modelId)) return 'deepseek';
-        if (modelId.startsWith('deepseek-')) return 'deepseek';
         // Custom providers use arbitrary ids, so this must be an identity lookup and
         // must come last — anything matching a built-in prefix above is that
         // provider, not a custom one. Without it these classify as 'unknown' and
@@ -809,7 +810,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         // Check Groq before the broad OpenAI catch-all so Groq-hosted ids such as
         // openai/gpt-oss-120b are gated by the Groq key, not the OpenAI key.
         if (isKnownGroqModel(modelId)) return has(cm.getGroqApiKey());
-        if (modelId.startsWith('gpt-') || modelId.startsWith('o1-') || modelId.startsWith('o3-') || modelId.startsWith('o4-') || modelId.includes('openai')) return has(cm.getOpenaiApiKey());
+        if (isOpenAiModelId(modelId) || modelId.includes('openai')) return has(cm.getOpenaiApiKey());
         if (modelId.startsWith('claude-')) return has(cm.getClaudeApiKey());
         if (isDeepseekModelId(modelId)) return has(cm.getDeepseekApiKey());
         // Intentional conservative fallback: unknown model ids may belong to saved
@@ -11501,7 +11502,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     } catch (error: any) { return { success: false, error: error.message }; }
   });
 
-
   safeHandle('set-litellm-config', async (_, config: { apiKey: string; baseURL: string; maxTokens?: number }) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
@@ -13188,7 +13188,6 @@ export function initializeIpcHandlers(appState: AppState): void {
         ninerouterPreferredModel: creds.ninerouterPreferredModel || undefined,
         disabledProviders: creds.disabledProviders || [],
         cloudEnabledModels: creds.cloudEnabledModels || {},
-        cloudFetchedModels: CredentialsManager.getInstance().getAllCloudFetchedModels(),
       };
     } catch (error: any) {
       // SECURITY FIX (P0): Error fallback returns masked keys, not raw strings
@@ -13314,39 +13313,6 @@ export function initializeIpcHandlers(appState: AppState): void {
         return { success: false, error: msg };
       }
     },
-  );
-
-  safeHandle(
-    'refresh-live-catalog',
-    async (_, provider?: string, force?: boolean) => {
-      try {
-        const { LiveModelCatalogService } = require('./services/LiveModelCatalogService');
-        const service = LiveModelCatalogService.getInstance();
-        if (provider) {
-          return await service.refreshProvider(provider, force ?? true);
-        } else {
-          await service.refreshAllConfiguredProviders(force ?? true);
-          return { success: true };
-        }
-      } catch (error: any) {
-        console.warn('[IPC] refresh-live-catalog failed:', error?.message);
-        return { success: false, error: error?.message };
-      }
-    }
-  );
-
-  safeHandle(
-    'get-live-catalog',
-    async (_, provider: string) => {
-      try {
-        const { LiveModelCatalogService } = require('./services/LiveModelCatalogService');
-        const service = LiveModelCatalogService.getInstance();
-        return service.getLiveModels(provider);
-      } catch (error: any) {
-        console.warn('[IPC] get-live-catalog failed:', error?.message);
-        return [];
-      }
-    }
   );
 
   safeHandle(

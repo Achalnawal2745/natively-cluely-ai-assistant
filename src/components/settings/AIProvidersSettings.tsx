@@ -2086,6 +2086,15 @@ export const AipModelList: React.FC<AipModelListProps> = ({
 }) => {
     const t = useT();
     const [open, setOpen] = useState(false);
+    // "14:32" for a list fetched today, "13 Oct" otherwise: a time alone made a
+    // day-old list read as fresh. Empty when never fetched (fetchedAt 0 / unset).
+    const syncedLabel = (() => {
+        if (!lastFetchedAt || lastFetchedAt <= 0) return '';
+        const at = new Date(lastFetchedAt);
+        return at.toDateString() === new Date().toDateString()
+            ? at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : at.toLocaleDateString([], { day: 'numeric', month: 'short' });
+    })();
     // Asked only while the list is open: a closed list shows no rows.
     const visionIds = useMemo(
         () => visionControl ? models.map(m => visionId ? visionId(m.id) : m.id) : [],
@@ -2297,12 +2306,19 @@ export const AipModelList: React.FC<AipModelListProps> = ({
                                 )}
                             </>
                         )}
+                        {/* Before Refresh, and holding the row's ml-auto when Refresh would:
+                            two auto margins split the free space and parked Refresh mid-row. */}
+                        {syncedLabel && (
+                            <span className={`text-[10px] aip-muted self-center shrink-0 whitespace-nowrap ${showFilterBar || (onBulkToggle && visible.length > 0) ? '' : 'ml-auto'}`}>
+                                {t('Synced')} {syncedLabel}
+                            </span>
+                        )}
                         {onRefresh && (
                             <button
                                 type="button"
                                 onClick={onRefresh}
                                 disabled={refreshing}
-                                className={`aip-btn aip-btn-sm shrink-0 ${showFilterBar || (onBulkToggle && visible.length > 0) ? '' : 'ml-auto'}`}
+                                className={`aip-btn aip-btn-sm shrink-0 ${showFilterBar || (onBulkToggle && visible.length > 0) || syncedLabel ? '' : 'ml-auto'}`}
                                 title={t('Re-read the model list from this provider')}
                             >
                                 <RefreshCw size={11} strokeWidth={1.75} className={refreshing ? 'aip-spinner' : ''} />
@@ -2312,11 +2328,6 @@ export const AipModelList: React.FC<AipModelListProps> = ({
                                     catalogIsComplete uses to silence the built-in note. */}
                                 {refreshing ? t('Fetching...') : (showFilterBar || catalogIsComplete) ? t('Refresh') : t('Fetch all models')}
                             </button>
-                        )}
-                        {lastFetchedAt && lastFetchedAt > 0 && (
-                            <span className="text-[10px] aip-muted ml-auto self-center shrink-0">
-                                {t('Synced')} {new Date(lastFetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
                         )}
                         </div>
 
@@ -2353,10 +2364,11 @@ export const AipModelList: React.FC<AipModelListProps> = ({
                                         >
                                             <Check size={11} strokeWidth={2.5} className="aip-model-check" aria-hidden="true" />
                                             <span className="aip-model-name truncate">{m.label}</span>
-                                            {m.description ? (
+                                            {/* The routing id (`nvidia_nim/nvidia/llama-…`) is not shown:
+                                                it is internal, and it squeezed the name. It stays in the
+                                                row's tooltip above. */}
+                                            {m.description && (
                                                 <span className="aip-model-id truncate">{m.description}</span>
-                                            ) : m.label !== m.id && (
-                                                <span className="aip-model-id aip-mono truncate">{m.id}</span>
                                             )}
                                         </button>
                                         {stale && <AipBadge tone="warn" label={t('Not offered')} />}

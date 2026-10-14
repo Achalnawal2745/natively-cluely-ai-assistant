@@ -1,8 +1,12 @@
 /**
  * LiveModelCatalogService.ts
  *
- * Manages dynamic model catalog caching, discovery, and synchronization
- * across all configured AI providers with a 24-hour TTL (stale-while-revalidate).
+ * Keeps each configured provider's fetched model catalogue fresh: refreshed
+ * when its key is saved (forced) and at launch when older than 24 hours.
+ *
+ * A fetched catalogue feeds Settings → AI Providers only. The overlay picker
+ * keeps its presets plus the default model; a fetched model reaches it through
+ * "Set default". ModelPickerIgnoresFetchedCatalogue2026_10_14.test.mjs says why.
  */
 
 import { fetchProviderModels, ProviderModel } from '../utils/modelFetcher';
@@ -18,9 +22,12 @@ export type LiveCatalogProvider =
     | 'fluxion'
     | 'agentrouter';
 
+type CatalogFetcher = (provider: Parameters<typeof fetchProviderModels>[0], apiKey: string) => Promise<ProviderModel[]>;
+
 export interface LiveModelCatalogOptions {
+    /** CredentialsManager, or a stand-in in tests. Its key getters and catalogue store are all this uses. */
     credentialsManager?: any;
-    fetcher?: (provider: any, apiKey: string) => Promise<ProviderModel[]>;
+    fetcher?: CatalogFetcher;
     onUpdated?: (provider: string, models: ProviderModel[]) => void;
 }
 
@@ -29,7 +36,7 @@ export class LiveModelCatalogService {
     public static readonly DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
     private credentialsManager: any;
-    private fetcher: (provider: any, apiKey: string) => Promise<ProviderModel[]>;
+    private fetcher: CatalogFetcher;
     private onUpdated?: (provider: string, models: ProviderModel[]) => void;
     private inFlight = new Map<string, Promise<{ success: boolean; models: ProviderModel[]; error?: string }>>();
     private inFlightKey = new Map<string, string>();
@@ -91,34 +98,18 @@ export class LiveModelCatalogService {
     }
 
     /**
-     * Stale-while-revalidate: returns cached models immediately,
-     * kicking off background refresh if stale or never fetched.
-     */
-    public getLiveModels(provider: string): ProviderModel[] {
-        const cm = this.getCm();
-        const cached = cm.getCloudFetchedModels?.(provider) || [];
-        if (this.isStale(provider)) {
-            // Background refresh without blocking caller
-            this.refreshProvider(provider, false).catch(() => {});
-        }
-        return cached;
-    }
-
-    /**
      * Refresh models for a specific provider.
      */
     public async refreshProvider(
-        provider: string,
+        provider: LiveCatalogProvider,
         force: boolean = false
     ): Promise<{ success: boolean; models: ProviderModel[]; error?: string }> {
         const cm = this.getCm();
         const key = this.getApiKeyForProvider(provider)?.trim();
 
+        // No key: nothing to fetch with. The stored catalogue is left alone; a key
+        // that reads empty because secure storage is unavailable must not erase it.
         if (!key) {
-            const nextSeq = (this.requestSeq.get(provider) || 0) + 1;
-            this.requestSeq.set(provider, nextSeq);
-            this.lastCommittedSeq.set(provider, nextSeq);
-            cm.setCloudFetchedModels?.(provider, [], 0);
             return {
                 success: false,
                 models: [],

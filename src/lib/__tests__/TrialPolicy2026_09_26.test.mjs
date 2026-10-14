@@ -88,6 +88,6 @@ test('main tells the rule about the Codex route in both places it asks', async (
   const { dirname, join } = await import('node:path');
   const ipc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../../electron/ipcHandlers.ts'), 'utf8');
   assert.ok(ipc.includes('const codexRouteReady = (): boolean => {'));
-  const occurrences = (ipc.match(/hasOwnAiKey\(.*?, \{ codexReady: codexRouteReady\(\) \}\)/g) || []).length;
-  assert.ok(occurrences >= 2, 'settleExpiredTrial, get-stored-credentials, and route checks');
+  assert.equal((ipc.match(/hasOwnAiKey\(.*?, \{ codexReady: codexRouteReady\(\) \}\)/g) || []).length, 4,
+    'trial state, settleExpiredTrial, trial eligibility and get-stored-credentials');
 });
