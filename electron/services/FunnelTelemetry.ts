@@ -36,7 +36,7 @@ import {
     normalizeOpenMeeting, cutOffMeeting, type OpenMeeting,
 } from '../../src/lib/funnel/funnelState.mjs';
 import { ANSWER_FAILURE_CAUSES, type FunnelProps, type FunnelEntitlement } from '../../src/lib/funnel/funnelCatalog.mjs';
-import { tagCheckoutUrl } from '../../src/lib/funnel/checkoutLinks.mjs';
+import { tagCheckoutUrl, viaWebsiteCheckout } from '../../src/lib/funnel/checkoutLinks.mjs';
 import { createInstallRegistrar, type InstallRegistrar } from '../../src/lib/funnel/funnelInstall.mjs';
 import { getAppSessionId, usageFlagEnabled } from './UsageOutbox';
 import { SettingsManager } from './SettingsManager';
@@ -478,14 +478,18 @@ export class FunnelTelemetry {
 
     /**
      * Attribution for a link that is about to leave the app. Returns the URL to
-     * open: unchanged unless it is a checkout link and telemetry is on.
+     * open: unchanged unless it is a checkout link and telemetry is on. Then it
+     * is tagged and goes to Dodo by way of heynatively.com/checkout, which adds
+     * the affiliate who referred this person, if any (checkoutLinks.mjs
+     * viaWebsiteCheckout). With Usage statistics off the link is opened exactly
+     * as given, so it does not pass through the website either.
      */
     public tagOutgoingUrl(url: string, surface?: string): { url: string; checkout: boolean; product: string | null; surface: string } {
         const where = typeof surface === 'string' && /^[a-z0-9_]{1,40}$/.test(surface) ? surface : 'other';
         try {
             if (!this.isEnabled()) return { url, checkout: false, product: null, surface: where };
             const tagged = tagCheckoutUrl(url, { installId: this.installId(), surface: where });
-            return { ...tagged, surface: where };
+            return { ...tagged, url: tagged.checkout ? viaWebsiteCheckout(tagged.url) : tagged.url, surface: where };
         } catch {
             return { url, checkout: false, product: null, surface: where };
         }

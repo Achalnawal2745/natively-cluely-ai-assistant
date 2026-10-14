@@ -15511,8 +15511,10 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       if (allowedWebUrl || allowedSystemSettingsUrl) {
         // A checkout link leaves with the install id, the surface and the
-        // product on it, so a purchase can be tied back to where it started
-        // (src/lib/funnel/checkoutLinks.mjs). Every other link is untouched.
+        // product on it, so a purchase can be tied back to where it started,
+        // and goes by way of heynatively.com/checkout, which credits the
+        // affiliate who referred this person (src/lib/funnel/checkoutLinks.mjs).
+        // Every other link is untouched.
         const tagged = allowedWebUrl
           ? funnelTelemetry.tagOutgoingUrl(url, funnelSurface(opts?.surface))
           : { url, checkout: false, product: null as string | null, surface: 'other' };

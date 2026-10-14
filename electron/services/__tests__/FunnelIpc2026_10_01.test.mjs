@@ -117,11 +117,21 @@ describe('funnel telemetry through the real IPC handlers', { skip: HAVE_BUILD ? 
     }
   });
 
+  // A tagged checkout link goes to Dodo by way of heynatively.com/checkout,
+  // which adds the affiliate referral (checkoutLinks.mjs viaWebsiteCheckout).
+  // Returns the Dodo link it carries.
+  const dodoLink = (openedUrl) => {
+    const hop = new URL(openedUrl);
+    assert.equal(hop.origin + hop.pathname, 'https://heynatively.com/checkout');
+    const to = new URL(hop.searchParams.get('to'));
+    assert.equal(to.origin + to.pathname, PRO_LINK);
+    return to;
+  };
+
   test('a checkout link leaves tagged, and the click is recorded', async () => {
     const { result, events } = await during(() => call('open-external', PRO_LINK, { surface: 'trial_card' }));
     assert.deepEqual(result, { ok: true });
-    const url = new URL(opened.at(-1));
-    assert.equal(url.origin + url.pathname, PRO_LINK);
+    const url = dodoLink(opened.at(-1));
     assert.match(installId(), UUID);
     assert.equal(url.searchParams.get('metadata_install_id'), installId());
     assert.equal(url.searchParams.get('metadata_surface'), 'trial_card');
@@ -142,7 +152,7 @@ describe('funnel telemetry through the real IPC handlers', { skip: HAVE_BUILD ? 
     await settle();
     const a = await during(() => call('open-external', PRO_LINK));
     assert.equal(a.events[0].props.surface, 'other');
-    assert.equal(new URL(opened.at(-1)).searchParams.get('metadata_surface'), 'other');
+    assert.equal(dodoLink(opened.at(-1)).searchParams.get('metadata_surface'), 'other');
     await settle();
     const b = await during(() => call('open-external', PRO_LINK, { surface: '<script>' }));
     assert.equal(b.events[0].props.surface, 'other');

@@ -207,6 +207,10 @@ const RU: Record<string, string> = {
     'Support Development': 'Поддержать разработку',
     'Natively is independent source-available software.': 'Natively — независимое ПО с открытым исходным кодом.',
     'Support Project': 'Поддержать проект',
+    // Settings > About, the affiliate row (2026-10-14).
+    'Affiliate Program': 'Партнёрская программа',
+    'Recommend Natively and earn a commission on every sale.': 'Рекомендуйте Natively и получайте комиссию с каждой продажи.',
+    'Affiliate': 'Партнёрам',
     // Settings > About, the Reviews section (2026-10-11).
     'Reviews': 'Отзывы',
     'Tell us how Natively is working for you.': 'Расскажите, как вам работается с Natively.',

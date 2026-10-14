@@ -75,3 +75,28 @@ export function tagCheckoutUrl(url, ctx = {}) {
   if (info.product) add('metadata_product', info.product);
   return { url: out.toString(), checkout: true, product: info.product };
 }
+
+/** The website's checkout hop (natively-website functions/checkout.js). */
+export const WEBSITE_CHECKOUT = 'https://heynatively.com/checkout';
+
+/**
+ * Send a checkout link through the website on its way to Dodo.
+ *
+ * Someone who clicks an affiliate's link, installs Natively and buys from
+ * inside the app never passes the website's checkout buttons, so the
+ * affiliate was not credited. heynatively.com/checkout runs in the browser the
+ * link opens in, which is where the affiliate's link was clicked: it reads the
+ * referral the Affonso pixel left there, adds it as `metadata_affonso_referral`
+ * and redirects to the Dodo link unchanged otherwise. It follows Dodo checkout
+ * links only and sends anything else to /pricing.
+ *
+ * Anything that is not a checkout link, or is already going through the
+ * website, comes back unchanged.
+ *
+ * @param {string} url
+ * @returns {string}
+ */
+export function viaWebsiteCheckout(url) {
+  if (!parseCheckoutUrl(url)) return url;
+  return `${WEBSITE_CHECKOUT}?to=${encodeURIComponent(url)}`;
+}

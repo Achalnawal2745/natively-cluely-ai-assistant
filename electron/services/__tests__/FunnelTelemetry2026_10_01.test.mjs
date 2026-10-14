@@ -233,10 +233,21 @@ describe('FunnelTelemetry', { skip: HAVE_BUILD ? false : 'run `npm run build:ele
     assert.equal(h.queue().at(-1).props.kind, 'pro_licence');
   });
 
+  // A tagged checkout link goes to Dodo by way of heynatively.com/checkout,
+  // which adds the affiliate referral (checkoutLinks.mjs viaWebsiteCheckout).
+  // Returns the Dodo link it carries.
+  const throughWebsite = (opened) => {
+    const hop = new URL(opened);
+    assert.equal(hop.origin + hop.pathname, 'https://heynatively.com/checkout');
+    const to = new URL(hop.searchParams.get('to'));
+    assert.equal(to.origin + to.pathname, PRO_LINK);
+    return to;
+  };
+
   test('a checkout link is tagged with this install; other links and odd surfaces are handled', () => {
     const h = load({ packaged: true });
     const tagged = h.ft.tagOutgoingUrl(PRO_LINK, 'quota_banner');
-    const url = new URL(tagged.url);
+    const url = throughWebsite(tagged.url);
     assert.equal(url.searchParams.get('metadata_install_id'), h.installId());
     assert.equal(url.searchParams.get('metadata_surface'), 'quota_banner');
     assert.deepEqual([tagged.checkout, tagged.product, tagged.surface], [true, 'api_pro', 'quota_banner']);
@@ -251,7 +262,7 @@ describe('FunnelTelemetry', { skip: HAVE_BUILD ? false : 'run `npm run build:ele
     const openedUrls = [];
     const ok = await h.ft.openOutgoing(PRO_LINK, 'other', async (u) => { openedUrls.push(u); });
     assert.equal(ok, true);
-    const url = new URL(openedUrls[0]);
+    const url = throughWebsite(openedUrls[0]);
     assert.equal(url.searchParams.get('metadata_install_id'), h.installId());
     assert.equal(url.searchParams.get('metadata_surface'), 'other');
     assert.equal(url.searchParams.get('metadata_product'), 'api_pro');

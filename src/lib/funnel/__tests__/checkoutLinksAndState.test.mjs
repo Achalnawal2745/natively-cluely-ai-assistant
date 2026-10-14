@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tagCheckoutUrl, parseCheckoutUrl, CHECKOUT_PRODUCT_BY_DODO_ID } from '../checkoutLinks.mjs';
+import { tagCheckoutUrl, parseCheckoutUrl, viaWebsiteCheckout, CHECKOUT_PRODUCT_BY_DODO_ID } from '../checkoutLinks.mjs';
 import {
   resolveEntitlement, resolveMeetingAi, usesLocalModel, localDay, minutesSince, daysSince,
   mapTrialStartResult, trialCardActionForChoice, normalizeFunnelState, isFirstRun,
@@ -16,6 +16,22 @@ const INSTALL = '3f2b8c1e-9a4d-4e6f-8b2a-1c3d5e7f9a0b';
 const PRO = 'https://checkout.dodopayments.com/buy/pdt_0NcM6Aw0IWdspbsgUeCLA';
 
 // ── Checkout links ───────────────────────────────────────────────────────────
+
+test('a checkout link goes to Dodo through heynatively.com/checkout, carrying the whole link', () => {
+  const tagged = tagCheckoutUrl(PRO, { installId: INSTALL, surface: 'trial_card' }).url;
+  const hop = new URL(viaWebsiteCheckout(tagged));
+  assert.equal(hop.origin + hop.pathname, 'https://heynatively.com/checkout');
+  assert.equal(hop.searchParams.get('to'), tagged);
+  assert.deepEqual([...hop.searchParams.keys()], ['to']);
+});
+
+test('only checkout links take the website hop, and never twice', () => {
+  for (const link of ['https://heynatively.com/pricing', 'https://github.com/evinjohnn/natively', 'http://checkout.dodopayments.com/buy/pdt_0NcM6Aw0IWdspbsgUeCLA', 'not a url']) {
+    assert.equal(viaWebsiteCheckout(link), link);
+  }
+  const once = viaWebsiteCheckout(PRO);
+  assert.equal(viaWebsiteCheckout(once), once);
+});
 
 test('a checkout link leaves with the install, the surface and the product on it', () => {
   const r = tagCheckoutUrl(PRO, { installId: INSTALL, surface: 'trial_card' });

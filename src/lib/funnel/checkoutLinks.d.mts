@@ -8,3 +8,7 @@ export function tagCheckoutUrl(
   url: string,
   ctx?: { installId?: string | null; surface?: string | null },
 ): { url: string; checkout: boolean; product: CheckoutProduct | null };
+
+export const WEBSITE_CHECKOUT: string;
+
+export function viaWebsiteCheckout(url: string): string;

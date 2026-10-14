@@ -5,7 +5,7 @@ import {
     Github, Twitter, Linkedin, Instagram, Send, Star, Bug, Mail, Heart,
     CalendarCheck, Workflow, Smartphone, ListOrdered,
     LayoutGrid, Search, FileText, UserRound, PlayCircle,
-    HardDrive, Sliders, Lock, ArrowRight, Check,
+    HardDrive, Sliders, Lock, ArrowRight, Check, HandCoins,
 } from 'lucide-react';
 import { AutoAnswerIcon } from './AutoAnswerIcon';
 import evinProfile from '../assets/evin.png';
@@ -106,6 +106,9 @@ const PRIVACY: AboutItem[] = [
 
 const REPO_URL = 'https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant';
 const DONATE_URL = 'https://buymeacoffee.com/evinjohnn';
+// The website's affiliate page (natively-website src/pages/programs/Affiliate.tsx).
+// Its join button goes to the affiliate portal (natively.affonso.io).
+const AFFILIATE_URL = 'https://heynatively.com/affiliate';
 
 const CREATOR_LINKS = [
     { label: 'GitHub', url: REPO_URL, Icon: Github },
@@ -327,7 +330,7 @@ export const AboutSection: React.FC<AboutSectionProps> = ({ onNavigate, onOpenMo
     // leftward down the list — a deliberate staircase instead of the ragged
     // column six arbitrary labels produce. Measured in the running app, not
     // guessed from label length (the icon and padding dominate at this size):
-    //   Star 76 · Join 76 · Follow 89 · Report 91 · Contact Me 118 · Support Project 143
+    //   Star 76 · Join 76 · Follow 89 · Report 91 · Affiliate (not measured) · Contact Me 118 · Support Project 143
     // It doubles as an escalating-commitment ladder — one free click, then
     // follow, then report, then write, then pay — so the order reads as
     // intentional rather than as a sort. Re-measure if a label changes.
@@ -336,6 +339,7 @@ export const AboutSection: React.FC<AboutSectionProps> = ({ onNavigate, onOpenMo
         { title: t('Telegram'), body: t('Early betas, direct help from the community, and usage tips.'), action: actionButton(t('Join'), 'https://t.me/nativelyaichat', Send, 'group-hover:text-sky-500') },
         { title: t('LinkedIn'), body: t('Follow the climb to the top of AI note-taking assistants.'), action: actionButton(t('Follow'), 'https://www.linkedin.com/company/nativley-ai', Linkedin, 'group-hover:text-sky-600') },
         { title: t('Report an Issue'), body: t('Found a bug? Let us know so we can fix it.'), action: actionButton(t('Report'), `${REPO_URL}/issues`, Bug, 'group-hover:text-red-500', false) },
+        { title: t('Affiliate Program'), body: t('Recommend Natively and earn a commission on every sale.'), action: actionButton(t('Affiliate'), AFFILIATE_URL, HandCoins, 'group-hover:text-emerald-500', false) },
         { title: t('Get in Touch'), body: t('Open for professional collaborations and job offers.'), action: actionButton(t('Contact Me'), 'mailto:evinjohnignatious@gmail.com', Mail, 'group-hover:text-accent-primary', false) },
         { title: t('Support Development'), body: t('Natively is independent source-available software.'), action: actionButton(t('Support Project'), DONATE_URL, Heart, 'group-hover:text-pink-500') },
     ];
