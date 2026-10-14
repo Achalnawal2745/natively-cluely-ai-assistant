@@ -32,6 +32,16 @@ pub mod capture_exclusion;
 // (owner + title). macOS and Windows implementations side by side.
 pub mod meeting_signals;
 
+// Who speaks in a desktop call: the meeting app's (Zoom, Teams) accessibility
+// tree, flattened for the JS solvers. macOS AX and Windows UI Automation side
+// by side; read on a worker thread.
+pub mod call_tree;
+
+// Apple Calendar for Natively's calendar sources: EventKit's permission and the
+// events of every calendar the Calendar app shows, read on a worker thread.
+// macOS only; every other OS answers "unsupported" / null with the same exports.
+pub mod calendar_events;
+
 #[cfg(target_os = "macos")]
 pub mod keyboard_tap;
 

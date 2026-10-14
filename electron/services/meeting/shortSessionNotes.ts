@@ -15,6 +15,7 @@
 
 import type { NormalizedTranscript } from './types';
 import { TYPED_SPEAKER, ASSISTANT_REPLY_SPEAKER } from './TranscriptNormalizer';
+import { renderNotesPromptContext, type NotesPromptContext } from './meetingNotesContext';
 
 /** Fewer human lines than this is a short session… */
 export const SHORT_SESSION_MIN_LINES = 3;
@@ -70,6 +71,22 @@ Return ONLY valid JSON, no markdown fences:
   "keyPoints": ["zero to three short bullets, only for real content"],
   "actionItems": []
 }`;
+
+/**
+ * SHORT_SESSION_PROMPT with the meeting's context added (people, the user's own
+ * notes, spelling list), or exactly SHORT_SESSION_PROMPT when there is none.
+ * Last time is left out: a few lines cannot carry anything over.
+ */
+export function buildShortSessionPrompt(context?: NotesPromptContext | null): string {
+  const text = renderNotesPromptContext(context, { includeLastTime: false });
+  if (!text) return SHORT_SESSION_PROMPT;
+  // The context goes before the output format, which stays the prompt's last word.
+  const at = SHORT_SESSION_PROMPT.indexOf('Return ONLY valid JSON');
+  return `${SHORT_SESSION_PROMPT.slice(0, at)}${text}
+- With so little said, use a name from MEETING CONTEXT only for a line labelled with that name. Where the user's own notes say more than the lines do, keep to what was said and the user's own points; do not expand them.
+
+${SHORT_SESSION_PROMPT.slice(at)}`;
+}
 
 export interface ShortSessionNotes {
   overview: string;

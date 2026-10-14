@@ -15,6 +15,7 @@ import {
   MessageSquare,
   Mic,
   MicOff,
+  NotebookPen,
   Pencil,
   PointerOff,
   RefreshCw,
@@ -427,6 +428,7 @@ import ScreenshotTray from './overlay/ScreenshotTray';
 import ChromeFold from './overlay/ChromeFold';
 import { useOverlayTrial } from './overlay/useOverlayTrial';
 import { TrialChip, TrialNoticeBanner } from './overlay/TrialNotice';
+import { AutoStopNoticeBanner, useMeetingAutoStopNotice } from './overlay/AutoStopNotice';
 
 // PERF: hoisted plugin arrays. ReactMarkdown receives `remarkPlugins` and
 // `rehypePlugins` as new array literals if defined inline at the call site —
@@ -1415,6 +1417,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
   const [isExpanded, setIsExpanded] = useState(true);
   // The free trial that starts by itself with a meeting: what to say about it.
   const trial = useOverlayTrial();
+  // The automatic stop's "stops in 1 minute" notice, and typing reported to main.
+  const autoStop = useMeetingAutoStopNotice();
   const [inputValue, setInputValue] = useState('');
   const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([]);
   const [skillPickerIndex, setSkillPickerIndex] = useState(0);
@@ -1440,6 +1444,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
   const [sttInterviewerProvider, setSttInterviewerProvider] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  // The notes window (`?window=notes`) is open: the Notes button shows it.
+  const [isNotesOpen, setIsNotesOpen] = useState(false);
   const [conversationContext, setConversationContext] = useState<string>('');
   const [isManualRecording, setIsManualRecording] = useState(false);
   const isRecordingRef = useRef(false); // Ref to track recording state (avoids stale closure)
@@ -5338,6 +5344,15 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
       setIsSettingsOpen(isVisible);
     });
     return () => unsubscribe();
+  }, []);
+
+  // The notes window opens and closes outside this window (its own X, a
+  // meeting starting); follow it so the Notes button reads right.
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI?.notesWindowIsOpen?.().then((open) => { if (!cancelled) setIsNotesOpen(open === true); }).catch(() => {});
+    const off = window.electronAPI?.onNotesWindowVisibility?.((open) => setIsNotesOpen(open));
+    return () => { cancelled = true; off?.(); };
   }, []);
 
   // Sync Window Visibility with Expanded State
@@ -11608,6 +11623,13 @@ Provide only the answer, nothing else.`;
               {trial.banner && <TrialNoticeBanner trial={trial} />}
               </ChromeFold>
 
+              {/* Nothing said for a while: Natively stops in a minute unless
+                  something is said or the user keeps going
+                  (overlay/AutoStopNotice.tsx; main: MeetingEndDetector). */}
+              <ChromeFold show={autoStop.stopsAt !== null} overlayVisible={isExpanded} requestHeightMotion={requestChromeHeightMotion} innerClassName="pt-3 pb-1" testId="fold-auto-stop">
+              {autoStop.stopsAt !== null && <AutoStopNoticeBanner notice={autoStop} />}
+              </ChromeFold>
+
               {/* PR #173: STT Not Configured Warning Banner */}
               <ChromeFold show={sttNotConfigured && !trialExplainsNoStt} overlayVisible={isExpanded} requestHeightMotion={requestChromeHeightMotion} innerClassName="pt-3 pb-1" testId="fold-stt-not-configured">
               {sttNotConfigured && !trialExplainsNoStt && (
@@ -12574,6 +12596,20 @@ Provide only the answer, nothing else.`;
                         className="w-7 h-7 rounded-[9px] flex items-center justify-center interaction-base interaction-press overlay-bare-icon"
                       >
                         <SlidersHorizontal className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    {/* Notes: the notes window, where the user types their own notes for
+                        this meeting; they go into the meeting notes at Stop. */}
+                    <div className="relative">
+                      <button
+                        onClick={() => { void window.electronAPI?.notesWindowToggle?.(); }}
+                        data-state={isNotesOpen ? 'open' : undefined}
+                        aria-label={t('Notes')}
+                        aria-pressed={isNotesOpen}
+                        className="w-7 h-7 rounded-[9px] flex items-center justify-center interaction-base interaction-press overlay-bare-icon"
+                      >
+                        <NotebookPen className="w-3.5 h-3.5" />
                       </button>
                     </div>
 

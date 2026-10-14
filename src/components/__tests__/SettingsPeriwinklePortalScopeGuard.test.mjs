@@ -60,6 +60,7 @@ const GUARDED_FILES = [
   'src/components/settings/SettingsToggle.tsx',
   'src/components/settings/Sidebar.tsx', // dead code (unused, zero imports) — covered in case it's ever revived
   'src/components/settings/SkillsSettings.tsx',
+  'src/components/settings/SpeechDictionarySettings.tsx',
   'src/components/LocalWhisperModelPanel.tsx',
   'src/components/ProfileIntelligenceSettings.tsx',
   'src/components/ui/AccordionSection.tsx', // shared disclosure primitive used by several guarded files above

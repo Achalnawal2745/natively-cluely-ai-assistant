@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { SkillUploadPayload } from './services/skills/SkillValidator';
 import type { NativelyUsageResponse, NativelyPlansResponse } from '../src/types/nativelyUsage';
 import { PAGE_CAPTURE_FALLBACK_CHANNEL, PAGE_CAPTURE_STARTED_CHANNEL, type PageCaptureFallbackNotice } from './services/pageCaptureFallback';
+import type { CalendarSourceId as CalendarSourceIdInfo, CalendarSourceStatus as CalendarSourceStatusInfo } from './services/calendar/providers/types';
 
 /**
  * Metadata the companion extension sends with a captured page (drives the
@@ -458,6 +459,8 @@ interface ElectronAPI {
   getAiResponseLanguages: () => Promise<Array<{ label: string; code: string }>>;
   setAiResponseLanguage: (language: string) => Promise<{ success: boolean; error?: string }>;
   getSttLanguage: () => Promise<string>;
+  getUserDictionary: () => Promise<string[]>;
+  setUserDictionary: (terms: string[]) => Promise<{ success: boolean; terms?: string[]; error?: string }>;
   getAiResponseLanguage: () => Promise<string>;
   onSttLanguageAutoDetected: (callback: (bcp47: string) => void) => () => void;
   onSystemAudioPermissionDenied: (callback: (message: string, titleKey?: string) => void) => () => void;
@@ -867,8 +870,39 @@ interface ElectronAPI {
   calendarDisconnect: () => Promise<{ success: boolean; error?: string }>;
   getCalendarStatus: () => Promise<{ connected: boolean; email?: string; name?: string }>;
   getSyncedCalendars: () => Promise<Array<{ id: string; name: string; primary: boolean; color?: string }>>;
+  /** Every calendar source this platform offers, with where each stands (Settings › Calendar). */
+  getCalendarSources: () => Promise<CalendarSourceStatusInfo[]>;
+  /** Connects one source; `input` is the pasted link for 'ics'. `error` is a sentence for the row. */
+  calendarSourceConnect: (id: CalendarSourceIdInfo, input?: string) => Promise<{ success: boolean; error?: string }>;
+  calendarSourceDisconnect: (id: CalendarSourceIdInfo) => Promise<{ success: boolean }>;
   getMeetingDetectionEnabled: () => Promise<boolean>;
   setMeetingDetectionEnabled: (on: boolean) => Promise<{ success: boolean; error?: string }>;
+  getMeetingAutoStopEnabled: () => Promise<boolean>;
+  setMeetingAutoStopEnabled: (on: boolean) => Promise<{ success: boolean; error?: string }>;
+  /** The overlay's auto-stop notice: Keep going. */
+  meetingAutoStopKeepGoing: () => Promise<{ success: boolean }>;
+  /** The user is typing in the overlay (throttled by the caller). */
+  meetingAutoStopTyping: () => void;
+  /** Show (the time it stops at) or clear (null) the "stops in 1 minute" notice. */
+  onMeetingAutoStopNotice: (callback: (data: { stopsAt: number | null }) => void) => () => void;
+  /** The notes window (`?window=notes`): the overlay's Notes button, its own X. */
+  notesWindowToggle: () => Promise<{ open: boolean }>;
+  notesWindowClose: () => Promise<{ success: boolean }>;
+  notesWindowIsOpen: () => Promise<boolean>;
+  onNotesWindowVisibility: (callback: (open: boolean) => void) => () => void;
+  /** The notes window's text and the meeting it belongs to. */
+  liveNotesGetState: () => Promise<{ phase: 'idle' | 'live' | 'ended'; meetingId: string | null; text: string }>;
+  /** Every change of the notes window's text (main keeps it with the meeting). */
+  liveNotesSetText: (text: string) => void;
+  onLiveNotesState: (callback: (state: { phase: 'idle' | 'live' | 'ended'; meetingId: string | null; text?: string }) => void) => () => void;
+  /** "Open meeting" in the notes window: the launcher opens that meeting. */
+  notesWindowOpenMeeting: (meetingId: string) => Promise<{ success: boolean }>;
+  onLauncherOpenMeeting: (callback: (meetingId: string) => void) => () => void;
+  /** Earlier versions of a meeting's notes, oldest first. */
+  getMeetingNotesVersions: (meetingId: string) => Promise<Array<{ id: number; label: string; createdAt: number; templateType: string | null; detailedSummary: any }>>;
+  /** Thumbs up / down on the notes shown (current: versionId null). */
+  rateMeetingNotes: (input: { meetingId: string; rating: 'up' | 'down'; comment?: string; versionId?: number | null }) => Promise<{ success: boolean }>;
+  getMeetingNotesRating: (input: { meetingId: string; versionId?: number | null }) => Promise<{ rating: 'up' | 'down'; comment: string | null } | null>;
   /** A notification's Start (a detected call, the calendar reminder), relayed by main to the launcher. */
   onMeetingStartRequest: (callback: (req: { title?: string; calendarEventId?: string; via?: 'detected' | 'reminder' }) => void) => () => void;
   getUpcomingEvents: () => Promise<
@@ -878,7 +912,7 @@ interface ElectronAPI {
       startTime: string;
       endTime: string;
       link?: string;
-      source: 'google';
+      source: CalendarSourceIdInfo;
     }>
   >;
   calendarRefresh: () => Promise<{ success: boolean; error?: string; fresh?: boolean }>;
@@ -2015,6 +2049,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setAiResponseLanguage: (language: string) =>
     ipcRenderer.invoke('set-ai-response-language', language),
   getSttLanguage: () => ipcRenderer.invoke('get-stt-language'),
+  getUserDictionary: () => ipcRenderer.invoke('user-dictionary-get'),
+  setUserDictionary: (terms: string[]) => ipcRenderer.invoke('user-dictionary-set', terms),
   getAiResponseLanguage: () => ipcRenderer.invoke('get-ai-response-language'),
   onSttLanguageAutoDetected: (callback: (bcp47: string) => void) => {
     const subscription = (_: any, bcp47: string) => callback(bcp47);
@@ -2756,8 +2792,52 @@ contextBridge.exposeInMainWorld('electronAPI', {
   calendarDisconnect: () => ipcRenderer.invoke('calendar-disconnect'),
   getCalendarStatus: () => ipcRenderer.invoke('get-calendar-status'),
   getSyncedCalendars: () => ipcRenderer.invoke('calendar-get-synced-calendars'),
+  getCalendarSources: () => ipcRenderer.invoke('calendar-get-sources'),
+  calendarSourceConnect: (id: CalendarSourceIdInfo, input?: string) => ipcRenderer.invoke('calendar-source-connect', id, input),
+  calendarSourceDisconnect: (id: CalendarSourceIdInfo) => ipcRenderer.invoke('calendar-source-disconnect', id),
   getMeetingDetectionEnabled: () => ipcRenderer.invoke('get-meeting-detection-enabled'),
   setMeetingDetectionEnabled: (on: boolean) => ipcRenderer.invoke('set-meeting-detection-enabled', on),
+  getMeetingAutoStopEnabled: () => ipcRenderer.invoke('get-meeting-auto-stop-enabled'),
+  setMeetingAutoStopEnabled: (on: boolean) => ipcRenderer.invoke('set-meeting-auto-stop-enabled', on),
+  meetingAutoStopKeepGoing: () => ipcRenderer.invoke('meeting-auto-stop-keep-going'),
+  meetingAutoStopTyping: () => ipcRenderer.send('meeting-auto-stop-typing'),
+  notesWindowToggle: () => ipcRenderer.invoke('notes-window:toggle'),
+  notesWindowClose: () => ipcRenderer.invoke('notes-window:close'),
+  notesWindowIsOpen: () => ipcRenderer.invoke('notes-window:is-open'),
+  onNotesWindowVisibility: (callback: (open: boolean) => void) => {
+    const subscription = (_: any, value: any) => callback(value === true);
+    ipcRenderer.on('notes-window-visibility', subscription);
+    return () => {
+      ipcRenderer.removeListener('notes-window-visibility', subscription);
+    };
+  },
+  liveNotesGetState: () => ipcRenderer.invoke('live-notes:get-state'),
+  liveNotesSetText: (text: string) => ipcRenderer.send('live-notes:set-text', text),
+  onLiveNotesState: (callback: (state: { phase: 'idle' | 'live' | 'ended'; meetingId: string | null; text?: string }) => void) => {
+    const subscription = (_: any, value: any) => callback(value);
+    ipcRenderer.on('live-notes-state', subscription);
+    return () => {
+      ipcRenderer.removeListener('live-notes-state', subscription);
+    };
+  },
+  notesWindowOpenMeeting: (meetingId: string) => ipcRenderer.invoke('notes-window:open-meeting', meetingId),
+  onLauncherOpenMeeting: (callback: (meetingId: string) => void) => {
+    const subscription = (_: any, value: any) => callback(String(value));
+    ipcRenderer.on('launcher:open-meeting', subscription);
+    return () => {
+      ipcRenderer.removeListener('launcher:open-meeting', subscription);
+    };
+  },
+  getMeetingNotesVersions: (meetingId: string) => ipcRenderer.invoke('meeting-notes:versions', meetingId),
+  rateMeetingNotes: (input: { meetingId: string; rating: 'up' | 'down'; comment?: string; versionId?: number | null }) => ipcRenderer.invoke('meeting-notes:rate', input),
+  getMeetingNotesRating: (input: { meetingId: string; versionId?: number | null }) => ipcRenderer.invoke('meeting-notes:get-rating', input),
+  onMeetingAutoStopNotice: (callback: (data: { stopsAt: number | null }) => void) => {
+    const subscription = (_: any, data: { stopsAt: number | null }) => callback(data);
+    ipcRenderer.on('meeting-auto-stop-notice', subscription);
+    return () => {
+      ipcRenderer.removeListener('meeting-auto-stop-notice', subscription);
+    };
+  },
   onMeetingStartRequest: (callback: (req: { title?: string; calendarEventId?: string; via?: 'detected' | 'reminder' }) => void) => {
     const subscription = (_: any, req: any) => callback(req && typeof req === 'object' ? req : {})
     ipcRenderer.on('meeting:start-request', subscription)

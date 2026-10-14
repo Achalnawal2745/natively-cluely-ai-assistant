@@ -61,6 +61,8 @@ export interface ModeSectionFinding {
   evidence?: EvidenceRef[];
   source?: 'explicit' | 'inferred';
   confidence?: 'high' | 'medium' | 'low';
+  /** Restates or fills in a point from the user's own notes (2026-10-15). */
+  fromUserNotes?: boolean;
 }
 
 export interface ChunkMeetingAtoms {

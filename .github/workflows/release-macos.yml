@@ -149,6 +149,11 @@ jobs:
           # (scripts/lib/calendar-client-secret.cjs). The signed config's beforePack
           # fails the release if it is missing.
           GOOGLE_CALENDAR_CLIENT_SECRET: ${{ secrets.GOOGLE_CALENDAR_CLIENT_SECRET }}
+          # Outlook calendar's Microsoft app registration (public client, not a
+          # secret: a repository variable). Unset leaves the Outlook row disabled.
+          # docs/microsoft-calendar-setup.md.
+          MICROSOFT_CALENDAR_CLIENT_ID: ${{ vars.MICROSOFT_CALENDAR_CLIENT_ID }}
+          MICROSOFT_CALENDAR_TENANT: ${{ vars.MICROSOFT_CALENDAR_TENANT }}
         # Explicit stages (NOT `npm run dist:signed`): the dist:signed chain re-runs
         # `npm run build` (rimraf dist dist-electron) which can race electron-builder's
         # native rebuild and ENOENT on dist-electron at package time. Building the stages

@@ -45,6 +45,17 @@ export interface AppSettings {
     // microphone use) to link a session to its calendar event exactly and to
     // offer to start one. Local only. Unset = on.
     meetingDetectionEnabled?: boolean;
+    // End meetings automatically when the call ends (2026-10-15,
+    // services/meeting/MeetingEndDetector.ts): the call's app lets go of the
+    // microphone, its browser tab closes, or nothing is said for
+    // meetingInactivityStopMinutes (a notice comes a minute before). Unset = on.
+    meetingAutoStopEnabled?: boolean;
+    // Minutes of silence before the inactivity stop. No UI yet. Unset = 15.
+    meetingInactivityStopMinutes?: number;
+    // The notes window (`?window=notes`, 2026-10-15): where it was and how big,
+    // and whether it was open when last used, so a meeting starting reopens it
+    // (without taking focus) for someone who keeps it open.
+    notesWindowState?: { x: number; y: number; width: number; height: number; open: boolean };
     // Direct Assist is the opt-in, single-provider answer path. It deliberately
     // bypasses meeting retrieval and the legacy answer-orchestration pipeline.
     // Keep the persisted default OFF during rollout; the operator kill switch
@@ -125,6 +136,9 @@ export interface AppSettings {
     // coding-only / high-confidence-only gate, never the sensitive floor.
     browserExperimentalFullPageCapture?: boolean; // default false (experimental)
     localWhisperModel?: string;
+    /** The user's dictionary: names and words the transcript should spell
+     *  right (audio/userDictionary.ts). At most 100, cleaned on save. */
+    userDictionary?: string[];
     // Per-channel model overrides for local Whisper. When
     // localWhisperPerChannelEnabled is true, the two LocalWhisperSTT instances
     // pick their own model (mic / system) instead of sharing localWhisperModel.

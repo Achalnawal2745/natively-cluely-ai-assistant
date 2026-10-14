@@ -37,6 +37,7 @@ export const TOOLTIP_FREE_WINDOWS = Object.freeze([
   'settings', // SettingsPopup, the overlay's quick-toggles panel
   'model-selector',
   'cropper',
+  'notes', // the meeting notes window, opened from the overlay
 ]);
 
 export function shouldSuppressNativeTooltips(windowParam) {

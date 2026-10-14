@@ -29,6 +29,12 @@ export interface LiveMeeting {
 /** What the linker reads; LiveMeetings in the app, a fake in tests. */
 export interface LiveMeetingSource {
     list(): LiveMeeting[];
+    /**
+     * Is this call's tab open? true: listed now; false: the source that showed
+     * it is still connected and no longer lists it (the tab was closed); null:
+     * that source is gone or never showed it (nothing is known).
+     */
+    tabState?(key: string): boolean | null;
     keys(): string[];
     on(event: 'change', listener: () => void): unknown;
     off(event: 'change', listener: () => void): unknown;
@@ -38,18 +44,41 @@ const rank = (m: LiveMeeting) => (m.audible ? 2 : 0) + (m.focused ? 1 : 0);
 
 export class LiveMeetings extends EventEmitter implements LiveMeetingSource {
     private bySource = new Map<unknown, LiveMeeting[]>();
+    /** Sources still connected: an empty list means "no meeting tab", null means "gone". */
+    private reporting = new Set<unknown>();
+    /** Which source last listed each call, so only that source closing it counts. */
+    private reporterOf = new Map<string, unknown>();
     private last = '[]';
 
     /** A source's complete current list (an empty list or null removes it). */
     set(source: unknown, meetings: LiveMeeting[] | null): void {
         if (meetings && meetings.length > 0) this.bySource.set(source, meetings);
         else this.bySource.delete(source);
+        if (meetings === null) {
+            this.reporting.delete(source);
+            // A source that went away answers nothing any more; holding its
+            // socket here would only grow with every call and reconnect.
+            for (const [key, s] of this.reporterOf) if (s === source) this.reporterOf.delete(key);
+        } else {
+            this.reporting.add(source);
+        }
+        for (const m of meetings ?? []) if (m.key) this.reporterOf.set(m.key, source);
         this.changed();
     }
 
     clearAll(): void {
         this.bySource.clear();
+        this.reporting.clear();
+        this.reporterOf.clear();
         this.changed();
+    }
+
+    tabState(key: string): boolean | null {
+        if (this.list().some((m) => m.key === key)) return true;
+        const source = this.reporterOf.get(key);
+        if (source === undefined) return null;
+        // Another browser still reporting proves nothing about this call's tab.
+        return this.reporting.has(source) ? false : null;
     }
 
     list(): LiveMeeting[] {

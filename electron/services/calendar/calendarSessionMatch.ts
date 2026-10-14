@@ -34,6 +34,20 @@ export interface MatchableEvent {
     selfResponse?: string;
     /** The meetings its links join (meetingDetection/meetingLinks.ts keys). */
     meetingKeys?: string[];
+    /** The series a recurring occurrence belongs to (Google's recurringEventId). */
+    recurringEventId?: string;
+    /** Who sent the invite. `self` when that is the user. */
+    organizer?: EventOrganizer;
+    /** The invite's description as plain text (cleanEventDescription). */
+    description?: string;
+    /** The IANA time zone the event was scheduled in, when the calendar gives one. */
+    timeZone?: string;
+}
+
+export interface EventOrganizer {
+    email?: string;
+    name?: string;
+    self?: boolean;
 }
 
 /** What a meeting keeps of its event, so nothing later depends on the event still being "upcoming". */
@@ -44,6 +58,15 @@ export interface CalendarEventSnapshot {
     endTime: string;
     link?: string;
     attendees: MatchableAttendee[];
+    /**
+     * Kept since 2026-10-15 for the meeting notes (series lookup, who sent it,
+     * what it was for). Absent on every snapshot saved before then, so readers
+     * must treat each as optional.
+     */
+    recurringEventId?: string;
+    organizer?: EventOrganizer;
+    description?: string;
+    timeZone?: string;
     /**
      * How the link was made: by time at start, from the notification, when an
      * early start reached the event, by the meeting link the user is in (a
@@ -156,6 +179,7 @@ export function withoutOtherMeetings<E extends MatchableEvent>(events: E[], inCa
 
 /** The event as a meeting keeps it. */
 export function toEventSnapshot(event: MatchableEvent, linkedBy: CalendarEventSnapshot['linkedBy']): CalendarEventSnapshot {
+    const description = cleanEventDescription(event.description);
     return {
         id: event.id,
         title: event.title,
@@ -165,8 +189,50 @@ export function toEventSnapshot(event: MatchableEvent, linkedBy: CalendarEventSn
         attendees: (event.attendees ?? [])
             .filter((a) => !!a.email)
             .map((a) => ({ email: a.email, ...(a.name ? { name: a.name } : {}), ...(a.response ? { response: a.response } : {}) })),
+        ...(event.recurringEventId ? { recurringEventId: event.recurringEventId } : {}),
+        ...(event.organizer && (event.organizer.email || event.organizer.name) ? { organizer: { ...event.organizer } } : {}),
+        ...(description ? { description } : {}),
+        ...(event.timeZone ? { timeZone: event.timeZone } : {}),
         linkedBy,
     };
+}
+
+/** Longest invite description a meeting keeps (and the notes are shown). */
+export const EVENT_DESCRIPTION_MAX_CHARS = 500;
+
+// Lines of conferencing boilerplate: they say how to join, not what the meeting is for.
+const DIAL_IN_LINE = /(meeting id|passcode|password|pin:|dial[- ]?in|dial by|one tap mobile|join (zoom|by phone|with google meet|microsoft teams|the meeting|on your computer)|find your local number|tel:|^\s*\+?\d[\d\s().-]{7,}$|-::~|click here to join|learn more about teams|meeting options)/i;
+
+/**
+ * An invite description as the notes can use it: HTML tags and entities
+ * removed, links and dial-in boilerplate dropped, whitespace collapsed, cut to
+ * EVENT_DESCRIPTION_MAX_CHARS on a word boundary. '' when nothing is left.
+ */
+export function cleanEventDescription(raw: unknown, maxChars: number = EVENT_DESCRIPTION_MAX_CHARS): string {
+    if (typeof raw !== 'string' || !raw) return '';
+    const text = raw
+        .slice(0, 20_000)
+        .replace(/<\s*br\s*\/?>/gi, '\n')
+        .replace(/<\/(p|div|li|h\d)>/gi, '\n')
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;|&apos;/gi, "'")
+        .replace(/&[a-z#0-9]+;/gi, ' ')
+        .replace(/\b(?:https?:\/\/|www\.)\S+/gi, ' ')
+        .replace(/\r\n?/g, '\n');
+    const lines = text
+        .split('\n')
+        .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+        .filter((line) => line && !DIAL_IN_LINE.test(line) && /[\p{L}]/u.test(line));
+    const joined = lines.join(' ').replace(/\s+/g, ' ').trim();
+    if (joined.length <= maxChars) return joined;
+    const cut = joined.slice(0, maxChars);
+    const lastSpace = cut.lastIndexOf(' ');
+    return `${(lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut).replace(/[\s.,;:]+$/, '')}…`;
 }
 
 /** A display name worth putting on a speaker: a real name, not an address. */

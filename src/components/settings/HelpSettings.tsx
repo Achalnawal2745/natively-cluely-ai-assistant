@@ -616,7 +616,7 @@ const HelpPane: React.FC<{
                         {calendarClip && <HelpClip clip={calendarClip} label={calendarClip.label} />}
                         <HelpSteps
                             steps={[
-                                <>In <HelpPath parts={['Calendar']} />, press Connect Google Calendar and sign in. Natively only reads your events.</>,
+                                <>In <HelpPath parts={['Calendar']} />, press Connect next to Google Calendar, Outlook, Apple Calendar (on a Mac) or a calendar link. Natively only reads your events.</>,
                                 'Your next meetings appear there and on the Launcher. In Calendar, from 15 minutes before one starts, its Start Natively button starts a session linked to it.',
                                 "A linked session takes the event's title and attendees. Your voice is labelled with your first name, and in a one-to-one the other person's is too.",
                             ]}

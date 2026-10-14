@@ -82,6 +82,20 @@ export interface Meeting {
     source?: 'manual' | 'calendar';
     isProcessed?: boolean;
     summaryStatus?: SummaryStatus;
+    /**
+     * What a recovery needs to write this meeting's notes as Stop would have
+     * (MeetingRecoveryMeta: calendar title, the call's speaking record, the
+     * mode, the true start). Saved with an unprocessed meeting, cleared by the
+     * processed save. Write-only through saveMeeting; read by getMeetingRecoveryMeta.
+     */
+    recoveryMeta?: unknown;
+    /**
+     * What the user typed in the notes window during the meeting (2026-10-15),
+     * exactly as typed. Its own column (user_notes), not inside summary_json:
+     * Regenerate replaces the notes blob and must never take the user's own
+     * words with it. saveMeeting writes it only when given.
+     */
+    userNotes?: string | null;
 }
 
 /**
@@ -479,6 +493,9 @@ export class DatabaseManager {
             this.runMigrations();
             this.repairVecTables();
             this.scheduleVecRebuilds();
+            // After the migrations (it alters `meetings`); not version-gated.
+            this.ensureLiveMeetingSchema();
+            this.ensureMeetingNotesSchema();
         } catch (error) {
             console.error('[DatabaseManager] Failed to initialize database:', error);
             throw error;
@@ -3686,6 +3703,305 @@ export class DatabaseManager {
             console.error(`[DatabaseManager] Failed to save meeting ${meeting.id}`, err);
             throw err;
         }
+        // Outside the transaction on purpose: a database whose column could not
+        // be added must still save the meeting itself (the user_titled incident
+        // in runMigrations). A processed save clears it; an unprocessed one
+        // writes it when given, else keeps what is there.
+        if (meeting.isProcessed || meeting.recoveryMeta !== undefined) {
+            this.setMeetingRecoveryMeta(meeting.id, meeting.isProcessed ? null : meeting.recoveryMeta);
+        }
+        // Same reasoning: written only when the save carries it, so the final
+        // save after the notes (which does not) keeps what Stop wrote.
+        if (typeof meeting.userNotes === 'string') this.setMeetingUserNotes(meeting.id, meeting.userNotes);
+    }
+
+    // ============================================
+    // The user's notes, earlier versions of the notes, ratings (2026-10-15)
+    // ============================================
+
+    /**
+     * Idempotent, NOT behind user_version (additive; see ensureLiveMeetingSchema).
+     * Both tables cascade from `meetings` (foreign_keys is ON for this
+     * connection), so deleting a meeting or clearing all data takes its
+     * versions and ratings with it.
+     */
+    private ensureMeetingNotesSchema(): void {
+        if (!this.db) return;
+        try { this.db.exec('ALTER TABLE meetings ADD COLUMN user_notes TEXT'); } catch (e) { /* Column already exists */ }
+        try {
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS meeting_notes_versions (
+                    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    meeting_id            TEXT NOT NULL,
+                    created_at            INTEGER NOT NULL,
+                    label                 TEXT NOT NULL,
+                    template_type         TEXT,
+                    mode_id               TEXT,
+                    notes_hash            TEXT NOT NULL,
+                    detailed_summary_json TEXT NOT NULL,
+                    FOREIGN KEY(meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_meeting_notes_versions_meeting ON meeting_notes_versions(meeting_id);
+                CREATE TABLE IF NOT EXISTS meeting_notes_ratings (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    meeting_id  TEXT NOT NULL,
+                    rating      TEXT NOT NULL CHECK (rating IN ('up', 'down')),
+                    comment     TEXT,
+                    notes_hash  TEXT NOT NULL,
+                    mode        TEXT,
+                    provider    TEXT,
+                    model       TEXT,
+                    created_at  INTEGER NOT NULL,
+                    UNIQUE(meeting_id, notes_hash),
+                    FOREIGN KEY(meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                );
+            `);
+        } catch (e) {
+            console.error('[DatabaseManager] notes versions / ratings tables could not be created:', e);
+        }
+    }
+
+    public setMeetingUserNotes(id: string, text: string | null): boolean {
+        if (!this.db) return false;
+        try {
+            const value = typeof text === 'string' && text.trim() ? text : null;
+            return this.db.prepare('UPDATE meetings SET user_notes = ? WHERE id = ?').run(value, id).changes > 0;
+        } catch (e: any) {
+            console.warn(`[DatabaseManager] the user's notes were not stored for ${id}:`, e?.message);
+            return false;
+        }
+    }
+
+    public getMeetingUserNotes(id: string): string | null {
+        if (!this.db) return null;
+        try {
+            const row = this.db.prepare('SELECT user_notes FROM meetings WHERE id = ?').get(id) as { user_notes: string | null } | undefined;
+            return row?.user_notes ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Keep `detailed` as an earlier version of this meeting's notes, then drop
+     * the oldest beyond MAX_ARCHIVED_NOTES_VERSIONS. Never throws: a version
+     * that could not be kept must not stop the Regenerate that asked for it.
+     */
+    public archiveNotesVersion(meetingId: string, detailed: unknown, now: number = Date.now()): number | null {
+        if (!this.db) return null;
+        try {
+            const { notesVersionLabel, notesContentHash, versionIdsToPrune } = require('../services/meeting/notesVersions') as typeof import('../services/meeting/notesVersions');
+            const mode = (detailed as any)?.mode ?? {};
+            let insertedId: number | null = null;
+            this.db.transaction(() => {
+                const info = this.db!.prepare(`
+                    INSERT INTO meeting_notes_versions (meeting_id, created_at, label, template_type, mode_id, notes_hash, detailed_summary_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                `).run(
+                    meetingId, now, notesVersionLabel(detailed),
+                    typeof mode.selectedTemplateType === 'string' ? mode.selectedTemplateType : null,
+                    typeof mode.selectedModeId === 'string' ? mode.selectedModeId : null,
+                    notesContentHash(detailed), JSON.stringify(detailed),
+                );
+                insertedId = Number(info.lastInsertRowid);
+                const rows = (this.db!.prepare('SELECT id, created_at FROM meeting_notes_versions WHERE meeting_id = ?').all(meetingId) as Array<{ id: number; created_at: number }>)
+                    .map((r) => ({ id: r.id, createdAt: r.created_at }));
+                const drop = this.db!.prepare('DELETE FROM meeting_notes_versions WHERE id = ?');
+                for (const id of versionIdsToPrune(rows)) drop.run(id);
+            })();
+            return insertedId;
+        } catch (e: any) {
+            console.warn(`[DatabaseManager] an earlier version of the notes was not kept for ${meetingId}:`, e?.message);
+            return null;
+        }
+    }
+
+    /** Earlier versions of a meeting's notes, oldest first, each with its notes. */
+    public getNotesVersions(meetingId: string): Array<{ id: number; label: string; createdAt: number; templateType: string | null; detailedSummary: any }> {
+        if (!this.db) return [];
+        try {
+            const rows = this.db.prepare(
+                'SELECT id, label, created_at, template_type, detailed_summary_json FROM meeting_notes_versions WHERE meeting_id = ? ORDER BY created_at ASC, id ASC',
+            ).all(meetingId) as any[];
+            const out: Array<{ id: number; label: string; createdAt: number; templateType: string | null; detailedSummary: any }> = [];
+            for (const r of rows) {
+                try {
+                    out.push({ id: r.id, label: r.label, createdAt: r.created_at, templateType: r.template_type ?? null, detailedSummary: JSON.parse(r.detailed_summary_json) });
+                } catch { /* an unreadable version is left out */ }
+            }
+            return out;
+        } catch {
+            return [];
+        }
+    }
+
+    /** Store (or change) the rating of one version of a meeting's notes. */
+    public saveNotesRating(r: { meetingId: string; rating: 'up' | 'down'; comment?: string | null; notesHash: string; mode?: string | null; provider?: string | null; model?: string | null; createdAt?: number }): boolean {
+        if (!this.db) return false;
+        if (r.rating !== 'up' && r.rating !== 'down') return false;
+        try {
+            const info = this.db.prepare(`
+                INSERT INTO meeting_notes_ratings (meeting_id, rating, comment, notes_hash, mode, provider, model, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(meeting_id, notes_hash) DO UPDATE SET
+                    rating = excluded.rating,
+                    comment = excluded.comment,
+                    mode = excluded.mode,
+                    provider = excluded.provider,
+                    model = excluded.model,
+                    created_at = excluded.created_at
+            `).run(
+                r.meetingId, r.rating, r.comment?.trim() ? r.comment.trim().slice(0, 2000) : null, r.notesHash,
+                r.mode ?? null, r.provider ?? null, r.model ?? null, r.createdAt ?? Date.now(),
+            );
+            return info.changes > 0;
+        } catch (e: any) {
+            console.warn(`[DatabaseManager] the notes rating was not stored for ${r.meetingId}:`, e?.message);
+            return false;
+        }
+    }
+
+    public getNotesRating(meetingId: string, notesHash: string): { rating: 'up' | 'down'; comment: string | null; createdAt: number } | null {
+        if (!this.db) return null;
+        try {
+            const row = this.db.prepare('SELECT rating, comment, created_at FROM meeting_notes_ratings WHERE meeting_id = ? AND notes_hash = ?').get(meetingId, notesHash) as any;
+            return row ? { rating: row.rating, comment: row.comment ?? null, createdAt: row.created_at } : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /** Every rating, oldest first (the offline export reads these). */
+    public listNotesRatings(): Array<{ meetingId: string; rating: 'up' | 'down'; comment: string | null; notesHash: string; mode: string | null; provider: string | null; model: string | null; createdAt: number }> {
+        if (!this.db) return [];
+        try {
+            return (this.db.prepare('SELECT * FROM meeting_notes_ratings ORDER BY created_at ASC, id ASC').all() as any[]).map((r) => ({
+                meetingId: r.meeting_id, rating: r.rating, comment: r.comment ?? null, notesHash: r.notes_hash,
+                mode: r.mode ?? null, provider: r.provider ?? null, model: r.model ?? null, createdAt: r.created_at,
+            }));
+        } catch {
+            return [];
+        }
+    }
+
+    // ============================================
+    // Live meetings (2026-10-15): the running meeting's transcript on disk
+    // ============================================
+    //
+    // services/meeting/LiveMeetingJournal.ts writes the transcript of the meeting
+    // in progress here as it grows, so a quit, crash or OS shutdown mid-meeting
+    // no longer loses it. Its own table, not `meetings`: a meeting in progress
+    // must not be listed, searched, exported or indexed. The next launch turns a
+    // left-over row into an unprocessed meeting (promoteLiveMeeting) and the
+    // usual recovery writes its notes.
+
+    /**
+     * The table and the meetings column, created idempotently and NOT behind
+     * user_version: both are additive, and parallel branches race the version
+     * counter (see the user_titled note in runMigrations).
+     */
+    private ensureLiveMeetingSchema(): void {
+        if (!this.db) return;
+        try {
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS live_meeting_journal (
+                    id              TEXT PRIMARY KEY,
+                    started_at      INTEGER NOT NULL,
+                    updated_at      INTEGER NOT NULL,
+                    transcript_json TEXT NOT NULL,
+                    usage_json      TEXT NOT NULL DEFAULT '[]',
+                    meta_json       TEXT NOT NULL DEFAULT '{}'
+                );
+            `);
+        } catch (e) {
+            console.error('[DatabaseManager] live_meeting_journal could not be created (meetings in progress will not survive a quit):', e);
+        }
+        try { this.db.exec('ALTER TABLE meetings ADD COLUMN recovery_meta_json TEXT'); } catch (e) { /* Column already exists */ }
+    }
+
+    /** Upsert the running meeting's row. Synchronous; throws on failure (the journal retries). */
+    public writeLiveMeeting(row: { id: string; startedAt: number; updatedAt: number; transcript: unknown[]; usage: unknown[]; meta: unknown }): void {
+        if (!this.db) throw new Error('database unavailable');
+        this.db.prepare(`
+            INSERT INTO live_meeting_journal (id, started_at, updated_at, transcript_json, usage_json, meta_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                transcript_json = excluded.transcript_json,
+                usage_json = excluded.usage_json,
+                meta_json = excluded.meta_json
+        `).run(row.id, row.startedAt, row.updatedAt, JSON.stringify(row.transcript ?? []), JSON.stringify(row.usage ?? []), JSON.stringify(row.meta ?? {}));
+    }
+
+    public removeLiveMeeting(id: string): void {
+        if (!this.db) return;
+        this.db.prepare('DELETE FROM live_meeting_journal WHERE id = ?').run(id);
+    }
+
+    /** Every left-over live meeting, oldest first. A malformed row is dropped from the list, not thrown. */
+    public getLiveMeetings(): Array<{ id: string; startedAt: number; updatedAt: number; transcript: any[]; usage: any[]; meta: any }> {
+        if (!this.db) return [];
+        let rows: any[] = [];
+        try {
+            rows = this.db.prepare('SELECT * FROM live_meeting_journal ORDER BY started_at ASC').all() as any[];
+        } catch {
+            return [];
+        }
+        const out: Array<{ id: string; startedAt: number; updatedAt: number; transcript: any[]; usage: any[]; meta: any }> = [];
+        for (const row of rows) {
+            try {
+                const transcript = JSON.parse(row.transcript_json || '[]');
+                const usage = JSON.parse(row.usage_json || '[]');
+                const meta = JSON.parse(row.meta_json || '{}');
+                if (!Array.isArray(transcript)) continue;
+                out.push({ id: row.id, startedAt: row.started_at, updatedAt: row.updated_at, transcript, usage: Array.isArray(usage) ? usage : [], meta: meta && typeof meta === 'object' ? meta : {} });
+            } catch {
+                console.warn(`[DatabaseManager] live meeting ${row?.id} is unreadable; left in place`);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * A left-over live meeting becomes an unprocessed meeting, in one
+     * transaction: saved as `meeting` (a placeholder) with its recovery
+     * metadata, and its live row deleted. A meeting already saved under the id
+     * (Stop got that far before the app went) is kept as it is; only the live
+     * row goes. Returns whether a meeting was created.
+     */
+    public promoteLiveMeeting(meeting: Meeting, startTimeMs: number, durationMs: number): boolean {
+        if (!this.db) return false;
+        const exists = this.db.prepare('SELECT 1 FROM meetings WHERE id = ?');
+        let created = false;
+        this.db.transaction(() => {
+            if (!exists.get(meeting.id)) {
+                this.saveMeeting(meeting, startTimeMs, durationMs);
+                created = true;
+            }
+            this.db!.prepare('DELETE FROM live_meeting_journal WHERE id = ?').run(meeting.id);
+        })();
+        return created;
+    }
+
+    public setMeetingRecoveryMeta(id: string, meta: unknown): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare('UPDATE meetings SET recovery_meta_json = ? WHERE id = ?').run(meta === null || meta === undefined ? null : JSON.stringify(meta), id);
+        } catch (e: any) {
+            console.warn(`[DatabaseManager] recovery metadata not stored for ${id}:`, e?.message);
+        }
+    }
+
+    public getMeetingRecoveryMeta(id: string): any | null {
+        if (!this.db) return null;
+        try {
+            const row = this.db.prepare('SELECT recovery_meta_json FROM meetings WHERE id = ?').get(id) as { recovery_meta_json: string | null } | undefined;
+            if (!row?.recovery_meta_json) return null;
+            const value = JSON.parse(row.recovery_meta_json);
+            return value && typeof value === 'object' ? value : null;
+        } catch {
+            return null;
+        }
     }
 
     public updateMeetingTitle(id: string, title: string): boolean {
@@ -3800,10 +4116,12 @@ export class DatabaseManager {
             const existingData = JSON.parse(row.summary_json || '{}');
             const currentDetailed = existingData.detailedSummary || {};
 
-            // 2. Merge updates
+            // 2. Merge updates. userEditedAt marks notes the user changed by
+            // hand: Regenerate asks before replacing them (notesVersions.ts).
             const newDetailed = {
                 ...currentDetailed,
-                ...updates
+                ...updates,
+                userEditedAt: Date.now(),
             };
 
             // Should likely filter out undefined updates if spread doesn't handle them how we want,
@@ -3932,6 +4250,44 @@ export class DatabaseManager {
             return parseCalendarEvent(row?.calendar_event_json);
         } catch {
             return undefined;
+        }
+    }
+
+    /**
+     * Saved meetings linked to a calendar event that started at or after
+     * `sinceMs`, newest first, with their notes: what the "last time" lookup
+     * for a recurring meeting reads (services/meeting/recurringMeetings.ts).
+     * Read-only; no schema change (calendar_event_json already exists).
+     */
+    public getCalendarLinkedMeetingsSince(sinceMs: number, limit: number = 200): Array<{
+        id: string; title: string; startMs: number; calendarEventId: string | null;
+        calendarEvent: Meeting['calendarEvent']; detailedSummary: any; summaryStatus: string | null; isProcessed: boolean;
+    }> {
+        if (!this.db) return [];
+        try {
+            const rows = this.db.prepare(
+                `SELECT id, title, start_time, calendar_event_id, calendar_event_json, summary_json, summary_status, is_processed
+                 FROM meetings
+                 WHERE calendar_event_id IS NOT NULL AND start_time >= ?
+                 ORDER BY start_time DESC LIMIT ?`,
+            ).all(Number.isFinite(sinceMs) ? sinceMs : 0, Math.max(1, Math.min(limit, 1000))) as any[];
+            return rows.map((row) => {
+                let detailedSummary: any = null;
+                try { detailedSummary = JSON.parse(row.summary_json || '{}')?.detailedSummary ?? null; } catch { /* unreadable notes: no recap */ }
+                return {
+                    id: row.id,
+                    title: row.title,
+                    startMs: Number(row.start_time) || 0,
+                    calendarEventId: row.calendar_event_id ?? null,
+                    calendarEvent: parseCalendarEvent(row.calendar_event_json),
+                    detailedSummary,
+                    summaryStatus: row.summary_status ?? null,
+                    isProcessed: row.is_processed === 1 || row.is_processed === true,
+                };
+            });
+        } catch (error) {
+            console.error('[DatabaseManager] getCalendarLinkedMeetingsSince failed:', error);
+            return [];
         }
     }
 
@@ -4082,7 +4438,8 @@ export class DatabaseManager {
             source: meetingRow.source,
             summaryStatus: meetingRow.summary_status as SummaryStatus | undefined,
             transcript: transcript,
-            usage: usage
+            usage: usage,
+            ...(typeof meetingRow.user_notes === 'string' && meetingRow.user_notes ? { userNotes: meetingRow.user_notes } : {}),
         };
     }
 
@@ -4235,6 +4592,8 @@ export class DatabaseManager {
                 this.db!.exec('DELETE FROM ai_interactions');
                 this.db!.exec('DELETE FROM transcripts');
                 this.db!.exec('DELETE FROM meetings');
+                // A meeting in progress is data too (LiveMeetingJournal).
+                try { this.db!.exec('DELETE FROM live_meeting_journal'); } catch (_) { /* table may not exist */ }
             })();
 
             console.log('[DatabaseManager] All data cleared from database.');

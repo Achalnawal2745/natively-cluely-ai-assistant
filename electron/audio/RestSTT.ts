@@ -16,6 +16,7 @@ import axios from 'axios';
 import FormData from 'form-data';
 import { RECOGNITION_LANGUAGES } from '../config/languages';
 import { isValidSttRegion } from '../utils/curlUtils';
+import { currentWhisperGlossaryPrompt, isGlossaryEcho } from './sttContextTerms';
 
 export type RestSttProvider = 'groq' | 'openai' | 'elevenlabs' | 'azure' | 'ibmwatson';
 
@@ -591,6 +592,11 @@ export class RestSTT extends EventEmitter {
             }
         }
 
+        // The user's dictionary as a Whisper prompt (sttContextTerms.ts).
+        // Whisper models only: Groq and OpenAI's whisper-1 take `prompt`.
+        const prompt = (this.provider === 'groq' || this.provider === 'openai') ? currentWhisperGlossaryPrompt() : '';
+        if (prompt) form.append('prompt', prompt);
+
         const response = await axios.post(this.config.endpoint, form, {
             headers: {
                 ...this.config.authHeader,
@@ -599,7 +605,8 @@ export class RestSTT extends EventEmitter {
             timeout: 30000,
         });
 
-        return this.config.extractTranscript(response.data);
+        const text = this.config.extractTranscript(response.data);
+        return isGlossaryEcho(text, prompt) ? '' : text;
     }
 
     /**

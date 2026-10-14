@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { getSttContextTerms } from './sttContextTerms';
+import { getSttContextTerms, nativelyContextTerms } from './sttContextTerms';
 import WebSocket from 'ws';
 import { RECOGNITION_LANGUAGES, EnglishVariant } from '../config/languages';
 import { TRIAL_SENTINEL_KEY } from '../config/constants';
@@ -997,13 +997,15 @@ export class NativelyProSTT extends EventEmitter {
     }
 
     /**
-     * The user's name for the transcriber (sttContextTerms.ts), as context_terms.
-     * Absent when there is none, so the frame is unchanged; a server that
-     * predates the field ignores it. LEGACY frame only: the regional relay owns
-     * its own frame contract (see buildAuthFrame), and does not take it yet.
+     * The user's name and dictionary for the transcriber (sttContextTerms.ts),
+     * as context_terms, name first: natively-api keeps the first 10 and only
+     * its own charset. Absent when there is none, so the frame is unchanged; a
+     * server that predates the field ignores it. LEGACY frame only: the
+     * regional relay owns its own frame contract (see buildAuthFrame), and
+     * does not take it yet.
      */
     private contextTermsField(): { context_terms?: string[] } {
-        const terms = getSttContextTerms();
+        const terms = nativelyContextTerms(getSttContextTerms());
         return terms.length ? { context_terms: terms } : {};
     }
 

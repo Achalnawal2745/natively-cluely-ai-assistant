@@ -137,6 +137,21 @@ test('the notification names the event and starts linked to it only when the cal
     assert.equal(otherCall.body, 'A Google Meet call started.', 'an event with another link is not this call');
 });
 
+test('a recurring event\'s notification adds last time on its own line; a failing recap changes nothing', () => {
+    const events = [{ id: 'sync_1', title: 'Weekly sync', startTime: at(-2), endTime: at(28), attendees: [{ email: 'p@x.com' }], meetingKeys: ['meet:abc-defg-hij'], recurringEventId: 'sync' }];
+    const seen = [];
+    const line = (e) => { seen.push(e.id); return e.recurringEventId ? 'Last time: Send the pricing deck' : null; };
+    const exact = describeDetection({ id: 'tab:meet:abc-defg-hij', app: 'Google Meet', via: 'browser', key: 'meet:abc-defg-hij' }, events, NOW, line);
+    assert.equal(exact.body, '"Weekly sync" is on in Google Meet.\nLast time: Send the pricing deck');
+    const byTime = describeDetection({ id: 'app:Zoom', app: 'Zoom', via: 'app' }, [{ ...events[0], meetingKeys: undefined }], NOW, line);
+    assert.equal(byTime.body, '"Weekly sync" is on in Zoom.\nLast time: Send the pricing deck');
+    assert.deepEqual(seen, ['sync_1', 'sync_1']);
+    const noEvent = describeDetection({ id: 'app:Zoom', app: 'Zoom', via: 'app' }, null, NOW, line);
+    assert.equal(noEvent.body, 'A Zoom call started.', 'no event, no recap lookup');
+    const broken = describeDetection({ id: 'app:Zoom', app: 'Zoom', via: 'app' }, [{ ...events[0], meetingKeys: undefined }], NOW, () => { throw new Error('db'); });
+    assert.equal(broken.body, '"Weekly sync" is on in Zoom.');
+});
+
 test('never shown while prompts are blocked (that call stays unannounced); its Start does nothing once a meeting runs', () => {
     const notes = [];
     const starts = [];

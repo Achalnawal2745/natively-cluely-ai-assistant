@@ -208,7 +208,8 @@ describe('wiring in meeting save', () => {
 
   test('its title is derived from the notes, with no model call', () => {
     assert.match(src, /shortSessionNotesWritten\s*\/\/[^\n]*\n\s*\? deriveDeterministicTitle\(/);
-    assert.match(src, /: shortSession\s*\? null\s*: await generateTitleFromSummary\(this\.llmHelper, summaryData\)/);
+    // 2026-10-15: the call may carry who the meeting was with (notesInputs.titleHint).
+    assert.match(src, /: shortSession\s*\? null\s*: await generateTitleFromSummary\(this\.llmHelper, summaryData(?:, notesInputs\?\.titleHint)?\)/);
   });
 
   test('"too short" is logged only when it is true', () => {

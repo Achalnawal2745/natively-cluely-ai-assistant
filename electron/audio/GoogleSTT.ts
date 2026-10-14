@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { RECOGNITION_LANGUAGES, EnglishVariant } from '../config/languages';
+import { getSttContextTerms, googleSpeechContexts } from './sttContextTerms';
 
 /**
  * GoogleSTT
@@ -614,6 +615,8 @@ export class GoogleSTT extends EventEmitter {
                     model: this.resolveModel(),
                     useEnhanced: true,
                     alternativeLanguageCodes: this.alternativeLanguageCodes,
+                    // The user's name and dictionary as phrase hints (sttContextTerms.ts).
+                    speechContexts: googleSpeechContexts(getSttContextTerms()),
                 },
                 interimResults: true,
             })

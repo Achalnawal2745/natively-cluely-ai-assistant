@@ -43,6 +43,7 @@ export type TranscriptOrigin = 'stt' | 'manual_chat' | 'assistant' | 'system_ins
 // Label, inside [..], of a line the user typed to the assistant in the rolling
 // context. Defined in its own module so the other formatter can share it.
 import { TYPED_TURN_LABEL } from './llm/typedTurnLabel';
+import { insertSortedByTimestamp } from './audio/sttGapRecovery';
 export { TYPED_TURN_LABEL };
 
 export interface TranscriptSegment {
@@ -410,6 +411,30 @@ export class SessionTracker {
         }
 
         return { role };
+    }
+
+    /**
+     * A line recovered after a transcription outage (audio/sttGapRecovery.ts),
+     * put back at the time it was SAID, so the saved transcript and the notes
+     * read in order. Unlike handleTranscript it triggers nothing: no answer,
+     * no coding-question detection, no refinement. The rolling context gets it
+     * too when it still falls inside the window.
+     */
+    insertRecoveredTranscript(segment: TranscriptSegment): boolean {
+        const text = (segment.text || '').trim();
+        if (!text || !segment.final) return false;
+        insertSortedByTimestamp(this.fullTranscript, { ...segment, text });
+        const cutoff = Date.now() - (this.contextWindowDuration * 1000);
+        if (segment.timestamp >= cutoff) {
+            insertSortedByTimestamp(this.contextItems, {
+                role: this.mapSpeakerToRole(segment.speaker),
+                text,
+                timestamp: segment.timestamp,
+                ...(segment.sttProvider ? { sttProvider: segment.sttProvider } : {}),
+                ...(segment.punctuationSource ? { punctuationSource: segment.punctuationSource } : {}),
+            });
+        }
+        return true;
     }
 
     /**

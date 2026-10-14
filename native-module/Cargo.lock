@@ -1133,6 +1133,7 @@ name = "natively-audio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block2",
  "bytemuck",
  "cidre",
  "core-foundation 0.10.1",

@@ -3,6 +3,7 @@ import type { ChunkMeetingAtoms, MeetingModeSectionInput, TranscriptChunk } from
 import { MeetingSummarySchemaValidator, dropAssistantSourcedAtoms } from './MeetingSummarySchemaValidator';
 import { generateStructured } from './generateStructured';
 import { anchorAtomTimes, chunkElapsedRange } from './evidenceTimes';
+import { chunkDensityTarget, renderNotesPromptContext, type NotesPromptContext } from './meetingNotesContext';
 
 export class ChunkSummaryGenerator {
   private readonly validator = new MeetingSummarySchemaValidator();
@@ -15,6 +16,8 @@ export class ChunkSummaryGenerator {
     modeTemplateType?: string | null;
     modeNoteSections?: MeetingModeSectionInput[];
     modeContextBlock?: string;
+    notesContext?: NotesPromptContext | null;
+    meetingTotalChars?: number;
   }): Promise<ChunkMeetingAtoms | null> {
     const { systemPrompt, jsonShapeHint } = buildChunkPrompt(params);
 
@@ -85,6 +88,10 @@ export function buildChunkPrompt(params: {
   modeTemplateType?: string | null;
   modeNoteSections?: MeetingModeSectionInput[];
   modeContextBlock?: string;
+  /** Meeting context, last time, the user's notes, spelling list (meetingNotesContext.ts). */
+  notesContext?: NotesPromptContext | null;
+  /** Characters in the WHOLE meeting's transcript; sets the density target. */
+  meetingTotalChars?: number;
 }): { systemPrompt: string; jsonShapeHint: string } {
   // The mode's note sections are the SOURCE OF TRUTH for output. Each section carries a
   // per-section extraction instruction (AI-compiled when available, else its description).
@@ -101,7 +108,11 @@ export function buildChunkPrompt(params: {
   // Each section value is an array of finding OBJECTS so section bullets carry the same
   // evidence (speaker + timestamp + quote) as decisions/actions. Omit a section's key when
   // this chunk has nothing for it.
-  const findingShape = `{ "text": "one-sentence finding grounded in this chunk", "evidence": [{ "speakerName": "speaker", "timestampMs": 0, "quote": "short verbatim quote" }], "confidence": "high" }`;
+  // fromUserNotes is asked for only when the user typed notes: an ordinary
+  // meeting's prompt stays byte-for-byte what it was.
+  const hasUserNotes = !!params.notesContext?.userNotes;
+  const userNotesField = hasUserNotes ? ', "fromUserNotes": false' : '';
+  const findingShape = `{ "text": "one-sentence finding grounded in this chunk", "evidence": [{ "speakerName": "speaker", "timestampMs": 0, "quote": "short verbatim quote" }], "confidence": "high"${userNotesField} }`;
   const sectionKeysHint = sectionList.length > 0
     ? `{\n${sectionList.map(s => `    "${s.title.replace(/"/g, "'")}": [${findingShape}]`).join(',\n')}\n  }`
     : `{ "Section title": [${findingShape}] }`;
@@ -112,8 +123,19 @@ export function buildChunkPrompt(params: {
   const rangeStartMs = elapsed ? elapsed.startMs : params.chunk.timeRange.startMs;
   const rangeEndMs = elapsed ? elapsed.endMs : params.chunk.timeRange.endMs;
 
+  // Length-aware density: a short call gets short notes (meetingNotesContext.chunkDensityTarget).
+  const density = chunkDensityTarget(params.meetingTotalChars);
+  const densityBlock = density.short
+    ? `DENSITY — notes are as long as the meeting warrants, and this is a short meeting:
+- Aim for ${density.range} findings per section, only where the material supports them. Leave a section out rather than stretch thin material across it.`
+    : `DENSITY — this is a note-taking product and sparse notes are a product failure:
+- Aim for ${density.range} findings per section per chunk WHERE THE MATERIAL SUPPORTS IT. A chunk of real conversation almost always supports several findings in each relevant section.`;
+
+  const contextText = renderNotesPromptContext(params.notesContext);
+  const hasLastTime = !!params.notesContext?.lastTimeBlock;
+
   const systemPrompt = `You are a meticulous meeting note-taker extracting grounded notes from ONE chronological transcript chunk. The transcript appears in the user message; read it first, then extract.
-${params.modeContextBlock || ''}
+${params.modeContextBlock || ''}${contextText ? `\n${contextText}\n` : ''}
 
 MEETING MODE: ${params.modeTemplateType || 'general'}
 CHUNK: ${params.chunk.chunkIndex + 1} of ${params.totalChunks}
@@ -122,8 +144,7 @@ TIME RANGE: ${formatMs(rangeStartMs, !!elapsed)} - ${formatMs(rangeEndMs, !!elap
 ${sectionGuidance ? `YOUR PRIMARY TASK — fill these EXACT note sections faithfully. For each, follow its instruction. Put findings under "modeSpecificFindings" keyed by the EXACT section title shown. Each finding is an object with "text" and, best-effort, "evidence" (speaker + timestampMs + a short verbatim quote from this chunk) — never drop a finding merely because no clean quote is at hand. OPTIONAL: omit the entire "evidence" key from a finding if you have no clean quote for it. OMIT a section's key entirely if this chunk contains nothing for it (do not output an empty bullet, a placeholder, or "Not discussed"):
 
 ${sectionGuidance}
-` : ''}DENSITY — this is a note-taking product and sparse notes are a product failure:
-- Aim for 5-12 findings per section per chunk WHERE THE MATERIAL SUPPORTS IT. A chunk of real conversation almost always supports several findings in each relevant section.
+` : ''}${densityBlock}
 - Capture substance, not only outcomes: what was explained, asked, compared, quantified, objected to, or agreed. A point does not have to be a decision to be worth a bullet.
 - Each finding is ONE specific sentence carrying its own detail — names, numbers, conditions, caveats. Never a bare topic label like "Pricing was discussed".
 - Prefer two specific findings over one that merges them.
@@ -138,6 +159,10 @@ ${chunkHasChatLines(params.chunk) ? CHAT_LINES_RULE : ''}- Do NOT invent informa
 ALSO extract these cross-cutting atoms (they power the follow-up draft and recall; they are NOT the displayed sections):
 - decisions: things actually decided/agreed (not merely discussed). Separate from discussion.
 - actionItems: commitments/tasks. explicitness="explicit" only when someone clearly committed; else "inferred". owner/deadline ONLY if explicitly stated.
+- WHO OWES WHAT: an action item's owner is the person who will do it, named only when the transcript names them (their own labelled line, a self-introduction, or being addressed by name and answering). Set "party" to "ours" when the owner is the user or one of their colleagues, "theirs" when it is someone on the other side; leave "party" out when you cannot tell.
+- When someone on the other side asks for something, write the ask as theirs ("The client asked for a security review") and any commitment the user's side made in answer as its own action item with its owner. Never turn a request into a commitment nobody made.${hasLastTime ? `
+- carriedOver: true on an action item or open question this chunk shows is continuing from LAST TIME; say in its text what changed.` : ''}${hasUserNotes ? `
+- fromUserNotes: true on a section finding, decision, action item or open question only when it restates or fills in a point the user wrote in THE USER'S OWN NOTES. Leave it false for anything that comes from the transcript alone, even when it is on the same topic.` : ''}
 - openQuestions: unresolved questions raised.
 - risks: blockers, risks, or concerns raised.
 - Evidence policy: evidence is REQUIRED for decisions and actionItems (it powers jump-to-timestamp in the UI) and best-effort for section findings — if no clean short quote is at hand for a section finding, omit its "evidence" key and still include the finding. A missing quote must never cost the reader a bullet.
@@ -151,9 +176,9 @@ Output ONLY valid JSON. No markdown fences, comments, or prose. Never expose the
   "timeRange": { "startMs": ${Math.max(0, rangeStartMs || 0)}, "endMs": ${Math.max(0, rangeEndMs || 0)} },
   "brief": "one concrete sentence: what actually happened or was decided in this chunk (no filler)",
   "topics": ["topic"],
-  "decisions": [{ "text": "decision made", "owner": "optional", "timestampMs": 0, "evidence": [{ "speakerName": "speaker", "timestampMs": 0, "quote": "short verbatim quote" }], "confidence": "high" }],
-  "actionItems": [{ "text": "task", "owner": "optional", "deadline": "optional", "sourceTimestampMs": 0, "explicitness": "explicit", "evidence": [{ "speakerName": "speaker", "timestampMs": 0, "quote": "short verbatim quote" }], "confidence": "high" }],
-  "openQuestions": [{ "text": "question", "owner": "optional", "status": "open", "evidence": [{ "speakerName": "speaker", "timestampMs": 0, "quote": "short verbatim quote" }] }],
+  "decisions": [{ "text": "decision made", "owner": "optional", "timestampMs": 0, "evidence": [{ "speakerName": "speaker", "timestampMs": 0, "quote": "short verbatim quote" }], "confidence": "high"${userNotesField} }],
+  "actionItems": [{ "text": "task", "owner": "optional", "deadline": "optional", "party": "ours", "sourceTimestampMs": 0, "explicitness": "explicit", "evidence": [{ "speakerName": "speaker", "timestampMs": 0, "quote": "short verbatim quote" }], "confidence": "high"${hasLastTime ? ', "carriedOver": false' : ''}${userNotesField} }],
+  "openQuestions": [{ "text": "question", "owner": "optional", "status": "open", "evidence": [{ "speakerName": "speaker", "timestampMs": 0, "quote": "short verbatim quote" }]${hasLastTime ? ', "carriedOver": false' : ''}${userNotesField} }],
   "risks": [{ "text": "risk or blocker", "severity": "medium", "evidence": [{ "speakerName": "speaker", "timestampMs": 0, "quote": "short verbatim quote" }] }],
   "deadlines": [],
   "people": [{ "name": "person", "role": "optional", "mentions": 1 }],

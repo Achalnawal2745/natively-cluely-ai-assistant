@@ -15,6 +15,7 @@ import type { LLMHelper } from '../../LLMHelper';
 import type { ActionItem, DecisionItem, MeetingNoteSection, RiskItem } from './MeetingSummaryV3';
 import { generateStructured, NOTE_CALL_TIMEOUT_MS } from './generateStructured';
 import { INCLUDE_NEXT_STEPS, getOverviewBand } from './MeetingSummaryReducer';
+import { renderNotesPromptContext, type NotesPromptContext } from './meetingNotesContext';
 
 export interface PolishSummaryParams {
   deterministicSummary: string[];        // the grounded buildSummary() output
@@ -122,7 +123,14 @@ ${grounded}`;
   // fallback uses (see getOverviewBand in MeetingSummaryReducer.ts). It sets a CONCRETE
   // target for THIS meeting rather than a generic ceiling: a model told "up to 400 words"
   // reliably writes ~160; a model told "write 2-3 paragraphs, about 380 words" writes that.
-  async polishOverview(p: PolishSummaryParams & { briefs?: string[]; topics?: string[]; totalTokensEstimate?: number }): Promise<string | null> {
+  //
+  // `notesContext` (2026-10-15): the meeting's people, the user's own notes and the
+  // spelling list. It is added to the prompt AND to the gate's reference text, so a
+  // name spelled from the invite or a point from the user's notes is not rejected as
+  // "new". LAST TIME is deliberately left out of both: the overview must describe this
+  // meeting, and a fact only last time's notes hold would fail the gate and throw the
+  // whole paragraph away. Carried-over items reach the overview through the notes.
+  async polishOverview(p: PolishSummaryParams & { briefs?: string[]; topics?: string[]; totalTokensEstimate?: number; notesContext?: NotesPromptContext | null }): Promise<string | null> {
     const noteCorpus = this.buildGroundedNotes(p);
     const timeline = (p.briefs || []).filter(Boolean);
     const topics = (p.topics || []).filter(Boolean);
@@ -132,6 +140,9 @@ ${grounded}`;
     if (noteCorpus) groundedParts.push(noteCorpus);
     const grounded = groundedParts.join('\n\n');
     if (!grounded.trim()) return null;
+    const contextText = renderNotesPromptContext(p.notesContext, { includeLastTime: false });
+    // What the "no new information" gate accepts: the notes plus that context.
+    const reference = contextText ? `${grounded}\n\n${contextText}` : grounded;
 
     const band = getOverviewBand(p.totalTokensEstimate ?? 0);
     // Additive to the length target only — every rule below is unconditional and identical
@@ -147,7 +158,10 @@ ${grounded}`;
 STRICT RULES:
 - Use ONLY the facts in the NOTES below. Introduce NO new information, name, number, date, company, or owner not already present.
 - No filler ("productive discussion", "the team aligned", "great meeting"). Every sentence must carry a real fact — writing more paragraphs is not licence to pad; only expand if the notes actually contain that much grounded content.
-- If the notes contain no substance, return an empty "overview" string.
+- If the notes contain no substance, return an empty "overview" string.${contextText ? `
+- The context below is background for naming people, organisations and the meeting correctly. Name someone only where the NOTES tie them to what happened; never say who attended from the invite. When the user's own notes are present, lead with what they marked as important.
+
+${contextText}` : ''}
 
 NOTES:
 ${grounded}`;
@@ -174,7 +188,7 @@ ${grounded}`;
         if (!text || text.length < 20) return { ok: false, errors: ['missing/short overview'], repaired: false };
         const words = text.split(/\s+/);
         const clipped = words.length > band.maxWords ? words.slice(0, band.maxWords).join(' ') : text;
-        const offending = newSignificantTokens(clipped, grounded);
+        const offending = newSignificantTokens(clipped, reference);
         if (offending.length > 0) return { ok: false, errors: [`introduced new tokens: ${offending.slice(0, 5).join(', ')}`], repaired: false };
         return { ok: true, data: { overview: clipped }, errors: [], repaired: false };
       },
@@ -206,12 +220,32 @@ const MONTHS = new Set(['january', 'february', 'march', 'april', 'may', 'june', 
 const WEEKDAYS = new Set(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'today', 'tomorrow', 'tonight', 'week', 'month', 'quarter']);
 
 function normalizeForCompare(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9%$.]/g, ' ').replace(/\s+/g, ' ');
+  // A full stop stays only inside a number ("31.16"); at the end of a word it is
+  // punctuation, or every word that ends a source sentence ("by Thursday.") would
+  // fail to match the same word in the rewrite.
+  return s.toLowerCase().replace(/[^a-z0-9%$.]/g, ' ').replace(/(?<!\d)\.|\.(?!\d)/g, ' ').replace(/\s+/g, ' ');
+}
+
+/**
+ * Every number in the text by its value: "$31.16" → 31.16, "1,300" → 1300.
+ * Only a thousands separator is dropped, never a decimal point, so "$50.00"
+ * and "$5,000" stay different numbers.
+ */
+function numberValues(s: string): Set<number> {
+  const out = new Set<number>();
+  for (const raw of s.match(/\d[\d,]*(?:\.\d+)?/g) || []) {
+    const v = Number(raw.replace(/,(?=\d{3}(?!\d))/g, ''));
+    if (Number.isFinite(v)) out.add(v);
+  }
+  return out;
 }
 
 export function newSignificantTokens(polished: string, grounded: string): string[] {
   const groundedNorm = normalizeForCompare(grounded);
   const groundedSet = new Set(groundedNorm.split(' ').filter(Boolean));
+  const groundedNumbers = numberValues(grounded);
+  // Names with an apostrophe ("O'Brien") read as one word on both sides.
+  const groundedJoined = new Set(normalizeForCompare(grounded.replace(/['’](?!s\b)/g, '')).split(' ').filter(Boolean));
   const offending: string[] = [];
   const seen = new Set<string>();
 
@@ -225,26 +259,37 @@ export function newSignificantTokens(polished: string, grounded: string): string
   let atSentenceStart = true;
   for (let i = 0; i < rawTokens.length; i++) {
     const rawToken = rawTokens[i];
-    const raw = rawToken.replace(/[.,!?;:()"'’“”]/g, '');
     const isFirstWord = atSentenceStart;
     // Advance the flag BEFORE any `continue` below, or a skipped token leaves it stale.
-    if (raw) atSentenceStart = /[.!?]["'’”)]*$/.test(rawToken);
-    if (!raw) continue;
-    const lower = raw.toLowerCase();
-    const lowerCore = lower.replace(/[^a-z0-9%$.]/g, '');
-    if (!lowerCore || STOPWORDS.has(lowerCore)) continue;
+    if (/[A-Za-z0-9]/.test(rawToken)) atSentenceStart = /[.!?]["'’”)]*$/.test(rawToken);
+    // A possessive is its noun ("Freight's" is "Freight", not a new word "Freights"),
+    // and each half of a hyphenated word is checked on its own ("24-month", "Q3-only").
+    const word = rawToken.replace(/['’]s(?=[^A-Za-z0-9]*$)/, '');
+    const parts = word.split(/[-–—\/]/);
+    for (const part of parts) {
+      // Only the edges lose punctuation, so "$31.16" keeps its decimal point.
+      const raw = part.replace(/^[^A-Za-z0-9$%]+|[^A-Za-z0-9%]+$/g, '').replace(/['’"“”()]/g, '');
+      if (!raw) continue;
+      const lower = raw.toLowerCase();
+      const lowerCore = lower.replace(/[^a-z0-9%$.]/g, '');
+      if (!lowerCore || STOPWORDS.has(lowerCore)) continue;
 
-    const isNumberLike = /\d/.test(lowerCore) || /[%$]/.test(lowerCore);
-    const isCalendar = MONTHS.has(lowerCore) || WEEKDAYS.has(lowerCore);
-    const isProperNoun = !isFirstWord && /^[A-Z][a-zA-Z'’-]+$/.test(raw);
+      const isNumberLike = /\d/.test(lowerCore) || /[%$]/.test(lowerCore);
+      // "week", "month", "quarter" inside a compound ("24-month") is a unit, not a date.
+      const isCalendar = MONTHS.has(lowerCore) || (WEEKDAYS.has(lowerCore) && !(parts.length > 1 && /^(week|month|quarter)$/.test(lowerCore)));
+      const isProperNoun = !isFirstWord && /^[A-Z][a-zA-Z'’]+$/.test(raw);
 
-    if (!isNumberLike && !isCalendar && !isProperNoun) continue; // only police fact-shaped tokens
-    if (groundedSet.has(lowerCore)) continue;                    // present in source → fine
-    // number contained within a grounded token (e.g. "soc2" vs "soc2")
-    if (isNumberLike && groundedNorm.includes(lowerCore)) continue;
-    if (seen.has(lowerCore)) continue;
-    seen.add(lowerCore);
-    offending.push(raw);
+      if (!isNumberLike && !isCalendar && !isProperNoun) continue; // only police fact-shaped tokens
+      if (groundedSet.has(lowerCore) || groundedJoined.has(lowerCore)) continue; // present in source → fine
+      // number contained within a grounded token (e.g. "soc2" vs "soc2")
+      if (isNumberLike && groundedNorm.includes(lowerCore)) continue;
+      // the same number written another way ("$31.16" vs "31.16", "1,300" vs "1300")
+      const values = [...numberValues(raw)];
+      if (isNumberLike && values.length > 0 && values.every((v) => groundedNumbers.has(v))) continue;
+      if (seen.has(lowerCore)) continue;
+      seen.add(lowerCore);
+      offending.push(raw);
+    }
   }
   return offending;
 }

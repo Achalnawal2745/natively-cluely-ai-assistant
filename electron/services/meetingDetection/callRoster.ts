@@ -1,7 +1,8 @@
 /**
- * Who is in a call and who spoke when, as a meeting page shows it (the
- * Companion extension reading Google Meet: the participant list and the
- * speaking indicator on each tile).
+ * Who is in a call and who spoke when, as the call itself shows it: the
+ * Companion extension reading Google Meet (the participant list and the
+ * speaking indicator on each tile), or a Zoom / Teams desktop window read
+ * through the OS accessibility layer (desktopCallSpeakers.ts).
  *
  * Kept per meeting key, so a session reads the call it linked to. The user's
  * own tile never enters: the microphone channel is already "me". Speaking is
@@ -9,10 +10,10 @@
  * closed) is closed at the last report.
  */
 
-// ── FUTURE PLAN: names from other meeting apps (not built; judged not needed yet, 2026-09-27) ──
+// ── Names from other meeting apps (plan 2026-09-27; item 2 built 2026-10-15) ──
 //
-// Today only Google Meet in a browser feeds this roster (natively-browser's
-// Meet reader). Every other source would report the same way,
+// Google Meet in a browser (natively-browser's Meet reader) and the Zoom /
+// Teams desktop apps feed this roster. Every source reports the same way,
 // `report(key, [{ name, speaking }], now)`, so attribution, saving and the
 // notes need no change. What each would take:
 //
@@ -28,18 +29,13 @@
 //          does for Meet), and a live call with two real accounts. Scripted
 //          guests are refused by the services' bot checks.
 //
-// 2. Zoom and Teams desktop apps (no page to read):
-//    WHAT: read the app's accessibility tree: the participant list and its
-//          "speaking" state.
-//    HOW:  native-module/src/meeting_signals.rs gains a reader. macOS uses
-//          AXUIElement (cidre's `ax` feature) and needs the Accessibility
-//          permission, a new prompt that must be asked for in Settings, never at
-//          startup. Windows uses UI Automation (no prompt). Poll only while a
-//          Natively meeting runs in that app (MeetingDetector already knows
-//          which app holds the mic). Key the roster by an app-scoped key
-//          ('zoom-app:<pid>'), and have the linker's callKey fall back to it.
-//    VERIFY: the apps' trees change between releases. Pin the paths with a
-//          recorded tree fixture per app and OS, and re-check on each app update.
+// 2. Zoom and Teams desktop apps: BUILT 2026-10-15 (desktopCallSpeakers.ts,
+//    callTreeSolvers.ts, native-module/src/call_tree.rs). macOS AX (uses the
+//    Accessibility permission stealth typing already asks for; never prompts),
+//    Windows UI Automation. Reports under 'zoom-app:<pid>' / 'teams-app:<pid>',
+//    moved back by each app's detection lag. STILL OWED: recorded trees from
+//    real calls per app and OS, pinned as fixtures (NATIVELY_DUMP_CALL_TREE=1),
+//    and the lag measured; the Windows reader has never run.
 //
 // 3. Before either: install Zoom and Teams and confirm the detector's app
 //    identities with a real call (see the note on KNOWN_APPS in meetingApps.ts).
@@ -131,6 +127,28 @@ export class CallRoster {
             .map((s) => ({ name: s.name, start: Math.max(s.start, fromMs), end: Math.min(s.end, toMs) }))
             .sort((a, b) => a.start - b.start);
         return { participants, spans };
+    }
+
+    /**
+     * A call as a saved snapshot left it (a meeting recovered after the app
+     * quit mid-call: LiveMeetingJournal kept `snapshot(key, …)`). Everyone is
+     * taken as present for the whole window. Does nothing if the call is known.
+     */
+    restore(key: string, saved: { participants: string[]; spans: SpeakingSpan[] }, fromMs: number, toMs: number): void {
+        if (this.calls.has(key)) return;
+        const people = new Map<string, { first: number; last: number }>();
+        for (const name of (saved.participants ?? []).slice(0, MAX_PEOPLE)) {
+            if (typeof name === 'string' && name) people.set(name, { first: fromMs, last: toMs });
+        }
+        const spans = (saved.spans ?? [])
+            .filter((s) => s && typeof s.name === 'string' && Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
+            .slice(0, MAX_SPANS)
+            .map((s) => ({ name: s.name, start: s.start, end: s.end }));
+        this.calls.set(key, { people, open: new Map(), spans, lastReport: toMs });
+    }
+
+    has(key: string): boolean {
+        return this.calls.has(key);
     }
 
     forget(key: string): void {

@@ -506,6 +506,9 @@ docs/*
 # The local embedding model benchmark (2026-09-21/22): code comments across
 # electron/rag cite its sections (bundled-model choice, catalog recipes, caps).
 !docs/local-embedding-benchmark.md
+# Outlook calendar's Azure app registration steps (2026-10-15): scripts/lib/microsoft-calendar-client.cjs,
+# build-electron.js and the release workflow point here for the client ID.
+!docs/microsoft-calendar-setup.md
 # Per-release notes are published artifacts (linked from the README), not scratch notes.
 !docs/releases/
 !docs/releases/**

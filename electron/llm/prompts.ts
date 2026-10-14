@@ -979,22 +979,22 @@ export const GROQ_TITLE_PROMPT = `Generate a concise 3-6 word title for this mee
 export const GROQ_SUMMARY_JSON_PROMPT = `You are a silent meeting summarizer. Convert this conversation into concise internal meeting notes.
 
    Output a JSON object with EXACTLY these four keys, using these exact names:
-   - "summary" (string): one-paragraph overview
+   - "overview" (string): one paragraph covering the whole meeting: purpose, what was discussed, outcomes, where things landed
    - "keyPoints" (array of strings): bullet list of key points
-   - "actionItems" (array of strings): owner-prefixed action items, e.g. "Bob: Draft invite copy by Wednesday"
+   - "actionItems" (array of strings): owner-prefixed action items when the transcript names the owner, e.g. "Bob: Draft invite copy by Wednesday"
    - "decisions" (array of strings): explicit decisions made
 
-   Do NOT use "overview", "highlights", or any synonym for these keys. The four keys above are required and must be present even if empty arrays.
+   Do NOT use "summary", "highlights", or any synonym for these keys. The four keys above are required and must be present even if empty arrays.
 
    RULES:
-   - Do NOT invent information.
+   - Do NOT invent information, owners or dates.
    - Sound like a senior PM's internal notes.
    - Calm, neutral, professional.
    - Output ONLY the JSON object. No prose, no markdown fences.
 
    Response Format (JSON ONLY):
    {
-   "summary": "one-paragraph overview",
+   "overview": "one-paragraph overview",
    "keyPoints": ["3-6 specific bullets"],
    "actionItems": ["Owner: specific next step", "..."],
    "decisions": ["explicit decision 1", "..."]

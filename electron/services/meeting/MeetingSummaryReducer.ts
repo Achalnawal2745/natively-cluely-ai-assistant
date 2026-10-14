@@ -57,7 +57,7 @@ export class MeetingSummaryReducer {
   reduce(params: ReduceParams): MeetingSummaryV3 {
     const atoms = [...params.atoms].sort((a, b) => a.chunkIndex - b.chunkIndex);
     const decisions = assignIds(mergeSimilar(flatMap(atoms, atom => atom.decisions), 'decision')) as DecisionItem[];
-    const actionItems = assignIds(mergeSimilar(flatMap(atoms, atom => [...atom.actionItems, ...(atom.deadlines || [])]), 'action')) as ActionItem[];
+    const actionItems = assignIds(mergeSimilar(foldDeadlines(flatMap(atoms, atom => atom.actionItems), flatMap(atoms, atom => atom.deadlines || [])), 'action')) as ActionItem[];
     const openQuestions = assignIds(mergeSimilar(flatMap(atoms, atom => atom.openQuestions), 'question')) as QuestionItem[];
     const risks = assignIds(mergeSimilar(flatMap(atoms, atom => atom.risks), 'risk')) as RiskItem[];
     const topics = dedupeStrings(flatMap(atoms, atom => atom.topics)).slice(0, 20);
@@ -120,6 +120,53 @@ export class MeetingSummaryReducer {
   }
 }
 
+/**
+ * The chunk model also lists deadlines apart from the tasks they belong to
+ * ("Revised order form to be sent by Thursday" next to "Send a revised order
+ * form …"), and once those were added to the action items as they were, the
+ * notes showed every such task twice, the copy with no owner. Some are not tasks
+ * at all ("Contract start date of October 15th"). So a deadline that restates a
+ * task only gives that task its date when it has none; one with no owner and no
+ * quote is a date, not a task, and is left out; any other stays a task.
+ */
+export function foldDeadlines(actionItems: ActionItem[], deadlines: ActionItem[]): ActionItem[] {
+  const out = actionItems.map(item => ({ ...item }));
+  const words = (text: string) => new Set(normalize(text || '').split(' ').filter(w => w.length > 2));
+  const sameOwner = (a?: string, b?: string) => !a || !b || normalize(a) === normalize(b);
+  // A deadline restates a task when, once that task's own words and the words of
+  // a date ("Thursday", "sent", "due") are taken away, nothing of it is left:
+  // "Revised order form to be sent by Thursday" restates "Send a revised order
+  // form …", but "Review security proposal" never restates "Review pricing
+  // proposal" ("security" is left over), however many words they share.
+  const restates = (task: ActionItem, d: ActionItem) => {
+    if (!sameOwner(task.owner, d.owner)) return false;
+    if (similar(task.text, d.text)) return true;
+    const taskWords = words(task.text);
+    const dateWords = words(d.deadline || '');
+    const left = [...words(d.text)].filter(w => !taskWords.has(w) && !dateWords.has(w) && !DEADLINE_FILLER.has(w));
+    return left.length === 0 && [...words(d.text)].some(w => taskWords.has(w));
+  };
+  for (const d of deadlines) {
+    if (!d || !d.text) continue;
+    const task = out.find(item => restates(item, d));
+    if (task) {
+      if (!task.deadline && d.deadline) task.deadline = d.deadline;
+      continue;
+    }
+    const quoted = Array.isArray(d.evidence) && d.evidence.length > 0;
+    if (d.owner || quoted) out.push(d);
+  }
+  return out;
+}
+
+/** Words a deadline adds to its task without naming a different task. */
+const DEADLINE_FILLER = new Set([
+  'due', 'date', 'deadline', 'sent', 'send', 'sending', 'delivered', 'deliver', 'shared', 'share', 'done', 'finished', 'complete', 'completed',
+  'end', 'day', 'days', 'week', 'weeks', 'month', 'months', 'next', 'this', 'today', 'tomorrow', 'tonight', 'eod', 'eow', 'before', 'after', 'until',
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+]);
+
 function flatMap<T>(atoms: ChunkMeetingAtoms[], mapper: (atom: ChunkMeetingAtoms) => T[]): T[] {
   return atoms.flatMap(mapper).filter(Boolean);
 }
@@ -164,6 +211,7 @@ function buildSections(modeSections: MeetingModeSectionInput[], atoms: ChunkMeet
         if (!text) continue;
         const evidence = (finding && typeof finding === 'object') ? finding.evidence : undefined;
         const confidence = (finding && typeof finding === 'object' && finding.confidence) ? finding.confidence : 'medium';
+        const fromUserNotes = !!(finding && typeof finding === 'object' && finding.fromUserNotes === true);
         // Keep the RICHER text, mirroring mergeSimilar: the old code dropped whichever
         // finding arrived second, and chunk 0 always arrives first — so a terse early
         // bullet permanently shadowed a more specific later one in this exact path.
@@ -173,9 +221,11 @@ function buildSections(modeSections: MeetingModeSectionInput[], atoms: ChunkMeet
             existing.text = text;
           }
           if (evidence?.length) existing.evidence = [...(existing.evidence || []), ...evidence].slice(0, 3);
+          // One chunk tying the point to the user's notes is enough to mark it.
+          if (fromUserNotes) existing.fromUserNotes = true;
           continue;
         }
-        section.bullets.push({ id: `bullet_${crypto.randomUUID()}`, text, ...(evidence?.length ? { evidence } : {}), confidence });
+        section.bullets.push({ id: `bullet_${crypto.randomUUID()}`, text, ...(evidence?.length ? { evidence } : {}), confidence, ...(fromUserNotes ? { fromUserNotes: true } : {}) });
       }
     }
   }
@@ -461,6 +511,12 @@ function mergeSimilar<T extends { text: string; evidence?: any[] }>(items: T[], 
       existing.text = item.text;
     }
     existing.evidence = [...(existing.evidence || []), ...(item.evidence || [])].slice(0, 3);
+    // One chunk recognising an item from last time is enough to mark it.
+    if ((item as any).carriedOver === true) (existing as any).carriedOver = true;
+    if ((item as any).fromUserNotes === true) (existing as any).fromUserNotes = true;
+    if (kind === 'action') {
+      if (!(existing as any).party && (item as any).party) (existing as any).party = (item as any).party;
+    }
     if (kind === 'action') {
       const e = existing as any;
       const i = item as any;

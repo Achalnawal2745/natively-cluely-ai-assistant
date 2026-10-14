@@ -29,6 +29,12 @@ import rehypeKatex from 'rehype-katex';
 // Transcript turns, and which source-quality notes the page does not show. Kept pure so they are tested on their own.
 import { groupTranscriptTurns, isHiddenQualityNote } from '../lib/meetingNotesView.mjs';
 import { CalendarLinkChip, type CalendarEventSnapshot } from './meeting/CalendarLinkChip';
+// Your notes, earlier versions, Source and rating (2026-10-15).
+import { ConfirmDialog } from './ui/ConfirmDialog';
+import { NotesVersionTabs } from './meeting/NotesVersionTabs';
+import { NoteSource } from './meeting/NoteSource';
+import { NotesRating } from './meeting/NotesRating';
+import { noteLineTime, notesContentKey, notesWereEdited, versionTabs, type VersionKey } from './meeting/notesView';
 
 registerPrismLanguages();
 
@@ -1151,7 +1157,7 @@ interface Meeting {
         actionItemsTitle?: string;
         keyPointsTitle?: string;
         sections?: Array<{ title: string; bullets: string[] }>;
-        sectionsV3?: Array<{ id: string; title: string; order?: number; bullets: Array<{ id?: string; text: string; confidence?: 'high' | 'medium' | 'low'; evidence?: Evidence[] }> }>;
+        sectionsV3?: Array<{ id: string; title: string; order?: number; bullets: Array<{ id?: string; text: string; confidence?: 'high' | 'medium' | 'low'; evidence?: Evidence[]; fromUserNotes?: boolean }> }>;
         tldr?: string[];
         whatChanged?: string[];
         decisions?: Array<{ id?: string; text: string; owner?: string; timestampMs?: number; confidence: 'high' | 'medium' | 'low'; evidence?: Evidence[] }>;
@@ -1165,8 +1171,14 @@ interface Meeting {
         speakerLabels?: Record<string, string>;
         /** Who was in the call (the Meet page's participant list), first to join first. */
         callParticipants?: string[];
+        /** speaker id → how sure the call's speaking record was of that name (0..1). */
+        speakerConfidence?: Record<string, number>;
+        /** Names proposed after the meeting for a voice left unnamed; the rename field starts from one. */
+        speakerSuggestions?: Array<{ id: string; name: string; certainty?: string; applied?: boolean }>;
         crossMeeting?: { stillOpen?: string[] };
         recipes?: Record<string, string>;
+        /** Set when the user edited these notes by hand (Regenerate asks first). */
+        userEditedAt?: number;
         // Phase 7 — PostCallWorkflow enhancements (schema v2). Backend writes
         // these via buildPostCallEnhancements(); UI renders them when present.
         schemaVersion?: number;
@@ -1208,6 +1220,8 @@ interface Meeting {
         images?: string[];
     }>;
     summaryStatus?: MeetingSummaryStatus;
+    /** What the user typed in the notes window during the meeting, exactly as typed. */
+    userNotes?: string;
 }
 
 // Mirrors SummaryStatus in electron/services/meeting/MeetingSummaryV3.ts. The
@@ -1732,7 +1746,7 @@ const MeetingNotesSkeleton: React.FC<{
 };
 
 /** The tabs, in the order they sit in the tab row — the swap travels by it. */
-const NOTES_TABS = ['summary', 'transcript', 'usage'] as const;
+const NOTES_TABS = ['summary', 'yours', 'transcript', 'usage'] as const;
 type NotesTab = typeof NOTES_TABS[number];
 
 /** How long a transcript line stays marked after an evidence jump lands on it,
@@ -1764,7 +1778,20 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const t = useT();
     const isLight = useResolvedTheme() === 'light';
     // We need local state for the meeting object to reflect optimistic updates
-    const [meeting, setMeeting] = useState<Meeting>(initialMeeting);
+    const [baseMeeting, setMeeting] = useState<Meeting>(initialMeeting);
+    // Earlier versions of the notes (kept by Regenerate), one tab each, and the
+    // one shown. Showing a version swaps only the notes; everything else on the
+    // page (title, transcript, speaker names) stays the meeting's own.
+    const [notesVersions, setNotesVersions] = useState<Array<{ id: number; label: string; createdAt: number; detailedSummary: any }>>([]);
+    const [versionKey, setVersionKey] = useState<VersionKey>('current');
+    const shownVersion = versionKey === 'current' ? null : (notesVersions.find(v => v.id === versionKey) ?? null);
+    const meeting = useMemo<Meeting>(() => (shownVersion
+        ? { ...baseMeeting, detailedSummary: { ...shownVersion.detailedSummary, speakerLabels: baseMeeting.detailedSummary?.speakerLabels } }
+        : baseMeeting), [baseMeeting, shownVersion]);
+    // Changes when what the notes SAY changes (Regenerate keeps the meeting and
+    // version, not the words), so the rating reloads for new notes, but not for
+    // a follow-up draft or a speaker rename.
+    const ratedNotesKey = useMemo(() => notesContentKey(meeting.detailedSummary), [meeting.detailedSummary]);
     const [activeTab, setActiveTab] = useState<NotesTab>('summary');
     // How the tab panel arrives after the reader switches tabs (see switchTab):
     // from the side of travel, or a plain fade. null until the first switch, so
@@ -1842,6 +1869,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     );
 
     const isV3Summary = meeting.detailedSummary?.schemaVersion === 3;
+    // The user typed notes in the meeting: "Your notes" shows them as typed.
+    const hasUserNotes = !!meeting.userNotes?.trim();
     const v3Actions = meeting.detailedSummary?.actionItemsV3 || [];
     const v3Decisions = meeting.detailedSummary?.decisions || [];
     const v3Questions = meeting.detailedSummary?.openQuestions || [];
@@ -2197,6 +2226,18 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         navigator.clipboard?.writeText(text || '').catch(() => { /* swallow */ });
     };
 
+    const loadNotesVersions = async () => {
+        try {
+            const list = await window.electronAPI?.getMeetingNotesVersions?.(meeting.id);
+            setNotesVersions(Array.isArray(list) ? list : []);
+        } catch { /* no versions shown */ }
+    };
+    useEffect(() => {
+        setVersionKey('current');
+        void loadNotesVersions();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [meeting.id]);
+
     const reloadMeeting = async () => {
         try {
             const fresh = await window.electronAPI?.getMeetingDetails?.(meeting.id);
@@ -2215,8 +2256,16 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     // instead of spinning and silently doing nothing.
     const [detectedNeedsPro, setDetectedNeedsPro] = useState(false);
 
-    const handleRegenerate = async (target?: string | { templateType?: string; modeId?: string }) => {
+    // Regenerating over notes the user edited asks first (the edits go; the
+    // current version stays in its tab). Holds the request until answered.
+    const [pendingRegenerate, setPendingRegenerate] = useState<{ target?: string | { templateType?: string; modeId?: string } } | null>(null);
+
+    const handleRegenerate = async (target?: string | { templateType?: string; modeId?: string }, confirmed = false) => {
         if (isRegenerating || !window.electronAPI?.regenerateMeetingSummary) return;
+        if (!confirmed && notesWereEdited(baseMeeting.detailedSummary)) {
+            setPendingRegenerate({ target });
+            return;
+        }
         const opts = typeof target === 'string' ? { templateType: target } : target;
         setIsRegenerating(true);
         try {
@@ -2224,8 +2273,11 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 meeting.id,
                 opts && (opts.templateType || opts.modeId) ? opts : undefined,
             );
-            if (res?.success) await reloadMeeting();
-            else if (res?.error === 'pro_required') setDetectedNeedsPro(true);
+            if (res?.success) {
+                await reloadMeeting();
+                await loadNotesVersions();
+                setVersionKey('current');
+            } else if (res?.error === 'pro_required') setDetectedNeedsPro(true);
         } catch { /* swallow */ } finally { setIsRegenerating(false); }
     };
 
@@ -2478,6 +2530,8 @@ KEY POINTS:
 ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'None'}
                 `.trim();
             }
+        } else if (activeTab === 'yours') {
+            textToCopy = meeting.userNotes || '';
         } else if (activeTab === 'transcript' && meeting.transcript) {
             textToCopy = meeting.transcript.map(t => `[${formatTime(t.timestamp)}] ${resolveSpeakerName(t.speakerId || t.speaker)}: ${t.text}`).join('\n');
         } else if (activeTab === 'usage' && meeting.usage) {
@@ -2664,7 +2718,7 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                             surface it read as a raised container, but on the elevated grey it was
                             within ~3 levels of the page and the control lost its shape. */}
                         <div className={`p-1 rounded-xl inline-flex items-center gap-0.5 ${isLight ? 'bg-[#E5E5EA] border border-black/[0.04]' : 'bg-[#0D0D0F] border border-white/[0.08]'}`}>
-                            {NOTES_TABS.map((tab) => (
+                            {NOTES_TABS.filter(tab => tab !== 'yours' || hasUserNotes).map((tab) => (
                                 <button
                                     key={tab}
                                     onClick={() => switchTab(tab)}
@@ -2681,7 +2735,7 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                             transition={{ type: "spring", stiffness: 400, damping: 30 }}
                                         />
                                     )}
-                                    {tab === 'summary' ? t('Summary') : tab === 'transcript' ? t('Transcript') : t('Usage')}
+                                    {tab === 'summary' ? t('Summary') : tab === 'yours' ? t('Your notes') : tab === 'transcript' ? t('Transcript') : t('Usage')}
                                 </button>
                             ))}
                         </div>
@@ -2786,6 +2840,17 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                 ref={notesRef}
                                 className={revealing && prefersReducedMotion ? 'mn-reveal-reduced' : undefined}
                             >
+                                {/* One tab per version of the notes: earlier ones Regenerate kept, then
+                                    the current notes. Only when there is more than one. */}
+                                {(() => {
+                                    const tabs = versionTabs(baseMeeting.detailedSummary, notesVersions);
+                                    if (tabs.length === 0) return null;
+                                    return (
+                                        <div className="mb-5">
+                                            <NotesVersionTabs tabs={tabs} active={versionKey} isLight={isLight} onSelect={setVersionKey} />
+                                        </div>
+                                    );
+                                })()}
                                 {/* Overview — the largest slab of prose in the note, and the one that made
                                     the old cascade read as "block by block": it renders through ReactMarkdown,
                                     so its text never passed through revealWords and the whole paragraph
@@ -2947,7 +3012,7 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                                     {section.bullets.map((bullet, i) => {
                                                         const dot = revealWith(revealSlot);
                                                         return (
-                                                        <li key={bullet.id || i} className="flex items-start gap-3">
+                                                        <li key={bullet.id || i} className="group/note flex items-start gap-3">
                                                             {/* The colour rides a style object, not `bg-text-secondary/60`:
                                                                 `text-secondary` is a bare var() reference, so Tailwind cannot
                                                                 recompute its alpha and that utility compiled to NOTHING —
@@ -2962,7 +3027,10 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                                                 style={{ background: 'color-mix(in srgb, var(--text-secondary) 60%, transparent)', ...dot.style }}
                                                             />
                                                             <div className="min-w-0 flex-1">
-                                                                <p className="text-sm text-text-secondary leading-relaxed">{revealWords(bullet.text)}</p>
+                                                                {/* A line built on the user's own notes reads in the primary
+                                                                    text colour; one written from the transcript keeps the
+                                                                    secondary grey every line had before. */}
+                                                                <p className={`text-sm leading-relaxed ${bullet.fromUserNotes ? 'text-text-primary' : 'text-text-secondary'}`}>{revealWords(bullet.text)}</p>
                                                                 {/* Always mounted, grown open by Show evidence (.mn-ev), so the
                                                                     note opens up rather than every bullet jumping a line in one
                                                                     frame; inert while closed keeps it out of the tab order. The
@@ -2978,6 +3046,22 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                                                     </div>
                                                                 )}
                                                             </div>
+                                                            {/* Source: the transcript around this line's moment. */}
+                                                            {(() => {
+                                                                const at = noteLineTime(bullet);
+                                                                if (at === undefined) return null;
+                                                                return (
+                                                                    <NoteSource
+                                                                        time={at}
+                                                                        quote={bullet.evidence?.find(e => e.quote)?.quote}
+                                                                        transcript={meeting.transcript || []}
+                                                                        speakerName={resolveSpeakerName}
+                                                                        formatTime={formatEvidenceTime}
+                                                                        isLight={isLight}
+                                                                        t={t}
+                                                                    />
+                                                                );
+                                                            })()}
                                                         </li>
                                                         );
                                                     })}
@@ -2985,6 +3069,17 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                             </section>
                                             ); })}
                                     </>
+                                )}
+
+                                {/* Thumbs up / down on the notes shown, kept on this machine. */}
+                                {isV3Summary && (
+                                    <NotesRating
+                                        meetingId={meeting.id}
+                                        versionId={versionKey === 'current' ? null : versionKey}
+                                        contentKey={ratedNotesKey}
+                                        isLight={isLight}
+                                        t={t}
+                                    />
                                 )}
 
                                 {/* SHOW_STRUCTURED_BLOCKS: the mode's note-section TEMPLATE is the source of truth, so the
@@ -3371,6 +3466,18 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                         </div>
                         )}
 
+                        {/* Your notes: exactly what the user typed in the notes window during
+                            the meeting, read-only. Copy (in the tab row) copies it as typed. */}
+                        {activeTab === 'yours' && (
+                            <section>
+                                {hasUserNotes ? (
+                                    <p className="text-text-primary text-[15px] leading-relaxed whitespace-pre-wrap break-words select-text cursor-text">{meeting.userNotes}</p>
+                                ) : (
+                                    <p className="text-text-tertiary">{t('No notes were typed in this meeting.')}</p>
+                                )}
+                            </section>
+                        )}
+
                         {activeTab === 'transcript' && (
                             // No fade of its own: the tab swap (.mn-tab-in) brings it in.
                             <section>
@@ -3457,7 +3564,10 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                                         onClick={e => {
                                                             setChipMorph({ id, from: e.currentTarget.offsetWidth });
                                                             setEditingSpeaker(id);
-                                                            setSpeakerDraft(display);
+                                                            // A voice still unnamed starts from the name proposed after the meeting, if any.
+                                                            const saved = meeting.detailedSummary?.speakerLabels?.[id];
+                                                            const proposed = saved ? undefined : meeting.detailedSummary?.speakerSuggestions?.find(sg => sg.id === id && !sg.applied)?.name;
+                                                            setSpeakerDraft(proposed || display);
                                                         }}
                                                         whileTap={prefersReducedMotion ? undefined : { scale: 0.96 }}
                                                         transition={{ duration: 0.16, ease: [0.23, 1, 0.32, 1] }}
@@ -3660,6 +3770,21 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                 initialQuery={submittedQuery}
                 onNewQuery={(newQuery) => {
                     setSubmittedQuery(newQuery);
+                }}
+            />
+
+            {/* Regenerating over hand-edited notes: the in-app confirm, never window.confirm. */}
+            <ConfirmDialog
+                open={pendingRegenerate !== null}
+                onOpenChange={(open) => { if (!open) setPendingRegenerate(null); }}
+                title={t('Regenerate these notes?')}
+                description={t('Regenerating replaces the edits you made to these notes. Your current version stays in its tab.')}
+                confirmLabel={t('Regenerate')}
+                destructive={false}
+                onConfirm={() => {
+                    const pending = pendingRegenerate;
+                    setPendingRegenerate(null);
+                    if (pending) void handleRegenerate(pending.target, true);
                 }}
             />
         </div>

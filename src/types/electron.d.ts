@@ -416,6 +416,8 @@ export interface ElectronAPI {
   getAiResponseLanguages: () => Promise<Array<{ label: string; code: string }>>
   setAiResponseLanguage: (language: string) => Promise<{ success: boolean; error?: string }>
   getSttLanguage: () => Promise<string>
+  getUserDictionary?: () => Promise<string[]>
+  setUserDictionary?: (terms: string[]) => Promise<{ success: boolean; terms?: string[]; error?: string }>
   getAiResponseLanguage: () => Promise<string>
   onSttLanguageAutoDetected: (callback: (bcp47: string) => void) => () => void
   // `titleKey` is the i18n key for the warning banner's heading (main.ts
@@ -974,12 +976,46 @@ export interface ElectronAPI {
   calendarDisconnect: () => Promise<{ success: boolean; error?: string }>
   getCalendarStatus: () => Promise<{ connected: boolean; email?: string; name?: string }>
   getSyncedCalendars: () => Promise<Array<{ id: string; name: string; primary: boolean; color?: string }>>
+  /** Every calendar source this platform offers (Apple Calendar on macOS only), with where each stands. */
+  getCalendarSources?: () => Promise<Array<{
+    id: 'google' | 'outlook' | 'apple' | 'ics'
+    state: 'connected' | 'disconnected' | 'unconfigured' | 'notAllowed'
+    account?: string
+    detail?: string
+    lastRefresh?: { at: number; ok: boolean }
+  }>>
+  /** Connects one source; `input` is the pasted link for 'ics'. `error` is a sentence for the row. */
+  calendarSourceConnect?: (id: 'google' | 'outlook' | 'apple' | 'ics', input?: string) => Promise<{ success: boolean; error?: string }>
+  calendarSourceDisconnect?: (id: 'google' | 'outlook' | 'apple' | 'ics') => Promise<{ success: boolean }>
   /** Meeting detection (Settings › Calendar): offer to start when a call begins. */
   getMeetingDetectionEnabled?: () => Promise<boolean>
   setMeetingDetectionEnabled?: (on: boolean) => Promise<{ success: boolean; error?: string }>
+  getMeetingAutoStopEnabled?: () => Promise<boolean>
+  setMeetingAutoStopEnabled?: (on: boolean) => Promise<{ success: boolean; error?: string }>
+  meetingAutoStopKeepGoing?: () => Promise<{ success: boolean }>
+  meetingAutoStopTyping?: () => void
+  /** The notes window (`?window=notes`): the overlay's Notes button, its own X. */
+  notesWindowToggle?: () => Promise<{ open: boolean }>
+  notesWindowClose?: () => Promise<{ success: boolean }>
+  notesWindowIsOpen?: () => Promise<boolean>
+  onNotesWindowVisibility?: (callback: (open: boolean) => void) => () => void
+  /** The notes window's text and the meeting it belongs to. */
+  liveNotesGetState?: () => Promise<{ phase: 'idle' | 'live' | 'ended'; meetingId: string | null; text: string }>
+  /** Every change of the notes window's text (main keeps it with the meeting). */
+  liveNotesSetText?: (text: string) => void
+  onLiveNotesState?: (callback: (state: { phase: 'idle' | 'live' | 'ended'; meetingId: string | null; text?: string }) => void) => () => void
+  /** "Open meeting" in the notes window: the launcher opens that meeting. */
+  notesWindowOpenMeeting?: (meetingId: string) => Promise<{ success: boolean }>
+  onLauncherOpenMeeting?: (callback: (meetingId: string) => void) => () => void
+  /** Earlier versions of a meeting's notes, oldest first. */
+  getMeetingNotesVersions?: (meetingId: string) => Promise<Array<{ id: number; label: string; createdAt: number; templateType: string | null; detailedSummary: any }>>
+  /** Thumbs up / down on the notes shown (current: versionId null). */
+  rateMeetingNotes?: (input: { meetingId: string; rating: 'up' | 'down'; comment?: string; versionId?: number | null }) => Promise<{ success: boolean }>
+  getMeetingNotesRating?: (input: { meetingId: string; versionId?: number | null }) => Promise<{ rating: 'up' | 'down'; comment: string | null } | null>
+  onMeetingAutoStopNotice?: (callback: (data: { stopsAt: number | null }) => void) => () => void
   /** A notification's Start (a detected call, the calendar reminder), relayed by main to the launcher. */
   onMeetingStartRequest?: (callback: (req: { title?: string; calendarEventId?: string; via?: 'detected' | 'reminder' }) => void) => () => void
-  getUpcomingEvents: () => Promise<Array<{ id: string; title: string; startTime: string; endTime: string; link?: string; source: 'google'; attendees?: Array<{ email: string; name?: string; photoUrl?: string; response?: 'accepted' | 'declined' | 'tentative' | 'needsAction' }> }>>
+  getUpcomingEvents: () => Promise<Array<{ id: string; title: string; startTime: string; endTime: string; link?: string; source: 'google' | 'outlook' | 'apple' | 'ics'; attendees?: Array<{ email: string; name?: string; photoUrl?: string; response?: 'accepted' | 'declined' | 'tentative' | 'needsAction' }> }>>
   calendarRefresh: () => Promise<{ success: boolean; error?: string; fresh?: boolean }>
 
   // Auto-Update

@@ -5,7 +5,14 @@ import fs from 'fs';
 import path from 'path';
 import { EventEmitter } from 'events';
 import { meetingLinksIn, meetingRefOf } from './meetingDetection/meetingLinks';
+import { cleanEventDescription } from './calendar/calendarSessionMatch';
 import { describeOAuthError, renderOAuthCallbackPage, type OAuthCallbackOutcome } from './oauth/callbackPage';
+import type { CalendarEvent, CalendarEventProvider, CalendarSourceId, CalendarSourceStatus } from './calendar/providers/types';
+import { CalendarSourceError } from './calendar/providers/types';
+import { calendarSourcesFor, createCalendarProviders } from './calendar/providers/registry';
+import { mergeCalendarEvents } from './calendar/providers/mergeEvents';
+
+export type { CalendarAttendee, CalendarEvent, CalendarSourceId, CalendarSourceStatus } from './calendar/providers/types';
 
 /*
   Google OAuth client for calendar sync — a "Desktop app" client, used with
@@ -134,6 +141,28 @@ function conferenceVideoUris(item: any): string[] {
 }
 
 /**
+ * The fields the meeting notes read from an event (CalendarEvent.recurringEventId,
+ * organizer, description, timeZone); each omitted when Google sent nothing usable.
+ */
+function eventNotesFields(item: any): Pick<CalendarEvent, 'recurringEventId' | 'organizer' | 'description' | 'timeZone'> {
+    const out: Pick<CalendarEvent, 'recurringEventId' | 'organizer' | 'description' | 'timeZone'> = {};
+    if (typeof item?.recurringEventId === 'string' && item.recurringEventId) out.recurringEventId = item.recurringEventId.slice(0, 256);
+    const org = item?.organizer;
+    if (org && typeof org === 'object' && (typeof org.email === 'string' || typeof org.displayName === 'string')) {
+        out.organizer = {
+            ...(typeof org.email === 'string' && org.email ? { email: org.email.slice(0, 200) } : {}),
+            ...(typeof org.displayName === 'string' && org.displayName ? { name: org.displayName.slice(0, 120) } : {}),
+            ...(org.self === true ? { self: true } : {}),
+        };
+    }
+    const description = cleanEventDescription(item?.description);
+    if (description) out.description = description;
+    const tz = item?.start?.timeZone;
+    if (typeof tz === 'string' && tz && tz.length <= 64) out.timeZone = tz;
+    return out;
+}
+
+/**
  * Every meeting an event's links join, as keys (CalendarEvent.meetingKeys):
  * hangoutLink, video entry points, then URLs in the location and description.
  * Omitted when there are none.
@@ -207,32 +236,6 @@ async function postTokenEndpoint(form: Record<string, string>): Promise<any> {
     return body;
 }
 
-export interface CalendarAttendee {
-    email: string;
-    name?: string;
-    photoUrl?: string;
-    response?: 'accepted' | 'declined' | 'tentative' | 'needsAction';
-}
-
-export interface CalendarEvent {
-    id: string;
-    title: string;
-    startTime: string; // ISO
-    endTime: string; // ISO
-    link?: string;
-    source: 'google';
-    attendees?: CalendarAttendee[];
-    /** The user's own RSVP (their attendee entry is dropped from `attendees`). */
-    selfResponse?: CalendarAttendee['response'];
-    /**
-     * Every meeting its links join (meetingDetection/meetingLinks.ts keys, no
-     * passwords): the Meet link, a Zoom or Teams add-on's entry point, and any
-     * join URL in the location or description. A session whose meeting tab has
-     * one of these IS this event (calendarSessionMatch.ts).
-     */
-    meetingKeys?: string[];
-}
-
 export interface SyncedCalendar {
     id: string;
     name: string;
@@ -263,8 +266,10 @@ export class CalendarManager extends EventEmitter {
         return CalendarManager.instance;
     }
 
-    public init() {
+    /** `platform` picks the other sources (calendar/providers/registry.ts); a test passes its own. */
+    public init(platform: NodeJS.Platform = process.platform) {
         this.loadTokens();
+        this.initSources(platform);
     }
 
     // =========================================================================
@@ -368,22 +373,38 @@ export class CalendarManager extends EventEmitter {
         this.isConnected = false;
         this.accountEmail = null;
         this.accountName = null;
-        this.lastEvents = [];
-        this.lastEventsAt = 0;
+        this.forgetSource('google');
         this.lastCalendars = null;
 
         if (fs.existsSync(TOKEN_PATH)) {
             fs.unlinkSync(TOKEN_PATH);
         }
 
-        this.emit('connection-changed', false);
+        this.emitConnectionChanged();
     }
 
+    /**
+     * Whether any calendar is connected, and the account that names the user:
+     * Google's when Google is connected (exactly as before other sources
+     * existed), else the first other source that has an account (Outlook).
+     * The notes, follow-up signatures and speaker names read the name; the
+     * address splits an invite into colleagues and the other side.
+     */
     public getConnectionStatus(): { connected: boolean; email?: string; name?: string } {
+        if (this.isConnected) {
+            return {
+                connected: true,
+                ...(this.accountEmail ? { email: this.accountEmail } : {}),
+                ...(this.accountName ? { name: this.accountName } : {}),
+            };
+        }
+        const others = this.providers.filter((p) => p.isConnected());
+        if (others.length === 0) return { connected: false };
+        const identity = others.map((p) => p.identity?.()).find((i) => i && (i.email || i.name));
         return {
-            connected: this.isConnected,
-            ...(this.isConnected && this.accountEmail ? { email: this.accountEmail } : {}),
-            ...(this.isConnected && this.accountName ? { name: this.accountName } : {}),
+            connected: true,
+            ...(identity?.email ? { email: identity.email } : {}),
+            ...(identity?.name ? { name: identity.name } : {}),
         };
     }
 
@@ -446,7 +467,7 @@ export class CalendarManager extends EventEmitter {
 
         // 2. Calendar Re-sync & Temporal Re-evaluation
         const landedBefore = this.fetchesLanded;
-        if (this.isConnected) {
+        if (this.anyConnected()) {
             // Force fetch will also re-schedule reminders based on NEW time
             await this.getUpcomingEvents(true);
         } else {
@@ -457,7 +478,7 @@ export class CalendarManager extends EventEmitter {
         // We emit 'updated' so the frontend knows to re-fetch via getUpcomingEvents
         // or we could push the data. usually ipcHandlers just call getUpcomingEvents.
         this.emit('events-updated');
-        return this.isConnected && this.fetchesLanded !== landedBefore;
+        return this.anyConnected() && this.fetchesLanded !== landedBefore;
     }
 
     private handleTokenResponse(data: any) {
@@ -479,7 +500,7 @@ export class CalendarManager extends EventEmitter {
         } catch (error) {
             console.error('[CalendarManager] Could not save the calendar tokens; connected for this session:', error);
         }
-        this.emit('connection-changed', true);
+        this.emitConnectionChanged();
 
         // Initial fetch
         this.fetchUpcomingEvents();
@@ -614,9 +635,16 @@ export class CalendarManager extends EventEmitter {
             return;
         }
         const { Notification } = require('electron');
+        // A recurring meeting recalls its last instance (recurringMeetings.ts,
+        // stored notes only, no model call); otherwise the usual question.
+        let lastTime: string | null = null;
+        try {
+            const { lastTimeNotificationLine } = require('./meeting/recurringMeetings');
+            lastTime = lastTimeNotificationLine(event);
+        } catch { /* a recap never blocks the reminder */ }
         const notif = new Notification({
             title: 'Meeting starting soon',
-            body: `"${event.title}" starts in 2 minutes. Start Natively?`,
+            body: lastTime ? `"${event.title}" starts in 2 minutes.\n${lastTime}` : `"${event.title}" starts in 2 minutes. Start Natively?`,
             actions: [
                 { type: 'button', text: 'Start Meeting' },
                 { type: 'button', text: 'Dismiss' }
@@ -653,36 +681,46 @@ export class CalendarManager extends EventEmitter {
     // The last list a fetch returned whole, and when. A session start matches
     // against this at once (calendarSessionMatch.ts) instead of waiting on
     // Google; the Launcher and Settings refetch it every minute anyway.
+    // Every source's events merged (mergeEvents.ts); lastBySource keeps each
+    // source's own last list, so one that fails keeps its last week.
     private lastEvents: CalendarEvent[] = [];
     private lastEventsAt = 0;
-    /** Fetches Google answered; refreshState compares it (two can share a Date.now()). */
+    private lastBySource = new Map<CalendarSourceId, CalendarEvent[]>();
+    /** Fetches a source answered; refreshState compares it (two can share a Date.now()). */
     private fetchesLanded = 0;
 
     public async getUpcomingEvents(force: boolean = false): Promise<CalendarEvent[]> {
-        if (!this.isConnected || !this.accessToken) return [];
-
-        // Check expiry
-        if (this.expiryDate && Date.now() >= this.expiryDate - 60000) {
-            await this.refreshAccessToken();
-        }
+        if (!this.anyConnected()) return [];
 
         const now = Date.now();
-        const events = await this.fetchEventsInternal(now, now + 7 * 24 * 60 * 60 * 1000);
-        if (events) {
-            this.lastEvents = events;
+        const results = await this.fetchFromSources(now, now + 7 * 24 * 60 * 60 * 1000);
+        let landed = false;
+        for (const [source, events] of results) {
+            this.lastRefresh.set(source, { at: now, ok: !!events });
+            if (events) {
+                this.lastBySource.set(source, events);
+                landed = true;
+            }
+        }
+        if (landed) {
+            this.lastEvents = this.mergedLastEvents();
             this.lastEventsAt = now;
             this.fetchesLanded++;
         }
-        this.scheduleReminders(events ?? []);
+        // Reminders for what the sources that answered returned.
+        this.scheduleReminders(mergeCalendarEvents(
+            [...results].filter(([, events]) => !!events).map(([source, events]) => ({ source, events: events! })),
+        ));
         // A failed fetch (offline, Google timing out) is not an empty week: the
         // Launcher and Settings keep showing the last list, less what has ended.
-        if (!events) return this.lastEvents.filter((ev) => new Date(ev.endTime).getTime() > now);
-        return events;
+        const anyFailed = [...results.values()].some((events) => !events);
+        if (!landed || anyFailed) return this.lastEvents.filter((ev) => new Date(ev.endTime).getTime() > now);
+        return this.lastEvents;
     }
 
     /** The last fetched list if it is no older than `maxAgeMs`, else null. */
     public getCachedEvents(maxAgeMs: number): CalendarEvent[] | null {
-        if (!this.isConnected || this.lastEventsAt === 0) return null;
+        if (!this.anyConnected() || this.lastEventsAt === 0) return null;
         return Date.now() - this.lastEventsAt <= maxAgeMs ? this.lastEvents : null;
     }
 
@@ -692,11 +730,40 @@ export class CalendarManager extends EventEmitter {
      * upcoming list.
      */
     public async getEventsBetween(fromMs: number, toMs: number): Promise<CalendarEvent[]> {
+        if (!this.anyConnected()) return [];
+        const results = await this.fetchFromSources(fromMs, toMs);
+        return mergeCalendarEvents([...results].map(([source, events]) => ({ source, events: events ?? [] })));
+    }
+
+    /** Google's events overlapping [fromMs, toMs]; null when the fetch failed outright. */
+    private async fetchGoogle(fromMs: number, toMs: number): Promise<CalendarEvent[] | null> {
         if (!this.isConnected || !this.accessToken) return [];
+        // Check expiry
         if (this.expiryDate && Date.now() >= this.expiryDate - 60000) {
             await this.refreshAccessToken();
         }
-        return (await this.fetchEventsInternal(fromMs, toMs)) ?? [];
+        return this.fetchEventsInternal(fromMs, toMs);
+    }
+
+    /** Each connected source's events (null for one that failed), in parallel. */
+    private async fetchFromSources(fromMs: number, toMs: number): Promise<Map<CalendarSourceId, CalendarEvent[] | null>> {
+        const jobs: Array<Promise<[CalendarSourceId, CalendarEvent[] | null]>> = [];
+        if (this.isConnected) jobs.push(this.fetchGoogle(fromMs, toMs).then((events) => ['google', events]));
+        for (const provider of this.providers) {
+            if (!provider.isConnected()) continue;
+            jobs.push(provider.fetchEvents(fromMs, toMs)
+                .catch((error) => {
+                    console.error(`[CalendarManager] ${provider.id} fetch failed:`, error?.message ?? error);
+                    return null;
+                })
+                .then((events) => [provider.id, events]));
+        }
+        const results = new Map(await Promise.all(jobs));
+        // A source that disconnected during its own fetch (a revoked grant) has nothing to add.
+        for (const source of [...results.keys()]) {
+            if (!this.sourceConnected(source)) results.delete(source);
+        }
+        return results;
     }
 
     /** Events overlapping [fromMs, toMs]; null when the fetch failed outright. */
@@ -788,6 +855,12 @@ export class CalendarManager extends EventEmitter {
                     selfResponse: Array.isArray(item.attendees)
                         ? item.attendees.find((a: any) => a.self)?.responseStatus
                         : undefined,
+                    // For the meeting notes (2026-10-15): which series this is (Google
+                    // sends recurringEventId on every instance, singleEvents or not),
+                    // who sent it, what it says it is for, and its time zone.
+                    ...eventNotesFields(item),
+                    // The same invite in Outlook, Apple Calendar or a calendar link is merged by it.
+                    ...(typeof item.iCalUID === 'string' && item.iCalUID ? { iCalUID: item.iCalUID.slice(0, 300) } : {}),
                 }))
                 // Each calendar comes back in order; the merge does not.
                 .sort((a: CalendarEvent, b: CalendarEvent) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
@@ -894,6 +967,158 @@ export class CalendarManager extends EventEmitter {
         // ... avoided to prevent picking up random links like "docs.google.com"
 
         return undefined;
+    }
+
+    // =========================================================================
+    // Calendar sources (2026-10-15): Google above, Outlook, Apple Calendar and a
+    // calendar link (calendar/providers). Every one maps into CalendarEvent, so
+    // the lists above merge them and nothing downstream knows the difference.
+    // =========================================================================
+
+    private providers: CalendarEventProvider[] = [];
+    private sourceIds: CalendarSourceId[] = ['google'];
+    private lastRefresh = new Map<CalendarSourceId, { at: number; ok: boolean }>();
+
+    private initSources(platform: NodeJS.Platform): void {
+        this.sourceIds = calendarSourcesFor(platform);
+        try {
+            this.providers = createCalendarProviders(platform, {
+                userDataDir: app.getPath('userData'),
+                safeStorage,
+                openExternal: (url: string) => shell.openExternal(url),
+                // Looked up per call, like Google's own requests.
+                fetch: ((input: any, init?: any) => globalThis.fetch(input, init)) as typeof fetch,
+                now: () => Date.now(),
+                onConnectionChanged: () => this.onSourceConnectionChanged(),
+                knownSelfEmails: () => this.knownSelfEmails(),
+            }, {
+                // The native module only loads once Apple Calendar is used.
+                loadEventKit: () => {
+                    const { loadNativeModule } = require('../audio/nativeModuleLoader');
+                    return loadNativeModule();
+                },
+            });
+            for (const provider of this.providers) {
+                try {
+                    provider.init();
+                } catch (error) {
+                    console.error(`[CalendarManager] ${provider.id} could not load its saved state:`, error);
+                }
+            }
+        } catch (error) {
+            console.error('[CalendarManager] Calendar sources other than Google are unavailable:', error);
+            this.providers = [];
+        }
+    }
+
+    private anyConnected(): boolean {
+        return this.isConnected || this.providers.some((p) => p.isConnected());
+    }
+
+    private sourceConnected(source: CalendarSourceId): boolean {
+        if (source === 'google') return this.isConnected;
+        return !!this.providers.find((p) => p.id === source)?.isConnected();
+    }
+
+    /** Every connected source's last list, merged. */
+    private mergedLastEvents(): CalendarEvent[] {
+        return mergeCalendarEvents(
+            [...this.lastBySource]
+                .filter(([source]) => this.sourceConnected(source))
+                .map(([source, events]) => ({ source, events })),
+        );
+    }
+
+    /** A source went away: its events leave the lists at once. */
+    private forgetSource(source: CalendarSourceId): void {
+        this.lastBySource.delete(source);
+        this.lastRefresh.delete(source);
+        this.lastEvents = this.mergedLastEvents();
+        if (!this.anyConnected() || this.lastBySource.size === 0) {
+            this.lastEvents = [];
+            this.lastEventsAt = 0;
+        }
+    }
+
+    /** Announces whether ANY calendar is connected (the Launcher and Settings follow it). */
+    private emitConnectionChanged(): void {
+        this.emit('connection-changed', this.getConnectionStatus().connected);
+    }
+
+    private onSourceConnectionChanged(): void {
+        for (const provider of this.providers) {
+            if (!provider.isConnected() && this.lastBySource.has(provider.id)) this.forgetSource(provider.id);
+        }
+        this.emitConnectionChanged();
+        // A newly connected source shows in the lists without waiting a minute.
+        if (this.anyConnected()) void this.getUpcomingEvents(true).catch(() => {});
+    }
+
+    /** The user's own addresses across sources: "you" in a calendar link's or Apple Calendar's attendee list. */
+    private knownSelfEmails(): string[] {
+        const out: string[] = [];
+        if (this.isConnected && this.accountEmail) out.push(this.accountEmail);
+        for (const provider of this.providers) {
+            const email = provider.isConnected() ? provider.identity?.()?.email : undefined;
+            if (email) out.push(email);
+        }
+        return out;
+    }
+
+    /** Each source this platform offers, for Settings › Calendar, in its order. */
+    public getSourceStatuses(): CalendarSourceStatus[] {
+        return this.sourceIds.map((id): CalendarSourceStatus => {
+            const lastRefresh = this.lastRefresh.get(id);
+            if (id === 'google') {
+                const base: CalendarSourceStatus = this.isConnected
+                    ? {
+                        id,
+                        state: 'connected',
+                        ...(this.accountName || this.accountEmail ? { account: (this.accountName || this.accountEmail)! } : {}),
+                        ...(this.accountName && this.accountEmail ? { detail: this.accountEmail } : {}),
+                    }
+                    : { id, state: 'disconnected' };
+                return lastRefresh && this.isConnected ? { ...base, lastRefresh } : base;
+            }
+            const provider = this.providers.find((p) => p.id === id);
+            if (!provider) return { id, state: 'unconfigured' };
+            const status = provider.status();
+            return lastRefresh && status.state === 'connected' ? { ...status, lastRefresh } : status;
+        });
+    }
+
+    /**
+     * Connects one source. Google goes through its own flow (startAuthFlow).
+     * Returns the sentence to show when it did not connect, else null.
+     */
+    public async connectSource(id: CalendarSourceId, input?: unknown): Promise<string | null> {
+        if (!this.sourceIds.includes(id)) return 'This calendar isn’t available on this computer.';
+        try {
+            if (id === 'google') {
+                await this.startAuthFlow();
+                return null;
+            }
+            const provider = this.providers.find((p) => p.id === id);
+            if (!provider) return 'This calendar isn’t available on this computer.';
+            await provider.connect(input);
+            return null;
+        } catch (error: any) {
+            console.error(`[CalendarManager] ${id} connect failed:`, error?.cause ?? error?.message ?? error);
+            // Only sentences written for people reach Settings.
+            if (error instanceof CalendarSourceError || error instanceof CalendarConnectError) return error.message;
+            return 'Natively couldn’t connect this calendar. Try again in a minute.';
+        }
+    }
+
+    public async disconnectSource(id: CalendarSourceId): Promise<void> {
+        if (id === 'google') {
+            await this.disconnect();
+            return;
+        }
+        const provider = this.providers.find((p) => p.id === id);
+        if (!provider) return;
+        await provider.disconnect();
+        this.forgetSource(id);
     }
 
     // Background fetcher could go here if needed

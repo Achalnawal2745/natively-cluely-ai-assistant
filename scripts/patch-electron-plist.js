@@ -74,6 +74,23 @@ if (!content.includes('NSSpeechRecognitionUsageDescription')) {
   console.log('[patch-electron-plist] NSSpeechRecognitionUsageDescription already present — skipping.');
 }
 
+// Patch the Calendars purpose strings for Apple Calendar (EventKit). Without
+// them macOS ends a process that asks for calendar access; the native module
+// checks for them and never asks when they are missing, so a dev Electron.app
+// without this patch shows Apple Calendar as unable to ask instead.
+for (const key of ['NSCalendarsFullAccessUsageDescription', 'NSCalendarsUsageDescription']) {
+  if (!content.includes(key)) {
+    content = content.replace(
+      '<key>NSMicrophoneUsageDescription</key>',
+      `<key>${key}</key>\n\t<string>Natively uses your calendar to name your meetings and show who is in them. It never changes your events.</string>\n\t<key>NSMicrophoneUsageDescription</key>`
+    );
+    modified = true;
+    console.log(`[patch-electron-plist] Added ${key}.`);
+  } else {
+    console.log(`[patch-electron-plist] ${key} already present — skipping.`);
+  }
+}
+
 // Patch LSUIElement — make the dev Electron.app launch as an agent (no dock
 // tile at process spawn).
 //

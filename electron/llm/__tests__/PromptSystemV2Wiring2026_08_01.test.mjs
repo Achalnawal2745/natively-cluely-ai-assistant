@@ -242,7 +242,11 @@ describe('flag + meeting surfaces', () => {
     // The structured-summary prompt is DELIBERATELY untouched: its JSON shape
     // (overview/keyPoints/actionItems + mode note sections) is coupled to the
     // deterministic parser in MeetingPersistence. Guard that it still exists.
-    assert.ok(meetingSrc.includes('"keyPoints": ['), 'summary JSON schema prompt must be preserved');
+    // 2026-10-15: the fallback prompt and its parser moved together into
+    // services/meeting/v2FallbackNotes.ts, which MeetingPersistence calls.
+    const fallbackSrc = read('../../services/meeting/v2FallbackNotes.ts');
+    assert.ok(fallbackSrc.includes('"keyPoints": ['), 'summary JSON schema prompt must be preserved');
+    assert.match(meetingSrc, /buildV2FallbackPrompts\(\{/, 'MeetingPersistence must still build the fallback prompt from it');
   });
 
   test('follow-up email uses the v2 contract with the legacy pair as fallback', () => {
