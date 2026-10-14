@@ -548,6 +548,10 @@ test('wiring: only the browser that showed the call can say its tab closed', () 
     assert.equal(tab(call.key), false, 'the same browser, still connected, no longer lists it: the tab was closed');
     live.clearAll();
     assert.equal(tab(call.key), null);
+    // A disconnected source is forgotten, not kept with every call it showed.
+    live.set(chrome, [call]);
+    live.set(chrome, null);
+    assert.equal(live.reporterOf.size, 0);
     w.auto.end();
 });
 

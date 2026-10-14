@@ -54,8 +54,14 @@ export class LiveMeetings extends EventEmitter implements LiveMeetingSource {
     set(source: unknown, meetings: LiveMeeting[] | null): void {
         if (meetings && meetings.length > 0) this.bySource.set(source, meetings);
         else this.bySource.delete(source);
-        if (meetings === null) this.reporting.delete(source);
-        else this.reporting.add(source);
+        if (meetings === null) {
+            this.reporting.delete(source);
+            // A source that went away answers nothing any more; holding its
+            // socket here would only grow with every call and reconnect.
+            for (const [key, s] of this.reporterOf) if (s === source) this.reporterOf.delete(key);
+        } else {
+            this.reporting.add(source);
+        }
         for (const m of meetings ?? []) if (m.key) this.reporterOf.set(m.key, source);
         this.changed();
     }
