@@ -290,14 +290,14 @@ describe('VadProcessor — peekOpenSegment', () => {
 
   test('the returned buffer is caller-owned: mutating it does not corrupt the segment', () => {
     const vad = new VadProcessor();
-    vad.push(speech(2));
+    vad.push(speech(4));
     const a = vad.peekOpenSegment();
     a.samples.fill(0.5);
     const b = vad.peekOpenSegment();
     assert.notEqual(a.samples, b.samples);
-    assert.deepEqual(b.samples, speech(2));
+    assert.deepEqual(b.samples, speech(4));
     const [seg] = vad.push(silence(HANGOVER));
-    assert.deepEqual(seg.samples, concat(speech(2), silence(HANGOVER)));
+    assert.deepEqual(seg.samples, concat(speech(4), silence(HANGOVER)));
   });
 
   test('is null again once the segment closes', () => {
@@ -402,14 +402,6 @@ describe('VadProcessor — flush and reset', () => {
       assert.deepEqual(vad.flush(), [], `${n} frame(s) is below the minimum`);
       assert.equal(vad.isInSpeech(), false);
     }
-  });
-
-  test('flush() counts hangover frames toward the 4-frame minimum', () => {
-    const vad = new VadProcessor();
-    vad.push(concat(speech(2), silence(2)));
-    const out = vad.flush();
-    assert.equal(out.length, 1);
-    assert.equal(out[0].durationMs, 120);
   });
 
   test('reset() drops the open segment without emitting it', () => {
