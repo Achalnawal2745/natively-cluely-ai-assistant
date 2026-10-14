@@ -46,9 +46,10 @@
 // were already right and still are: 68 of 72 and 72 of 72 after. The rule is
 // "the user asks the other person", not "always a candidate".
 //
-// Known limit: a class attended in GENERAL mode has its lecturer labelled
-// [INTERVIEWER] in the transcript, so it reads as an interview and gets
-// candidate questions. Lecture mode is the mode for that.
+// A class attended in GENERAL mode has its lecturer labelled [INTERVIEWER] in
+// the transcript, so it read as an interview and got candidate questions. That
+// was this file's known limit; it is handled in the request, not in this
+// overlay (FollowUpQuestionsClassInGeneral2026_10_10.test.mjs says why).
 //
 // Run under Electron, as `npm test` does:
 //   npm run build:electron && ELECTRON_RUN_AS_NODE=1 npx electron --test electron/llm/__tests__/FollowUpQuestionsDirection2026_10_09.test.mjs

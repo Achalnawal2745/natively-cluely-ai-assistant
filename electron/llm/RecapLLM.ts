@@ -62,6 +62,11 @@ export class RecapLLM {
             yield* this.llmHelper.streamChat(message, undefined, undefined, promptOverride, true);
         } catch (error) {
             console.error("[RecapLLM] Streaming generation failed:", error);
+            // Thrown on, not swallowed: see ClarifyLLM.generateStream. The
+            // engine reports it with the provider's reason (runRecap).
+            // generate() above still returns "": its caller is the transcript
+            // compaction, which has no one to tell.
+            throw error;
         }
     }
 

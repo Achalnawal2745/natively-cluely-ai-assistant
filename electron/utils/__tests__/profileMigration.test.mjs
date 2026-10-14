@@ -1,5 +1,6 @@
 // Profile-dir migration (utils/migrateUserData): the packaged profile moves
-// off the brand name exactly once, atomically, and never breaks startup.
+// BACK to the brand name ("Natively") exactly once, atomically, and never
+// breaks startup. 2.9.2 disguised it to corespeechd/audiodg; this reverts it.
 // Contract tests over the pure decide() matrix plus the runner with a fake fs.
 // Imports COMPILED output from dist-electron (npm run build:electron first),
 // like the other utils suites.
@@ -14,120 +15,126 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = (p) => path.join(here, '../../../dist-electron/electron/utils', p);
 const m = require(dist('migrateUserData.js'));
 const {
-  decideProfileMigration,
-  isLegacyMainProcessName,
-  profileDirNameForPlatform,
+  decideProfileRestore,
+  aliasProfileDirName,
+  aliasProcessMatchesDarwin,
+  aliasProcessMatchesWin,
   runProfileMigration,
-  PROFILE_MIGRATION_RECEIPT,
-  legacyMainExeNames,
-  defaultScanLegacyInstance,
+  PROFILE_RESTORE_RECEIPT,
+  BRAND_PROFILE_DIR_NAME,
+  defaultScanAliasInstance,
 } = m;
 
 // --- mapping ---------------------------------------------------------------
 
-test('target dir names track the per-platform disguise (mirrors disguise-name.cjs)', () => {
-  assert.equal(profileDirNameForPlatform('darwin'), 'corespeechd');
-  assert.equal(profileDirNameForPlatform('win32'), 'audiodg');
-  assert.equal(profileDirNameForPlatform('linux'), 'Natively');
-  const disguise = createRequire(import.meta.url)('../../../scripts/disguise-name.cjs');
-  assert.equal(profileDirNameForPlatform('darwin'), disguise.darwin);
-  assert.equal(profileDirNameForPlatform('win32'), disguise.win32);
+test('alias dir names track the per-platform 2.9.2 disguise (mirrors disguise-name.cjs history)', () => {
+  assert.equal(aliasProfileDirName('darwin'), 'corespeechd');
+  assert.equal(aliasProfileDirName('win32'), 'audiodg');
+  assert.equal(aliasProfileDirName('linux'), null);
+  assert.equal(BRAND_PROFILE_DIR_NAME, 'Natively');
 });
 
-test('legacy main-exe names: main only, never helpers', () => {
-  assert.deepEqual(legacyMainExeNames('darwin'), ['Natively']);
-  assert.deepEqual(legacyMainExeNames('win32'), ['natively.exe']);
-  assert.ok(isLegacyMainProcessName('Natively', 'darwin'));
-  assert.ok(!isLegacyMainProcessName('Natively Helper', 'darwin'));
-  assert.ok(!isLegacyMainProcessName('Natively Helper (GPU)', 'darwin'));
-  assert.ok(!isLegacyMainProcessName('corespeechd', 'darwin'));
-  assert.ok(!isLegacyMainProcessName('', 'darwin'));
-  assert.ok(isLegacyMainProcessName('natively.exe', 'win32'));
-  assert.ok(isLegacyMainProcessName('NATIVELY.EXE', 'win32'));
-  assert.ok(!isLegacyMainProcessName('Natively Helper.exe', 'win32'));
-  assert.ok(!isLegacyMainProcessName('audiodg.exe', 'win32'));
-  assert.ok(!isLegacyMainProcessName('', 'win32'));
+test('darwin liveness match is PATH-aware — never the real corespeechd daemon', () => {
+  // Our lingering 2.9.2 app:
+  assert.ok(aliasProcessMatchesDarwin('/Applications/corespeechd.app/Contents/MacOS/corespeechd', 'corespeechd'));
+  assert.ok(aliasProcessMatchesDarwin('/Users/u/Applications/corespeechd.app/Contents/MacOS/corespeechd --type=gpu', 'corespeechd'));
+  // The real OS daemon of the same basename — must NOT match:
+  assert.ok(!aliasProcessMatchesDarwin('/System/Library/PrivateFrameworks/CoreSpeech.framework/Versions/A/XPCServices/corespeechd.xpc/Contents/MacOS/corespeechd', 'corespeechd'));
+  // Our own reverted app (Natively.app) must NOT match the alias:
+  assert.ok(!aliasProcessMatchesDarwin('/Applications/Natively.app/Contents/MacOS/Natively', 'corespeechd'));
+  assert.ok(!aliasProcessMatchesDarwin('', 'corespeechd'));
 });
 
-test('ps comm lines print full paths on macOS — basename first', () => {
-  const { psLineBasename } = m;
-  assert.equal(psLineBasename('/Applications/Natively.app/Contents/MacOS/Natively'), 'Natively');
-  assert.equal(psLineBasename('/sbin/launchd'), 'launchd');
-  assert.equal(psLineBasename('corespeechd'), 'corespeechd');
-  assert.equal(psLineBasename(''), '');
-  assert.ok(isLegacyMainProcessName(psLineBasename('/Applications/Natively.app/Contents/MacOS/Natively'), 'darwin'));
-  assert.ok(!isLegacyMainProcessName(psLineBasename('/sbin/launchd'), 'darwin'));
+test('windows liveness match excludes the real System32 audiodg.exe', () => {
+  assert.ok(aliasProcessMatchesWin('C:\\Users\\u\\AppData\\Local\\Programs\\audiodg\\audiodg.exe', 'audiodg'));
+  assert.ok(aliasProcessMatchesWin('D:/Portable/audiodg.exe', 'audiodg'));
+  // The real Audio Device Graph — must NOT match:
+  assert.ok(!aliasProcessMatchesWin('C:\\Windows\\System32\\audiodg.exe', 'audiodg'));
+  assert.ok(!aliasProcessMatchesWin('c:\\windows\\system32\\audiodg.exe', 'audiodg'));
+  // A blank path (protected process denied the query) is ignored:
+  assert.ok(!aliasProcessMatchesWin('', 'audiodg'));
+  assert.ok(!aliasProcessMatchesWin('   ', 'audiodg'));
+  // Some other exe that merely lives outside System32 is not ours:
+  assert.ok(!aliasProcessMatchesWin('C:\\Program Files\\Thing\\thing.exe', 'audiodg'));
 });
 
 // --- decide() matrix --------------------------------------------------------
 
 const base = (over = {}) => ({
   packaged: true,
-  sameName: false,
-  legacyExists: true,
-  legacyEmpty: false,
-  newExists: false,
-  newEmpty: true,
+  noAlias: false,
+  aliasExists: true,
+  aliasEmpty: false,
+  brandExists: false,
+  brandEmpty: true,
   receiptPresent: false,
-  liveOldInstance: false,
+  liveAliasInstance: false,
   ...over,
 });
 
 test('unpackaged builds never touch anything', () => {
-  const d = decideProfileMigration({ packaged: false });
+  const d = decideProfileRestore({ packaged: false });
   assert.equal(d.kind, 'skipped-dev');
   assert.equal(d.setPath, false);
   assert.equal(d.doRename, false);
 });
 
-test('platforms without an alias keep the explicit legacy pin', () => {
-  const d = decideProfileMigration(base({ sameName: true }));
-  assert.equal(d.kind, 'pinned-legacy-name');
+test('platforms that never had an alias resolve straight to the brand dir', () => {
+  const d = decideProfileRestore(base({ noAlias: true }));
+  assert.equal(d.kind, 'no-alias');
+  assert.equal(d.target, 'brand');
   assert.equal(d.setPath, true);
   assert.equal(d.doRename, false);
 });
 
-test('receipt present: already migrated, no fs writes', () => {
-  const d = decideProfileMigration(base({ receiptPresent: true }));
-  assert.equal(d.kind, 'already-migrated');
+test('restore receipt present: already restored, no fs writes', () => {
+  const d = decideProfileRestore(base({ receiptPresent: true }));
+  assert.equal(d.kind, 'already-restored');
+  assert.equal(d.target, 'brand');
   assert.equal(d.doRename, false);
   assert.equal(d.writeReceipt, false);
 });
 
-test('populated new dir without receipt: adopt it, never merge or delete', () => {
-  const d = decideProfileMigration(base({ newExists: true, newEmpty: false }));
-  assert.equal(d.kind, 'adopted-existing');
-  assert.equal(d.doRename, false);
-  assert.equal(d.writeReceipt, true);
-});
-
-test('no legacy dir: fresh install goes straight to the new dir', () => {
-  const d = decideProfileMigration(base({ legacyExists: false }));
-  assert.equal(d.kind, 'fresh');
+test('no alias dir: use the brand dir directly (pre-disguise data or fresh install)', () => {
+  const d = decideProfileRestore(base({ aliasExists: false }));
+  assert.equal(d.kind, 'no-alias-data');
+  assert.equal(d.target, 'brand');
   assert.equal(d.doRename, false);
 });
 
-test('empty legacy husk: use new dir, leave the husk in place', () => {
-  const d = decideProfileMigration(base({ legacyEmpty: true }));
-  assert.equal(d.kind, 'empty-legacy');
+test('empty alias husk: use the brand dir, leave the husk in place', () => {
+  const d = decideProfileRestore(base({ aliasEmpty: true }));
+  assert.equal(d.kind, 'empty-alias');
+  assert.equal(d.target, 'brand');
   assert.equal(d.doRename, false);
 });
 
-test('live old instance: defer to legacy this launch (its lock still governs)', () => {
-  const d = decideProfileMigration(base({ liveOldInstance: true }));
+test('brand dir already populated without receipt: keep the authoritative alias data, never adopt or merge', () => {
+  const d = decideProfileRestore(base({ brandExists: true, brandEmpty: false }));
+  assert.equal(d.kind, 'brand-occupied');
+  assert.equal(d.target, 'alias');
+  assert.equal(d.doRename, false);
+  assert.equal(d.writeReceipt, false);
+});
+
+test('live 2.9.2 instance: defer to the alias this launch (its lock still governs)', () => {
+  const d = decideProfileRestore(base({ liveAliasInstance: true }));
   assert.equal(d.kind, 'deferred-live-instance');
+  assert.equal(d.target, 'alias');
   assert.equal(d.doRename, false);
 });
 
 test('scan failure: conservative defer, never migrate blind', () => {
-  const d = decideProfileMigration(base({ liveOldInstance: null }));
+  const d = decideProfileRestore(base({ liveAliasInstance: null }));
   assert.equal(d.kind, 'deferred-unknown');
+  assert.equal(d.target, 'alias');
   assert.equal(d.doRename, false);
 });
 
-test('clean legacy, no new dir, no live instance: the one true migration', () => {
-  const d = decideProfileMigration(base({}));
-  assert.equal(d.kind, 'migrated');
+test('populated alias, no brand dir, no live instance: the one true restore', () => {
+  const d = decideProfileRestore(base({}));
+  assert.equal(d.kind, 'restored');
+  assert.equal(d.target, 'brand');
   assert.equal(d.doRename, true);
   assert.equal(d.writeReceipt, true);
 });
@@ -168,13 +175,14 @@ function fakeFs(initial = {}) {
 }
 
 const posixJoin = (...parts) => parts.join('/');
+const APP = '/Users/u/Library/Application Support';
 const deps = (over = {}) => ({
   platform: 'darwin',
   isPackaged: true,
-  appDataDir: '/Users/u/Library/Application Support',
+  appDataDir: APP,
   join: posixJoin,
   fs: fakeFs(),
-  scanLegacyInstance: () => false,
+  scanAliasInstance: () => false,
   log: () => {},
   ...over,
 });
@@ -186,79 +194,108 @@ test('runner: dev never touches setPath', () => {
   assert.equal(dir, null);
 });
 
-test('runner: full migration renames, writes receipt, returns new dir', () => {
-  const fsp = fakeFs({ '/Users/u/Library/Application Support/Natively': 'dir' });
+test('runner: full restore renames alias → brand, writes receipt, returns brand dir', () => {
+  const fsp = fakeFs({ [`${APP}/corespeechd`]: 'dir' });
   const d = deps({ fs: fsp });
   const { action, dir } = runProfileMigration(d);
-  assert.equal(action.kind, 'migrated');
-  assert.equal(dir, '/Users/u/Library/Application Support/corespeechd');
-  assert.deepEqual(fsp.calls[0], ['rename',
-    '/Users/u/Library/Application Support/Natively',
-    '/Users/u/Library/Application Support/corespeechd']);
-  assert.ok(fsp.calls.some((c) => c[0] === 'write' && c[1].endsWith(PROFILE_MIGRATION_RECEIPT)));
-  assert.ok(!fsp.has('/Users/u/Library/Application Support/Natively'));
-  assert.ok(fsp.has('/Users/u/Library/Application Support/corespeechd'));
+  assert.equal(action.kind, 'restored');
+  assert.equal(dir, `${APP}/Natively`);
+  assert.deepEqual(fsp.calls[0], ['rename', `${APP}/corespeechd`, `${APP}/Natively`]);
+  assert.ok(fsp.calls.some((c) => c[0] === 'write' && c[1].endsWith(PROFILE_RESTORE_RECEIPT)));
+  assert.ok(!fsp.has(`${APP}/corespeechd`));
+  assert.ok(fsp.has(`${APP}/Natively`));
 });
 
-test('runner: live old instance → legacy dir, zero writes', () => {
-  const fsp = fakeFs({ '/Users/u/Library/Application Support/Natively': 'dir' });
-  const d = deps({ fs: fsp, scanLegacyInstance: () => true });
+test('runner: live 2.9.2 instance → alias dir, zero writes', () => {
+  const fsp = fakeFs({ [`${APP}/corespeechd`]: 'dir' });
+  const d = deps({ fs: fsp, scanAliasInstance: () => true });
   const { action, dir } = runProfileMigration(d);
   assert.equal(action.kind, 'deferred-live-instance');
-  assert.equal(dir, '/Users/u/Library/Application Support/Natively');
+  assert.equal(dir, `${APP}/corespeechd`);
   assert.deepEqual(fsp.calls, []);
-  assert.ok(fsp.has('/Users/u/Library/Application Support/Natively'));
+  assert.ok(fsp.has(`${APP}/corespeechd`));
 });
 
-test('runner: scan failure → legacy dir, zero writes', () => {
-  const fsp = fakeFs({ '/Users/u/Library/Application Support/Natively': 'dir' });
-  const d = deps({ fs: fsp, scanLegacyInstance: () => null });
+test('runner: scan failure → alias dir, zero writes', () => {
+  const fsp = fakeFs({ [`${APP}/corespeechd`]: 'dir' });
+  const d = deps({ fs: fsp, scanAliasInstance: () => null });
   const { action, dir } = runProfileMigration(d);
   assert.equal(action.kind, 'deferred-unknown');
-  assert.equal(dir, '/Users/u/Library/Application Support/Natively');
+  assert.equal(dir, `${APP}/corespeechd`);
   assert.deepEqual(fsp.calls, []);
 });
 
-test('runner: rename failure aborts to legacy (status quo)', () => {
-  const fsp = fakeFs({ '/Users/u/Library/Application Support/Natively': 'dir' });
+test('runner: a populated brand husk is kept on the alias dir — never adopted over the real data', () => {
+  const fsp = fakeFs({ [`${APP}/corespeechd`]: 'dir', [`${APP}/Natively`]: 'dir' });
+  const d = deps({ fs: fsp });
+  const { action, dir } = runProfileMigration(d);
+  assert.equal(action.kind, 'brand-occupied');
+  assert.equal(dir, `${APP}/corespeechd`);
+  assert.deepEqual(fsp.calls, []); // no rename, no delete, no receipt
+  assert.ok(fsp.has(`${APP}/corespeechd`));
+  assert.ok(fsp.has(`${APP}/Natively`));
+});
+
+test('runner: pre-2.9.2 user whose data never left Natively — no alias dir, resolve to brand', () => {
+  const fsp = fakeFs({ [`${APP}/Natively`]: 'dir' });
+  const d = deps({ fs: fsp });
+  const { action, dir } = runProfileMigration(d);
+  assert.equal(action.kind, 'no-alias-data');
+  assert.equal(dir, `${APP}/Natively`);
+  assert.deepEqual(fsp.calls, []);
+});
+
+test('runner: rename failure aborts to the alias dir (status quo, data stays visible)', () => {
+  const fsp = fakeFs({ [`${APP}/corespeechd`]: 'dir' });
   fsp.renameSync = () => { throw new Error('EPERM'); };
   const d = deps({ fs: fsp });
   const { action, dir } = runProfileMigration(d);
   assert.equal(action.kind, 'aborted');
-  assert.equal(dir, '/Users/u/Library/Application Support/Natively');
-  assert.ok(fsp.has('/Users/u/Library/Application Support/Natively'));
+  assert.equal(dir, `${APP}/corespeechd`);
+  assert.ok(fsp.has(`${APP}/corespeechd`));
 });
 
-test('runner: receipt failures still land on the new dir', () => {
-  const fsp = fakeFs({ '/Users/u/Library/Application Support/Natively': 'dir' });
+test('runner: receipt failures still land on the brand dir', () => {
+  const fsp = fakeFs({ [`${APP}/corespeechd`]: 'dir' });
   fsp.writeFileSync = () => { throw new Error('ENOSPC'); };
   const d = deps({ fs: fsp });
   const { action, dir } = runProfileMigration(d);
-  assert.equal(action.kind, 'migrated');
-  assert.equal(dir, '/Users/u/Library/Application Support/corespeechd');
+  assert.equal(action.kind, 'restored');
+  assert.equal(dir, `${APP}/Natively`);
 });
 
-test('runner: empty new-dir husk is removed before rename', () => {
-  const app = '/Users/u/Library/Application Support';
-  const fsp = fakeFs({ [`${app}/Natively`]: 'dir', [`${app}/corespeechd`]: 'empty-dir' });
+test('runner: an empty brand husk is removed before the rename', () => {
+  const fsp = fakeFs({ [`${APP}/corespeechd`]: 'dir', [`${APP}/Natively`]: 'empty-dir' });
   const d = deps({ fs: fsp });
   const { action, dir } = runProfileMigration(d);
-  assert.equal(action.kind, 'migrated');
-  assert.equal(dir, `${app}/corespeechd`);
-  assert.deepEqual(fsp.calls[0], ['rmdir', `${app}/corespeechd`]);
+  assert.equal(action.kind, 'restored');
+  assert.equal(dir, `${APP}/Natively`);
+  assert.deepEqual(fsp.calls[0], ['rmdir', `${APP}/Natively`]);
 });
 
-test('runner: windows target is audiodg', () => {
+test('runner: windows alias is audiodg', () => {
   const app = 'C:/Users/u/AppData/Roaming';
-  const fsp = fakeFs({ [`${app}/Natively`]: 'dir' });
+  const fsp = fakeFs({ [`${app}/audiodg`]: 'dir' });
   const d = deps({ platform: 'win32', appDataDir: app, fs: fsp });
   const { action, dir } = runProfileMigration(d);
-  assert.equal(action.kind, 'migrated');
-  assert.equal(dir, `${app}/audiodg`);
+  assert.equal(action.kind, 'restored');
+  assert.equal(dir, `${app}/Natively`);
+  assert.deepEqual(fsp.calls[0], ['rename', `${app}/audiodg`, `${app}/Natively`]);
 });
 
-test('live default scanner runs against real ps without throwing', () => {
-  const r = defaultScanLegacyInstance(process.platform);
+test('runner: linux has no alias — resolve straight to the brand dir, no scan', () => {
+  const app = '/home/u/.config';
+  let scanned = false;
+  const fsp = fakeFs({ [`${app}/Natively`]: 'dir' });
+  const d = deps({ platform: 'linux', appDataDir: app, fs: fsp, scanAliasInstance: () => { scanned = true; return false; } });
+  const { action, dir } = runProfileMigration(d);
+  assert.equal(action.kind, 'no-alias');
+  assert.equal(dir, `${app}/Natively`);
+  assert.equal(scanned, false);
+});
+
+test('live default scanner runs against the real OS without throwing', () => {
+  const r = defaultScanAliasInstance(process.platform);
   assert.ok(r === true || r === false || r === null);
 });
 

@@ -184,6 +184,7 @@ export const JA_GENERATED: Record<string, string> = {
     'Combined System + Context + Message (Recommended)': 'システム + コンテキスト + メッセージを結合（推奨）',
     'Common Complaints': 'よくある苦情',
     'Community': 'コミュニティ',
+    'Companion': 'コンパニオン',
     'Compensation': '報酬',
     'Complete': '完了',
     'Concept breakdowns, intuition-first explanations, formula notes.': 'コンセプトの内訳、直感優先の解説、公式のメモ。',
@@ -823,7 +824,6 @@ export const JA_GENERATED: Record<string, string> = {
     'Support Development': '開発を支援',
     'Support Project': 'プロジェクトを支援',
     'Supported apps here': '対応アプリはこちら',
-    'Sync': '同期',
     'Synced with calendar': 'カレンダーと同期済み',
     'System': 'システム',
     'System Audio Model': 'システム音声モデル',
@@ -1098,4 +1098,12 @@ export const JA_GENERATED: Record<string, string> = {
     "Set default": "デフォルトに設定",
     "default": "デフォルト",
     "Use this model by default for this provider": "このプロバイダーでこのモデルをデフォルトにする",
+    // Settings > About, the Reviews section (2026-10-11).
+    "Reviews": "レビュー",
+    "Tell us how Natively is working for you.": "Natively の使い心地をお聞かせください。",
+    "Rate Natively": "Natively を評価",
+    "A star rating and a few words, if you like.": "星の評価と、よければひとこと。",
+    "This install has already sent a review. Thank you.": "このインストールからはレビューを送信済みです。ありがとうございます。",
+    "Write a review": "レビューを書く",
+    "Sent": "送信済み",
 };

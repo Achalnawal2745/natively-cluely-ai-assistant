@@ -44,8 +44,17 @@
 import type Database from 'better-sqlite3';
 import { requestBackfillRearm } from '../rag/backfillRearm';
 
-/** Folder names the profile has had under appData before the disguise names. */
-export const LEGACY_PROFILE_DIR_NAMES = ['Natively', 'natively'] as const;
+/**
+ * Folder names the profile has lived under: the brand ('Natively'/'natively')
+ * and the 2.9.x disguise aliases ('corespeechd'/'audiodg'). The disguise is
+ * reverted and utils/migrateUserData moves the alias folder back to 'Natively'
+ * wholesale; the aliases stay here so that in the rare case the rename is
+ * deferred (a populated brand husk, or a live old instance) and the app runs
+ * from the alias OR the brand dir, the sweeper still pulls meetings across from
+ * whichever of these is not the one in use. legacyProfileDatabases() excludes
+ * the current profile dir, so this never reads a folder into itself.
+ */
+export const LEGACY_PROFILE_DIR_NAMES = ['Natively', 'natively', 'corespeechd', 'audiodg'] as const;
 export const LEGACY_DB_FILE = 'natively.db';
 /** app_state: one row per old meeting this database has held, `<prefix><meeting id>`. */
 export const LEGACY_IMPORT_SEEN_PREFIX = 'legacy_meeting_seen_v1:';

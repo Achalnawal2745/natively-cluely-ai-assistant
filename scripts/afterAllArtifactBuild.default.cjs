@@ -165,11 +165,9 @@ async function runHook(buildResult, deps) {
       return [];
     }
 
-    // NOTE: the bundle inside is deliberately left named "corespeechd.app" (the
-    // darwin disguise alias). We do NOT rename it to "Natively.app" for a branded
-    // Finder label: that would leak the brand into the on-disk bundle path, which
-    // a proctoring scanner enumerating /Applications reads. Finder/Dock show the
-    // disguise; the brand is applied as CFBundleDisplayName only (cosmetic).
+    // The bundle inside is "Natively.app" (productName = the brand; stealth
+    // reverted). The check below discovers it by the ".app" suffix, so it is
+    // name-agnostic either way.
     const problems = [];
 
     for (const outDmg of dmgs) {

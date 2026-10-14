@@ -122,6 +122,8 @@ export interface BridgeInput {
    *  shares 'manual-chat' with the IPC surface). Appended to legacyPath and
    *  the [V3] line so traces from different call sites stay separable. */
   pathTag?: string;
+  /** See AnswerRequest.keepConversationState: evidence for another prompt, not an answer turn. */
+  keepConversationState?: boolean;
   scope?: Partial<EvidenceScope>;
   requestId?: string;
   requestSequence?: number;
@@ -325,6 +327,7 @@ export async function buildV3Prompt(input: BridgeInput): Promise<BridgeResult | 
       attachedFileNames: input.attachedFileNames,
       screenText: input.screenText,
       extraAllowedSourceTypes: input.extraAllowedSourceTypes,
+      keepConversationState: input.keepConversationState,
     };
 
     // Prior-turn continuity: callers that have a live transcript window pass

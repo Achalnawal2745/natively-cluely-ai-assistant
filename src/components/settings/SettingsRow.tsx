@@ -4,18 +4,18 @@ import { useResolvedTheme } from '../../hooks/useResolvedTheme';
 import { DisclosureChevron } from '../ui/AccordionSection';
 import { SettingsToggle } from './SettingsToggle';
 
-// The parts General, Audio and Sync are built from, as one module, so a pane
+// The parts General, Audio and Companion are built from, as one module, so a pane
 // that adopts the Settings look takes the same measurements rather than a copy
 // of them. Intelligence and Provider performance use it.
 //
-// PhoneMirrorSettings.tsx (Sync) still carries its own copies of these —
-// SyncRow, Switch, BTN, SectionHeading, its tone strings and its motion
+// PhoneMirrorSettings.tsx (Companion) still carries its own copies of these —
+// CompanionRow, Switch, BTN, SectionHeading, its tone strings and its motion
 // vocabulary (Presence, Collapse, useSettledFlag) are the originals this file
-// was lifted from, value for value. Moving Sync onto this module is a pure
+// was lifted from, value for value. Moving Companion onto this module is a pure
 // refactor that was left out of the Intelligence redesign on purpose.
 
 // ── Motion ───────────────────────────────────────────────────────────────
-// Sync's vocabulary, so the two panes move alike: the transitions.dev token
+// Companion's vocabulary, so the two panes move alike: the transitions.dev token
 // scale, as values. framer-motion drives the pieces that have to sequence an
 // exit before an entrance, which a React re-render cannot do with CSS alone.
 // Every state change goes through one of these moves:
@@ -336,11 +336,11 @@ export const SETTINGS_BTN = `${SETTINGS_BTN_BASE} ${SETTINGS_BTN_NEUTRAL}`;
 // Audio's card: anything that opens underneath a row sits in one of these.
 export const SETTINGS_CARD = 'bg-bg-card rounded-xl border border-border-subtle';
 
-// The field look Sync uses for a pairing link, as an <input>.
+// The field look Companion uses for a pairing link, as an <input>.
 export const SETTINGS_INPUT =
   'w-full rounded-lg border border-border-subtle bg-bg-input px-3 py-2 text-xs text-text-primary transition-colors focus:outline-none focus:border-accent-primary disabled:opacity-50';
 
-// Sync's field label ("PAIRING LINK").
+// Companion's field label ("PAIRING LINK").
 export const SETTINGS_FIELD_LABEL = 'text-xs font-medium text-text-secondary uppercase tracking-wide block';
 
 /* A dropdown on the right of a settings row grows with its label, up to
@@ -439,7 +439,7 @@ export const SettingsSwitch: React.FC<{ checked: boolean; onChange: () => void; 
   />
 );
 
-// General's ADVANCED disclosure heading. `count` is Sync's "· 2 on" suffix, so
+// General's ADVANCED disclosure heading. `count` is Companion's "· 2 on" suffix, so
 // a switch turned on inside a closed disclosure is never invisible behind it.
 export const SettingsDisclosureButton: React.FC<{
   open: boolean;
@@ -470,7 +470,7 @@ export type SettingsTone = 'warn' | 'danger' | 'ok';
 
 // Status text. The palette's 300/400 shades are tuned for the dark canvas and
 // fall well under 4.5:1 on the light one, so light takes the 700/800s. Green is
-// the one step darker than Sync's copy: green-700 measured 4.49:1 as bare 12px
+// the one step darker than Companion's copy: green-700 measured 4.49:1 as bare 12px
 // text on the light canvas (a provider grade), so it goes to 800.
 export function useSettingsTones(): Record<SettingsTone, string> & { text: Record<SettingsTone, string> } {
   const isLight = useResolvedTheme() === 'light';
@@ -486,7 +486,7 @@ export function useSettingsTones(): Record<SettingsTone, string> & { text: Recor
   };
 }
 
-// Sync's inline notice. Owns its bottom gap, like every row child.
+// Companion's inline notice. Owns its bottom gap, like every row child.
 // `className` replaces the bottom gap when a notice sits in a spaced stack.
 // An `alert` shakes once as it lands (`.t-notice-shake`, src/index.css), and is
 // re-keyed on `shakeKey` so a DIFFERENT message replays the shake while a
@@ -521,7 +521,7 @@ export const SettingsNotice: React.FC<{
   );
 };
 
-// Sync's footnote under a section.
+// Companion's footnote under a section.
 export const SettingsFootnote: React.FC<{ icon: React.ReactNode; children: React.ReactNode }> = ({ icon, children }) => (
   <p className="flex items-start gap-2 px-1 mt-3 text-xs text-text-secondary">
     <span className="mt-px shrink-0">{icon}</span>

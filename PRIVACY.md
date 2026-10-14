@@ -109,11 +109,22 @@ have a trial or an account, to that trial or account.
 | Your trial or your Natively account, worked out by our server from the trial token or Natively key the app sends with the request (through the account: your billing email and plan) | Know which trial or customer an event belongs to | 13 months |
 | Usage events — the app was opened for the first time; the app was used on a given day; a getting-started step was shown or completed; a meeting started or ended (including one cut short because the app was closed), how many whole minutes it lasted and how many answers it produced; an answer could not be given, and the kind of reason, chosen from a fixed list (for example: no AI is set up, a key was refused, the request timed out) and never the provider's message; which features you used that day; a card or a locked feature was shown, and what you chose; a free trial was started, or could not be and why; a checkout page was opened, and from which screen; a licence key or API key was entered, and whether it was accepted | Understand how the product is used, where people give up, and what leads to a purchase | 13 months |
 | The state of the installation at that moment, as yes/no values — whether it is on a trial, has a plan, has a Pro licence, or uses its own AI keys — with the application version and operating system | Compare those groups | 13 months |
+| Country — a two-letter country code that our server works out from the network address the request arrives from | See roughly where in the world the app is in use, and show it per country on our website (see below) | 13 months |
 
 Every event is a fixed name with fixed choices, whole numbers, or yes/no values. No field in it
 can hold text, so an event cannot contain anything you say, see, type or paste, a file name, a
 meeting title, the name of a model, or a key. A count of answers is a number; the answers are
 never sent. We do not store your IP address with these events.
+
+**Country.** Our server reads the address a request arrives from once, to look up the country in
+a database it keeps on its own disk (IP geolocation by [DB-IP](https://db-ip.com)), and stores the
+two-letter country code with the event. The address is not stored and is not sent to anyone for
+this lookup. Nothing finer than the country is kept: no region, city or network.
+
+**Shown on our website.** Our website shows where the app was open in the last 24 hours. For each
+country it shows a whole percentage and a shade of colour, and never a number of people. Nothing
+about a single installation is published, and nothing is shown at all when fewer than 50
+installations reported in that time.
 
 **Registering the installation.** Before it reports anything, the app registers its installation
 with our server once: it does a short calculation in the background (about a second on most

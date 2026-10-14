@@ -15885,16 +15885,14 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const intelligenceManager = appState.getIntelligenceManager();
       const clarification = await intelligenceManager.runClarify();
-      // If null returned without throwing, the engine already set mode to idle.
-      // We must still ensure the frontend un-sticks — emit an error so onIntelligenceError fires.
-      if (clarification === null) {
-        const win = appState.getMainWindow();
-        win?.webContents.send('intelligence-error', {
-          error:
-            'Could not generate a clarifying question. Try again after some audio context is available.',
-          mode: 'clarify',
-        });
-      } else {
+      // A null is not worded here. The engine reports its own failures (an
+      // error event with the reason), and the other way to get a null is a
+      // Clarify the user cancelled or an answer overtook. This handler used to
+      // post "Could not generate a clarifying question. Try again after some
+      // audio context is available." for all three: a second line under a real
+      // failure, and a failure notice for a press the user had stopped.
+      // The overlay takes its own empty placeholder away (handleClarify).
+      if (clarification !== null) {
         try {
           PhoneMirrorService.getInstance().publishAssistantMessage(
             crypto.randomUUID(),
@@ -19060,7 +19058,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       enabled: (info as any)?.enabled,
       clients: (info as any)?.clients,
       extensionConnected: (info as any)?.extensionConnected,
-      // A number, not a payload: ends Sync's pairing countdown on a Re-pair,
+      // A number, not a payload: ends Companion's pairing countdown on a Re-pair,
       // which changes none of the flags above (PhoneMirrorService /pair).
       extPairedAt: (info as any)?.extPairedAt,
     };

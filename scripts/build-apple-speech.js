@@ -18,14 +18,11 @@ const path = require('node:path');
 
 const MINIMUM_SDK_MAJOR = 26;
 const MINIMUM_MACOS_VERSION = '26.0';
-// Helper binary name — derived from the per-platform disguise alias, NEVER the
-// brand. The helper is spawned as a child process, so its basename AND full path
-// show up in process enumeration; a "natively-*" name here leaks the brand right
-// next to the corespeechd disguise (a `natively` substring is exactly what a
-// scanner looks for). Sharing the alias prefix is safe for the same reason the
-// alias itself is: it collides with the real macOS corespeechd daemon.
-// MUST stay in sync with electron/audio/AppleSpeechSTT.ts and
-// scripts/verify-packaged-local-assets.mjs — guarded by apple-speech-build.test.mjs.
+// Helper binary name — the per-platform app identity (disguise-name.cjs) plus
+// "-asr". Stealth is reverted, so this carries the brand ("Natively-asr") like
+// the rest of the app. MUST stay in sync with electron/audio/AppleSpeechSTT.ts
+// and scripts/verify-packaged-local-assets.mjs — guarded by
+// scripts/__tests__/apple-speech-build.test.mjs.
 const HELPER_NAME = `${require('./disguise-name.cjs').darwin}-asr`;
 
 function archToName(arch) {

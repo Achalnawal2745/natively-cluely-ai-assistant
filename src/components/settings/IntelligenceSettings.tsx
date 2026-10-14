@@ -169,10 +169,10 @@ const FlagRowView: React.FC<{ row: FlagRow; onToggle: (row: FlagRow) => void }> 
 };
 interface HindsightCfg { baseUrl: string; hasApiKey: boolean; autoStart: boolean; serverCommand: string; llmProvider: string; available: boolean; mode: 'local' | 'cloud'; synthetic: boolean; explicitlyDisabled: boolean; authFailed: boolean }
 
-// Inline copyable command/snippet — Sync's pairing-link field and its Copy button. Used in
+// Inline copyable command/snippet — Companion's pairing-link field and its Copy button. Used in
 // the Hindsight setup card so a non-technical user can grab the install / launch /
 // env-export commands with one click instead of typing them by hand. Copy → Copied is
-// Sync's move too: the glyph cross-fades, the label swaps, the tone eases to green.
+// Companion's move too: the glyph cross-fades, the label swaps, the tone eases to green.
 const CopyBlock: React.FC<{ text: string; label?: string }> = ({ text, label }) => {
   const t = useT();
   const tones = useSettingsTones();
@@ -237,7 +237,7 @@ const ContextDebugSection: React.FC = () => {
   // Clearing is confirmed inline, not with <ConfirmDialog>: that portals to <body>
   // at z-50, and Settings sits inside GenieModal at z-index 300, so the dialog
   // opened BEHIND Settings (verified live 2026-09-25: open, but elementFromPoint at
-  // its centre hit Settings) while its overlay still took the input. Same fix as Sync.
+  // its centre hit Settings) while its overlay still took the input. Same fix as Companion.
   const [confirmClear, setConfirmClear] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -419,7 +419,7 @@ type ConnStatus = 'not-configured' | 'checking' | 'connected' | 'unreachable' | 
 // The badge beside the Hindsight row's title. Only the two healthy/neutral states get
 // one: the Liquid Glass tag has no amber or red tint, and the failure states need a
 // Retry and a sentence, so they grow in as a notice under the row instead.
-//   Connected — Sync's badge pop (500ms bounce in): a connection just made earns it.
+//   Connected — Companion's badge pop (500ms bounce in): a connection just made earns it.
 //   Checking  — quiet (control move, no overshoot), and only once a check has run
 //               ~250ms: a health check that answers in 80ms must not flash a tag.
 const StatusBadge: React.FC<{ status: ConnStatus; testing: boolean }> = ({ status, testing }) => {
@@ -765,11 +765,11 @@ export const IntelligenceSettings: React.FC = () => {
     // Every switch is visible under its category; only diagnostics sit behind a
     // disclosure, at the foot, as General's ADVANCED does.
     //
-    // Built from General's parts, as Sync is: Audio's section heading, General's row
+    // Built from General's parts, as Companion is: Audio's section heading, General's row
     // (40px tile, 14px bold title, 12px description, control), General's secondary
     // button and ADVANCED disclosure, Audio's card for anything that opens under a
     // row, and the Liquid Glass badge/button General and Billing use. There is no
-    // pane title, matching Audio and Sync — the first section heading leads.
+    // pane title, matching Audio and Companion — the first section heading leads.
     <SettingsMotionReady.Provider value={motionReady}>
     <div className="space-y-8 animated fadeIn" data-settings-stagger>
       {/* ── Memory: Hindsight long-term memory, then the memory switches ── */}
@@ -806,7 +806,7 @@ export const IntelligenceSettings: React.FC = () => {
               <Presence kind="control" id={setupControlId}>
                 {setupControlId === 'cta' ? (
                   // The one primary action on the pane, in the Liquid Glass action
-                  // colour Sync's Connect uses.
+                  // colour Companion's Connect uses.
                   <LiquidGlassButton variant="action" className="lg-sm" aria-expanded={showSetup} onClick={() => setShowSetup(true)}>
                     {setupToggleLabel}
                   </LiquidGlassButton>

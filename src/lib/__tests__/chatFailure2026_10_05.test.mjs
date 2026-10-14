@@ -116,7 +116,7 @@ test("a sentence the app wrote is the explanation as it is, once, without the wo
   const skill = 'Skill "/code-review" is disabled. Enable it in Settings → Skills.';
   assert.equal(view(skill, { provider: 'Google' }).headline, skill);
   assert.equal(view(`Error: ${skill}`, { provider: 'Google' }).headline, skill);
-  const clarify = 'Could not generate a clarifying question. Try again after some audio context is available.';
+  const clarify = 'No clarifying question came back. Try again.';
   const v = view(clarify, { provider: 'Google' });
   assert.equal(v.headline, clarify);
   assert.equal(v.detail, undefined);

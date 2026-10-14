@@ -156,6 +156,7 @@ const GROQ_MODEL = GROQ_PRIMARY_MODEL
 import { GROQ_VISION_MODEL, isRetiredModelId as isRetiredGroqModelId } from './llm/groqModels'
 import { DEEPSEEK_DEFAULT_MODEL, deepseekWireModel, isDeepseekModelId } from './llm/deepseekModels'
 import {
+  AGENTROUTER_DEFAULT_MODEL,
   AGENTROUTER_JUDGE_MODEL,
   agentRouterError,
   agentRouterProtocolFor,
@@ -6503,6 +6504,28 @@ let isMultimodal = !!(imagePaths?.length);
       });
     }
 
+    // Priority 10: AgentRouter (the user's own gateway key), LAST (2026-10-12).
+    //
+    // The same gap the DeepSeek rung closed, for the other key that can be a
+    // user's only one: with AgentRouter alone the ladder was empty, every
+    // structured call threw "No reasoning model available", and Profile
+    // Intelligence read the résumé with its rule-based parser.
+    //
+    // The model is the gateway's automatic default (AGENTROUTER_DEFAULT_MODEL,
+    // DeepSeek), NOT the selected one, for the reason the Auto Answer judge
+    // gives: a profile upload makes six or more structured calls, and on a
+    // Claude or GPT pick those would be taken from the user's daily ration.
+    // Thinking off and the DeepSeek output cap come from
+    // agentRouterAnthropicParams, as for a chat turn; 0.4 as the rungs above.
+    //
+    // Last on purpose, after DeepSeek: nobody with a working rung is moved.
+    if (this.hasAgentRouterCredential()) {
+      providers.push({
+        name: `AgentRouter (${agentRouterWireModel(AGENTROUTER_DEFAULT_MODEL)})`,
+        execute: () => this.generateWithAgentRouter(message, undefined, undefined, AGENTROUTER_DEFAULT_MODEL, signal, { temperature: 0.4 }),
+      });
+    }
+
     if (providers.length === 0) {
       throw new Error('No reasoning model available. Please configure an API key (OpenAI, Claude, Gemini, Groq, Natively) or a custom provider.');
     }
@@ -7510,13 +7533,14 @@ let isMultimodal = !!(imagePaths?.length);
    * the gateway's terms would read as hammering. The SDK's own single retry
    * (createAgentRouterClients) covers a dropped connection.
    */
-  private async generateWithAgentRouter(userMessage: string, systemPrompt?: string, imagePaths?: string[], modelId?: string, signal?: AbortSignal): Promise<string> {
+  private async generateWithAgentRouter(userMessage: string, systemPrompt?: string, imagePaths?: string[], modelId?: string, signal?: AbortSignal, opts?: AgentRouterCallOptions): Promise<string> {
     const model = agentRouterWireModel(modelId || this.currentModelId);
     const timeoutMs = 120000;
     const deadline = AbortSignal.timeout(timeoutMs);
     const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
     let text = '';
-    for await (const piece of this.streamWithAgentRouter(userMessage, systemPrompt, imagePaths, combined, modelId)) text += piece;
+    // `opts` is set by the structured ladder only (document extraction); every chat caller keeps the route's defaults.
+    for await (const piece of this.streamWithAgentRouter(userMessage, systemPrompt, imagePaths, combined, modelId, opts)) text += piece;
     // The stream returns quietly on abort, which is right for a live answer and
     // wrong here: a blocking caller would take the partial text as complete.
     if (combined.aborted) {

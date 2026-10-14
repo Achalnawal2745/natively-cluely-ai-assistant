@@ -23,3 +23,8 @@ export function discardStreamingByIntentMessages<T extends { id: string; role: s
   prev: T[],
   intent?: string,
 ): T[];
+
+export function dropSealedEmptyByIntentMessages<T extends { id: string; role: string; text: string; intent?: string; isStreaming?: boolean }>(
+  prev: T[],
+  intent: string,
+): T[];

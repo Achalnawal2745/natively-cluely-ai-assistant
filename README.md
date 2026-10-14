@@ -491,7 +491,7 @@ We've launched the official **$NAT token** on Printr! Holders who maintain a spe
 | :------ | :----------- |
 | **Auto Answer** `Beta` | Answers now arrive sooner, and questions meant for someone else on the call are left alone. Off by default; enable in **Settings → General**. |
 | **Visual Answers** | System designs, flows and charts, drawn live inside the answer. Ask in any mode, in English, Spanish, Russian, Chinese or Japanese. |
-| **Phone Mirror 2.0** | Your phone follows the meeting with the live transcript and answers as they stream in, and can send photos back to the desktop. Set it up in **Settings → Sync**. |
+| **Phone Mirror 2.0** | Your phone follows the meeting with the live transcript and answers as they stream in, and can send photos back to the desktop. Set it up in **Settings → Companion**. |
 | **Calendar sync** | Connect Google Calendar and each meeting is linked to its event, notes name the people who spoke, and a follow-up email is drafted when you ask. |
 | **Embeddings and rerankers** | Choose what powers search over your files and past meetings, from Gemini, OpenAI, Voyage AI and Jina AI to local models that run on your device. In **Settings → Retrieval**. |
 | **Reads images** | Every model gets an Auto, On or Off setting for screenshots. On Auto, Natively works out whether a model can read images and stops sending screenshots to one that cannot. |
@@ -508,7 +508,7 @@ We've launched the official **$NAT token** on Printr! Holders who maintain a spe
 - **Provider failures are explained.** The overlay says why in plain words, then tries your next provider and tells you which one answered.
 - **Faster speech-to-text** on Deepgram, Soniox and OpenAI, and model pickers for speech providers.
 - **A refreshed look.** Liquid Glass controls, a new startup splash, a blue accent and smoother motion in every window.
-- **Rebuilt Settings.** Calendar, Sync, About and Setup & Help are new, and Setup & Help shows real recordings.
+- **Rebuilt Settings.** Calendar, Companion, About and Setup & Help are new, and Setup & Help shows real recordings.
 - **Smaller updates.** From this version on, updates download only what changed, and the update card shows a short summary with a link to the full notes.
 
 #### Fixed
@@ -887,7 +887,7 @@ Create local `SKILL.md` files to give the AI specialized instructions for any ta
 
 ### Seamless Integrations & Sync
 
-- **Phone Mirror 2.0:** Follow the meeting from your phone, with the live transcript, answers as they stream in, and photos sent back to the desktop. Set it up in **Settings → Sync**.
+- **Phone Mirror 2.0:** Follow the meeting from your phone, with the live transcript, answers as they stream in, and photos sent back to the desktop. Set it up in **Settings → Companion**.
 - **Calendar Sync:** Connect Google Calendar and each meeting is linked to its event, notes name the people who spoke, and a follow-up email is drafted when you ask.
 - **Smart Task Export:** Send extracted action items directly to Jira, Linear, or Asana.
 - **Speaker Diarization:** Real-time speaker identification tags individual speakers by name automatically.

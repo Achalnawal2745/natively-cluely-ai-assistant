@@ -185,6 +185,7 @@ export const ES_GENERATED: Record<string, string> = {
     "Combined System + Context + Message (Recommended)": "Combined System + Context + Message (Recommended)",
     "Common Complaints": "Common Complaints",
     "Community": "Community",
+    "Companion": "Compañero",
     "Compensation": "Compensation",
     "Complete": "Completado",
     "Concept breakdowns, intuition-first explanations, formula notes.": "Concept breakdowns, intuition-first explanations, formula notes.",
@@ -824,7 +825,6 @@ export const ES_GENERATED: Record<string, string> = {
     "Support Development": "Support Development",
     "Support Project": "Support Project",
     "Supported apps here": "Supported apps here",
-    "Sync": "Sincronización",
     "Synced with calendar": "Sincronizado con el calendario",
     "System": "Sistema",
     "System Audio Model": "System Audio Model",
@@ -1113,4 +1113,12 @@ export const ES_GENERATED: Record<string, string> = {
     "Set default": "Predeterminar",
     "default": "predeterminado",
     "Use this model by default for this provider": "Usar este modelo por defecto con este proveedor",
+    // Settings > About, the Reviews section (2026-10-11).
+    "Reviews": "Reseñas",
+    "Tell us how Natively is working for you.": "Cuéntanos qué tal te funciona Natively.",
+    "Rate Natively": "Valora Natively",
+    "A star rating and a few words, if you like.": "Una puntuación con estrellas y, si quieres, unas palabras.",
+    "This install has already sent a review. Thank you.": "Esta instalación ya ha enviado una reseña. Gracias.",
+    "Write a review": "Escribir una reseña",
+    "Sent": "Enviada",
 };

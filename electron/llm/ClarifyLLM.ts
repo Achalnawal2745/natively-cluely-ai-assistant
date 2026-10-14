@@ -77,6 +77,12 @@ export class ClarifyLLM {
             yield* this.llmHelper.streamChat(message, undefined, undefined, promptOverride, true);
         } catch (error) {
             console.error("[ClarifyLLM] Streaming generation failed:", error);
+            // Thrown on, not swallowed. Ending the stream quietly here made a
+            // missing key, an empty quota or a dead network look like a model
+            // with nothing to say: the engine returned an empty string and the
+            // overlay showed the "Clarify" label with nothing under it. The
+            // engine reports it with the provider's reason (runClarify).
+            throw error;
         }
     }
 }

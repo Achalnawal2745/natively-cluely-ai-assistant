@@ -45,7 +45,7 @@
 //                 "Best for this Mac" → macOS
 //   stealth       General › Process Disguise names macOS apps → macOS
 //   verify        General › Show advanced settings › Verify coding answers → both
-//   sync          Sync; its extension row shows ⌘+Y → macOS
+//   sync          Companion; its extension row shows ⌘+Y → macOS
 //   phone         the Phone Mirror page on a phone; nothing from the desktop OS → both
 //   modes         Launcher › Modes → both
 //   profile       Launcher › Profile Intelligence → both

@@ -7405,7 +7405,8 @@ export class IntelligenceEngine extends EventEmitter {
     /**
      * V3 prompt for a TRANSCRIPT-DRIVEN surface (assist / code hint). Clarify
      * and Brainstorm left it on 2026-10-09: they are not answers, and V3
-     * composes an answer prompt.
+     * composes an answer prompt. Brainstorm still calls this for the evidence
+     * the two prompts were built from, and sends neither prompt.
      *
      * These surfaces receive no question — they receive a rolling speech window.
      * §12's answer is the question RESOLVER, not the classifier: extract the
@@ -7416,7 +7417,7 @@ export class IntelligenceEngine extends EventEmitter {
      * into no-evidence disclosures would be adoption theatre.
      */
     private async buildV3ForTranscriptSurface(
-        tag: 'assist' | 'code-hint' = 'assist',
+        tag: 'assist' | 'code-hint' | 'brainstorm' = 'assist',
         /**
          * A question the caller already has, which beats resolving one out of
          * speech. Code hint is the case: the problem statement comes off a
@@ -7428,7 +7429,7 @@ export class IntelligenceEngine extends EventEmitter {
          * `code-hint`, and `screenshot` is what that turn actually is.
          */
         pinned?: { question: string; surface?: 'assist' | 'screenshot'; source?: 'screenshot' | 'transcript' | 'manual' },
-    ): Promise<{ system: string; user: string } | null> {
+    ): Promise<{ system: string; user: string; evidenceBlock: string } | null> {
         try {
             const { isContextIntelligenceV3Enabled } = require('./context-intelligence/contracts/flag');
             if (!isContextIntelligenceV3Enabled()) return null;
@@ -7461,13 +7462,20 @@ export class IntelligenceEngine extends EventEmitter {
             const _v3 = await buildV3Prompt({
                 surface: pinned?.surface ?? 'assist',
                 // Low-confidence query rewrite: the user's fast model, 1.5 s hard cap.
-                queryRewriter: require('./context-intelligence/retrieval/rewriter-binding').bindQueryRewriter(this.llmHelper),
+                // Not for Brainstorm, which only wants the evidence: a model
+                // call ahead of its first word is a cost the press never had.
+                queryRewriter: tag === 'brainstorm' ? undefined
+                    : require('./context-intelligence/retrieval/rewriter-binding').bindQueryRewriter(this.llmHelper),
                 // See the what-to-answer call site: the rollback must reach
                 // every surface, not just typed chat.
                 multiTurnHistory: isIntelligenceFlagEnabled('chatHistoryMultiTurn'),
                 // AnswerSurface has no code-hint member; the tag keeps its
                 // traces separable from real assist turns.
                 pathTag: tag,
+                // Brainstorm borrows the retrieval. It is not a turn of the
+                // answer conversation, so "explain that" after it still
+                // means the last answer.
+                keepConversationState: tag === 'brainstorm',
                 question: resolved.resolvedQuestion,
                 modeTemplateType: ctx.raw,
                 modeUniqueId: ctx.modeUniqueId,
@@ -7501,7 +7509,9 @@ export class IntelligenceEngine extends EventEmitter {
                 conversationSummary: ctx.conversationWindow(60),
                 retrieval: ctx.port as any,
             });
-            return _v3 ? { system: _v3.system, user: _v3.user } : null;
+            // evidenceBlock: what the two prompts were built from, for a caller
+            // that keeps its own prompt and wants the retrieval (Brainstorm).
+            return _v3 ? { system: _v3.system, user: _v3.user, evidenceBlock: String(_v3.evidenceBlock ?? '') } : null;
         } catch { return null; }
     }
 
@@ -7700,10 +7710,14 @@ export class IntelligenceEngine extends EventEmitter {
         console.log('[IntelligenceEngine] runRecap called');
         this.setMode('recap');
 
+        // Set once this press has a generation of its own; null before that.
+        let generationId: number | null = null;
         try {
             if (!this.recapLLM) {
                 console.error('[IntelligenceEngine] RecapLLM not initialized');
                 this.setMode('idle');
+                // Said here, where the reason is known (see runClarify).
+                this.emit('error', new Error('Recap needs an AI model. Add one in Settings, then try again.'), 'recap');
                 return null;
             }
 
@@ -7731,7 +7745,7 @@ export class IntelligenceEngine extends EventEmitter {
                 if (recapContract) recapContractRule = contextOs.buildRecapContractRule(recapContract);
             } catch { /* Context OS is additive — never break recap */ }
 
-            const generationId = ++this.currentGenerationId;
+            generationId = ++this.currentGenerationId;
             let fullSummary = "";
             const stream = this.recapLLM.generateStream(context, recapContractRule ? { contractRule: recapContractRule } : undefined);
             let streamAborted = false;
@@ -7745,6 +7759,14 @@ export class IntelligenceEngine extends EventEmitter {
                 }
                 this.emit('recap_token', token);
                 fullSummary += token;
+            }
+
+            // The stream ended with no words and nothing overtook it: said, not
+            // left as a press that vanishes (see runClarify).
+            if (!streamAborted && !fullSummary.trim() && this.currentGenerationId === generationId) {
+                this.setMode('idle');
+                this.emit('error', new Error('No recap came back. Try again.'), 'recap');
+                return null;
             }
 
             // Only emit final if not aborted
@@ -7771,6 +7793,9 @@ export class IntelligenceEngine extends EventEmitter {
             return fullSummary;
 
         } catch (error) {
+            // Cancelled or overtaken before it broke: nothing to report, and
+            // the mode now belongs to what overtook it (see runClarify).
+            if (generationId !== null && this.currentGenerationId !== generationId) return null;
             this.emit('error', error as Error, 'recap');
             this.setMode('idle');
             return null;
@@ -7785,10 +7810,16 @@ export class IntelligenceEngine extends EventEmitter {
         console.log('[IntelligenceEngine] runClarify called');
         this.setMode('clarify');
 
+        // Set once this press has a generation of its own; null before that.
+        let generationId: number | null = null;
         try {
             if (!this.clarifyLLM) {
                 console.error('[IntelligenceEngine] ClarifyLLM not initialized');
                 this.setMode('idle');
+                // Said here, where the reason is known. The IPC handler used to
+                // word every null return itself, and a null is also what a
+                // cancelled or superseded Clarify returns (see below).
+                this.emit('error', new Error('Clarify needs an AI model. Add one in Settings, then try again.'), 'clarify');
                 return null;
             }
 
@@ -7796,7 +7827,7 @@ export class IntelligenceEngine extends EventEmitter {
             // If no transcript/manual turn yet, use a generic prompt — the LLM will ask a scoping question
             const context = actionContext?.text || '[No transcript or recent manual answer available yet. Generate an opening clarifying question to understand the scope and constraints of the upcoming problem.]';
 
-            const generationId = ++this.currentGenerationId;
+            generationId = ++this.currentGenerationId;
             let fullClarification = "";
             // No V3 composition here. V3 composes an ANSWER prompt, and Clarify
             // sent with it answered the question instead of asking one (15 of
@@ -7816,7 +7847,19 @@ export class IntelligenceEngine extends EventEmitter {
             }
 
             if (streamAborted) {
+                // Cancelled, or overtaken by an answer: not a failure, so
+                // nothing is emitted. The user moved on. The mode is left
+                // alone too: reset() has already made it idle, and after an
+                // overtake it belongs to the answer that is streaming.
+                return null;
+            }
+
+            // The stream ended with no words and nothing overtook it: the
+            // model had nothing to say. That is a failure the user should see,
+            // not a press that vanishes.
+            if (!fullClarification.trim() && this.currentGenerationId === generationId) {
                 this.setMode('idle');
+                this.emit('error', new Error('No clarifying question came back. Try again.'), 'clarify');
                 return null;
             }
 
@@ -7840,6 +7883,10 @@ export class IntelligenceEngine extends EventEmitter {
             return fullClarification;
 
         } catch (error) {
+            // A press that was already cancelled or overtaken has no failure to
+            // report: whatever broke, the user had moved on, and the mode now
+            // belongs to what overtook it.
+            if (generationId !== null && this.currentGenerationId !== generationId) return null;
             this.emit('error', error as Error, 'clarify');
             this.setMode('idle');
             return null;
@@ -7854,10 +7901,14 @@ export class IntelligenceEngine extends EventEmitter {
         console.log('[IntelligenceEngine] runFollowUpQuestions called');
         this.setMode('follow_up_questions');
 
+        // Set once this press has a generation of its own; null before that.
+        let generationId: number | null = null;
         try {
             if (!this.followUpQuestionsLLM) {
                 console.error('[IntelligenceEngine] FollowUpQuestionsLLM not initialized');
                 this.setMode('idle');
+                // Said here, where the reason is known (see runClarify).
+                this.emit('error', new Error('Follow-up questions need an AI model. Add one in Settings, then try again.'), 'follow_up_questions');
                 return null;
             }
 
@@ -7874,9 +7925,19 @@ export class IntelligenceEngine extends EventEmitter {
                 return null;
             }
 
-            const generationId = ++this.currentGenerationId;
+            generationId = ++this.currentGenerationId;
             let fullQuestions = "";
-            const stream = this.followUpQuestionsLLM.generateStream(context, { contextIsRendered: actionContext?.rendered === true });
+            // Only the other person in the window, with no word from the user
+            // and no answer shown: what a class or a talk looks like, and what
+            // an answered interview question does not. A few words are not a
+            // class: a short question nobody has answered yet stays read as
+            // the interview it almost always is (quickActionTurn
+            // IF_THEY_ARE_TEACHING has the numbers for both).
+            const spoken = this.session.getContext(120);
+            const otherPersonSpokeAlone = actionContext?.rendered !== true
+                && spoken.length > 0 && spoken.every((item) => item.role === 'interviewer')
+                && spoken.reduce((words, item) => words + item.text.trim().split(/\s+/).filter(Boolean).length, 0) >= IntelligenceEngine.LISTENING_MIN_WORDS;
+            const stream = this.followUpQuestionsLLM.generateStream(context, { contextIsRendered: actionContext?.rendered === true, otherPersonSpokeAlone });
             let streamAborted = false;
 
             for await (const token of stream) {
@@ -7891,7 +7952,17 @@ export class IntelligenceEngine extends EventEmitter {
             }
 
             if (streamAborted) {
+                // The mode is left alone (see runClarify): setting idle here
+                // told main the engine was free while the answer that
+                // overtook this press was still streaming.
+                return null;
+            }
+
+            // The stream ended with no words and nothing overtook it: said, not
+            // left as a press that vanishes (see runClarify).
+            if (!fullQuestions.trim() && this.currentGenerationId === generationId) {
                 this.setMode('idle');
+                this.emit('error', new Error('No questions came back. Try again.'), 'follow_up_questions');
                 return null;
             }
 
@@ -7910,6 +7981,9 @@ export class IntelligenceEngine extends EventEmitter {
             return fullQuestions;
 
         } catch (error) {
+            // Cancelled or overtaken before it broke: nothing to report, and
+            // the mode now belongs to what overtook it (see runClarify).
+            if (generationId !== null && this.currentGenerationId !== generationId) return null;
             this.emit('error', error as Error, 'follow_up_questions');
             this.setMode('idle');
             return null;
@@ -8254,11 +8328,33 @@ export class IntelligenceEngine extends EventEmitter {
 
             const generationId = ++this.currentGenerationId;
             let fullResult = "";
-            // No V3 composition here. V3 composes an ANSWER prompt with no
-            // brainstorm action in it, and Brainstorm sent with it was a second
-            // Answer button (23 replies of 90 weighed two or more approaches,
-            // measured 2026-10-09). See BrainstormLLM.generateStream, which also
-            // places the problem statement in the turn.
+            // V3's prompts are not used here. V3 composes an ANSWER prompt with
+            // no brainstorm action in it, and Brainstorm sent with it was a
+            // second Answer button (23 replies of 90 weighed two or more
+            // approaches, measured 2026-10-09). See BrainstormLLM.generateStream,
+            // which also places the problem statement in the turn.
+            //
+            // Its retrieval is. Dropping the composition also dropped what it
+            // had found for the question on the table, so Brainstorm in a mode
+            // with reference files reasoned without them. The evidence block
+            // goes to Brainstorm's own turn; null when the layer did not run or
+            // resolved no question.
+            //
+            // Retrieved for the problem being brainstormed when there is one
+            // (as code hint does): the latest spoken question may be about
+            // something else.
+            const explicitProblem = problemStatement?.trim();
+            const decisionEvidence = (await this.buildV3ForTranscriptSurface('brainstorm', resolvedProblem
+                ? explicitProblem
+                    ? { question: resolvedProblem, surface: 'screenshot', source: 'screenshot' }
+                    : { question: resolvedProblem, surface: 'assist', source: this.session.getDetectedCodingQuestion().source === 'screenshot' ? 'screenshot' : 'transcript' }
+                : undefined))?.evidenceBlock ?? null;
+            if (this.currentGenerationId !== generationId) {
+                // Cancelled or overtaken while the evidence was being found:
+                // no request is opened for a press the user has left.
+                console.log('[IntelligenceEngine] brainstorm superseded before its request');
+                return null;
+            }
             // When the active task is a system design, "brainstorm" means
             // alternative designs — with the one worth picking drawn. No design
             // on the table ⇒ null ⇒ brainstorm exactly as before.
@@ -8272,7 +8368,7 @@ export class IntelligenceEngine extends EventEmitter {
                     );
                 } catch { return null; }
             })();
-            const stream = this.brainstormLLM.generateStream(context, imagePaths, brainstormDiagramTurn, resolvedProblem ?? null);
+            const stream = this.brainstormLLM.generateStream(context, imagePaths, brainstormDiagramTurn, resolvedProblem ?? null, decisionEvidence);
             let streamAborted = false;
 
             for await (const token of stream) {
@@ -8355,6 +8451,16 @@ export class IntelligenceEngine extends EventEmitter {
      * evidence, never to make a benchmark number look better.
      */
     private static readonly ROUTER_SILENCE_CONFIDENCE = 0.90;
+
+    /**
+     * How much the other person must have said, alone, before Follow-up
+     * questions is told the conversation may be a class or a talk.
+     *
+     * About ten seconds of speech. Below it the window is one short question
+     * ("Let us start simple. What is an API?"), and telling the model it might
+     * be a class cost 9 of 72 questions their direction there.
+     */
+    private static readonly LISTENING_MIN_WORDS = 25;
 
     /** Flag, poison sentinel and model presence, without touching the worker. Never throws. */
     private static routerAvailableSync(): boolean {

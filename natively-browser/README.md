@@ -78,7 +78,7 @@ npm test            # compiles pure modules to dist-test/ then runs node --test
 ## Pair (once — the token is persisted, so you don't re-pair every launch)
 
 **One-click (recommended):**
-1. In Natively desktop: **Settings → Sync** → turn on Phone Mirror, then in the
+1. In Natively desktop: **Settings → Companion** → turn on Phone Mirror, then in the
    **Browser Extension** section click **Connect** (opens a 60s window).
 2. Click the extension's toolbar icon → **Connect to Natively**. Done — a green
    dot ("Connected — capture ready") means the capture WebSocket is live.
@@ -88,7 +88,7 @@ in the popup expand **Pair manually instead** and paste it.
 
 The pairing token is persisted (encrypted) on the desktop and the live port is
 auto-discovered, so the extension stays paired across desktop restarts and port
-changes. You only re-pair if you click **Reset pairing** in Settings → Sync.
+changes. You only re-pair if you click **Reset pairing** in Settings → Companion.
 
 ## Capture
 

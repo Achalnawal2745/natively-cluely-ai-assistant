@@ -1,7 +1,7 @@
 import { LLMHelper } from "../LLMHelper";
 import { UNIVERSAL_FOLLOW_UP_QUESTIONS_PROMPT } from "./prompts";
 import { TINY_FOLLOW_UP_QUESTIONS_PROMPT } from "./tinyPrompts";
-import { resolveV2SystemPrompt, v2TierForPromptTier } from "./promptSystemV2";
+import { getV2PromptDescriptor, resolveV2SystemPrompt, v2TierForPromptTier } from "./promptSystemV2";
 import { buildQuickActionTurn, responseLanguageIsPinned, type QuickActionContextOptions } from "./quickActionTurn";
 
 export class FollowUpQuestionsLLM {
@@ -20,6 +20,10 @@ export class FollowUpQuestionsLLM {
         return buildQuickActionTurn('follow_up_questions', prompt, this.llmHelper.fitContextForCurrentModel(context), {
             languagePinned: responseLanguageIsPinned(this.llmHelper),
             contextIsRendered: options?.contextIsRendered,
+            // General alone reads the conversation to tell who the user is.
+            // The interview modes say the user is being interviewed, and
+            // Lecture already has the user as the listener.
+            otherPersonSpokeAlone: options?.otherPersonSpokeAlone === true && getV2PromptDescriptor(prompt)?.mode === 'general',
         });
     }
 
@@ -51,6 +55,9 @@ export class FollowUpQuestionsLLM {
             yield* this.llmHelper.streamChat(message, undefined, undefined, prompt, true);
         } catch (e) {
             console.error("[FollowUpQuestionsLLM] Stream Failed:", e);
+            // Thrown on, not swallowed: see ClarifyLLM.generateStream. The
+            // engine reports it with the provider's reason (runFollowUpQuestions).
+            throw e;
         }
     }
 }

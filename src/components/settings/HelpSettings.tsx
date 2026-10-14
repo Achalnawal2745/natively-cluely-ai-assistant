@@ -34,7 +34,7 @@ import zoomCaptureModeScreenshot from '../../assets/zoom-capture-mode.png';
 
 // Settings → Setup & Help.
 //
-// Built from `./SettingsRow`, the module General, Audio, Sync, Intelligence and
+// Built from `./SettingsRow`, the module General, Audio, Companion, Intelligence and
 // About are built from, so this pane reads as part of Settings: a section is an
 // 18px heading over one short line, and everything under it is the same row —
 // [40px tile][14px/700 title][12px description][control].
@@ -280,7 +280,7 @@ const HelpPane: React.FC<{
     const notesClip = clip('notes');
     const searchClip = clip('search');
 
-    // A step's action is the Liquid Glass action button (Sync's Connect) while
+    // A step's action is the Liquid Glass action button (Companion's Connect) while
     // the step is still to do; once done it steps back to the neutral button,
     // still there to change it.
     // Status re-reads on focus and on credential/model changes, so a step can go
@@ -746,7 +746,7 @@ const HelpPane: React.FC<{
                         ) : (
                             <HelpSteps
                                 steps={[
-                                    <>In <HelpPath parts={['Sync']} />, turn on Enable Phone Mirror.</>,
+                                    <>In <HelpPath parts={['Companion']} />, turn on Enable Phone Mirror.</>,
                                     'Turn on Allow LAN access so your phone can reach it over the same Wi-Fi.',
                                     "On Pair a phone, press Show code and scan it with your phone's camera.",
                                 ]}
@@ -760,12 +760,12 @@ const HelpPane: React.FC<{
                         <HelpSteps
                             steps={[
                                 <>Install Natively Companion from the <HelpLink href={CHROME_WEB_STORE_URL}>Chrome Web Store</HelpLink>.</>,
-                                <>With Phone Mirror on, press Connect on its row in <HelpPath parts={['Sync']} />.</>,
+                                <>With Phone Mirror on, press Connect on its row in <HelpPath parts={['Companion']} />.</>,
                                 "Within a minute, click the extension's icon and press Connect to Natively.",
                             ]}
                         />
                         <p>
-                            Then {keys('capturePage')} sends the page you're reading. Smart Browser Context, also in Sync, spots coding and
+                            Then {keys('capturePage')} sends the page you're reading. Smart Browser Context, also in Companion, spots coding and
                             interview pages and attaches the problem when you ask.
                         </p>
                     </HelpGuideRow>

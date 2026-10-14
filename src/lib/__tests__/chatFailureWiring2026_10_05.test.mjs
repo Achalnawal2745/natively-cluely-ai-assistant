@@ -105,13 +105,20 @@ test('a blocked press shows one quiet line, however often it is pressed, and it 
 test('a quick action that failed before a word arrived does not leave "Thinking..." above its failure', () => {
   const def = overlay.slice(overlay.indexOf('const discardEmptyPlaceholder = useCallback('), overlay.indexOf('}, []);', overlay.indexOf('const discardEmptyPlaceholder = useCallback(')));
   // Only that action's own placeholder, and only while it is still empty.
-  assert.ok(def.includes("if (streamingIntentRef.current !== intent || streamingTextRef.current !== '') return;"));
+  // Another action's stream is never touched; an overtaken action's own closed
+  // empty row is taken away instead (overtakenEmptyRow2026_10_10).
+  assert.match(def, /if \(streamingIntentRef\.current !== intent\) \{[\s\S]{0,260}dropSealedEmptyByIntentMessages\(prev, intent\)\);\s*return;\s*\}\s*if \(streamingTextRef\.current !== ''\) return;/);
   assert.ok(def.includes('discardStreamingByIntentMessages(prev, intent)'));
   assert.ok(def.includes('streamingMsgIdRef.current = null;') && def.includes('streamingIntentRef.current = null;'));
   for (const [api, intent] of [['generateRecap', 'recap'], ['generateFollowUpQuestions', 'follow_up_questions'], ['generateClarify', 'clarify']]) {
     const at = overlay.indexOf(`await window.electronAPI.${api}();`);
     assert.ok(at > 0, api);
-    assert.ok(overlay.slice(at, at + 200).includes(`discardEmptyPlaceholder('${intent}');`), `${api} clears its placeholder before posting`);
+    // Each clears it twice over (2026-10-10): when nothing came back, and in
+    // the catch before the failure is posted.
+    const body = overlay.slice(at, overlay.indexOf(`endOverlayAction('${intent}');`, at));
+    assert.equal(body.split(`discardEmptyPlaceholder('${intent}');`).length - 1, 2, api);
+    assert.ok(body.indexOf('} catch (err) {') < body.lastIndexOf(`discardEmptyPlaceholder('${intent}');`), `${api}: the second is the one in the catch`);
+    assert.ok(body.indexOf(`discardEmptyPlaceholder('${intent}');`) < body.indexOf('} catch (err) {'), `${api}: the first is for a press that came back with nothing`);
   }
   const handler = overlay.slice(overlay.indexOf('window.electronAPI.onIntelligenceError((data) => {'));
   assert.ok(handler.slice(0, handler.indexOf('\n      }),')).includes('discardEmptyPlaceholder(data.mode);'));

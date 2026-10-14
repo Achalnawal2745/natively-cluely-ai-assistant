@@ -27,10 +27,9 @@ import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, createRequire } from 'node:url';
 
-// The on-disk app identity + DMG file name are disguised at build time
-// (productName, sourced from scripts/disguise-name.cjs). The cask's public
-// `name` stays "Natively" (the brand), but the `app` bundle and the DMG asset
-// name must match the disguised on-disk identity.
+// The on-disk app identity + DMG file name come from productName (sourced from
+// scripts/disguise-name.cjs — now the brand, "Natively", stealth reverted). The
+// cask's `app` bundle and DMG asset name must match that on-disk identity.
 const require = createRequire(import.meta.url);
 const APP_NAME = require('./disguise-name.cjs').darwin;
 
@@ -118,12 +117,12 @@ function renderCask({ tag, version, sha }) {
   # Paths are derived from package.json "name" (natively), NOT the "Natively"
   # product name, because that is what Electron's app.getName() returns and
   # therefore what app.getPath('userData'|'logs'|'cache') resolves to — EXCEPT
-  # userData, which the packaged app pins and migrates to the disguise name
-  # (see electron/utils/migrateUserData.ts). Both the historical "Natively"
-  # and the post-migration "corespeechd" profile dirs are zapped so uninstall
-  # is clean on either side of the migration (and on case-sensitive volumes,
-  # where the two casings are distinct dirs). The
-  # preference domain uses build.appId instead. Verified against a real install.
+  # userData, which the packaged app pins to "Natively" and migrates back from
+  # the 2.9.x disguise name (see electron/utils/migrateUserData.ts). Both the
+  # "Natively" profile dir and the 2.9.x "corespeechd" dir are zapped so
+  # uninstall is clean on either side of the revert (and on case-sensitive
+  # volumes, where the two casings are distinct dirs). The preference domain
+  # uses build.appId (still com.apple.corespeechd). Verified against a real install.
   zap trash: [
     "~/Library/Application Support/corespeechd",
     "~/Library/Application Support/Natively",
