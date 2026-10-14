@@ -21,7 +21,8 @@ import { dirname, resolve } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const PREMIUM = resolve(here, '../../../../premium/src');
 const skip = !existsSync(PREMIUM) && 'premium not checked out';
-const code = (name) => readFileSync(resolve(PREMIUM, `${name}.tsx`), 'utf8');
+// Windows checkouts can carry CRLF; the multi-line matches below expect \n.
+const code = (name) => readFileSync(resolve(PREMIUM, `${name}.tsx`), 'utf8').replace(/\r\n/g, '\n');
 
 const ADS = ['ProfileFeatureToaster', 'JDAwarenessToaster', 'MaxUltraUpgradeToaster', 'NativelyApiPromoToaster'];
 

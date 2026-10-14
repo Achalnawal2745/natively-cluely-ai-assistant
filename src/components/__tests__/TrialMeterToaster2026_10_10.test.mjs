@@ -172,9 +172,17 @@ test('the quota notice stands down for a trial: one card for one set of numbers'
   assert.ok(at < quota.indexOf('const candidates'), 'before any bucket is weighed');
 });
 
-test('its telemetry surface exists on both sides', () => {
+test('its telemetry surface is in the app\'s catalogue', () => {
   assert.ok(SURFACES.includes('trial_meter'));
   assert.ok(card.includes("surface: 'trial_meter'"));
-  const server = fs.readFileSync(path.resolve(SRC, '../natively-api/lib/funnelCatalog.js'), 'utf8');
+});
+
+// natively-api is a submodule CI does not check out; funnelCatalogParity
+// compares the two catalogues whenever it is present.
+const SERVER_CATALOG = path.resolve(SRC, '../natively-api/lib/funnelCatalog.js');
+const serverSkip = fs.existsSync(SERVER_CATALOG) ? false : 'natively-api is not checked out';
+
+test('its telemetry surface is in the server\'s catalogue', { skip: serverSkip }, () => {
+  const server = fs.readFileSync(SERVER_CATALOG, 'utf8');
   assert.ok(server.includes("'trial_meter'"), 'the server would reject the batch otherwise');
 });
