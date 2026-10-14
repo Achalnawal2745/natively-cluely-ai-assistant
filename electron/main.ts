@@ -10029,6 +10029,20 @@ if (process.env.THINKING_MATRIX === '1') {
 
   logStartupPhase('initializeApp:complete');
 
+  // Refresh each keyed provider's model catalogue once it is a day old, off the
+  // launch path. Cleared on quit so it never starts network calls mid-shutdown.
+  const catalogRefreshTimer = setTimeout(() => {
+    try {
+      const { LiveModelCatalogService } = require('./services/LiveModelCatalogService');
+      LiveModelCatalogService.getInstance().refreshAllConfiguredProviders().catch((err: any) => {
+        console.warn('[Main] Background live model catalog refresh encountered error:', err?.message);
+      });
+    } catch (e: any) {
+      console.warn('[Main] Could not initiate background live model catalog refresh:', e?.message);
+    }
+  }, 15000);
+  app.once('before-quit', () => clearTimeout(catalogRefreshTimer));
+
   maybeForceDevPermissionBanner(appState);
 
   // Note: We do NOT force dock show here anymore, respecting stealth mode.

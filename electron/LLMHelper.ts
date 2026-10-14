@@ -155,6 +155,7 @@ const GEMINI_PRO_MODEL = "gemini-3.1-pro-preview"
 const GROQ_MODEL = GROQ_PRIMARY_MODEL
 import { GROQ_VISION_MODEL, isRetiredModelId as isRetiredGroqModelId } from './llm/groqModels'
 import { DEEPSEEK_DEFAULT_MODEL, deepseekWireModel, isDeepseekModelId } from './llm/deepseekModels'
+import { isOpenAiModelId } from './llm/openaiModels'
 import {
   AGENTROUTER_DEFAULT_MODEL,
   AGENTROUTER_JUDGE_MODEL,
@@ -2554,7 +2555,9 @@ export class LLMHelper {
     // today, but includes("openai") would claim any id that ever carries the
     // word, so exclude it here like the others rather than rely on luck.
     if (this.isAgentRouterModel(modelId)) return false;
-    return modelId.startsWith("gpt-") || modelId.startsWith("o1-") || modelId.startsWith("o3-") || modelId.includes("openai");
+    // isOpenAiModelId covers bare o-series ids (`o3`, `o4-mini`) and `chatgpt-*`,
+    // which the fetcher admits and the old `gpt- | o1- | o3-` list did not route.
+    return isOpenAiModelId(modelId) || modelId.includes("openai");
   }
 
   private isClaudeModel(modelId: string): boolean {

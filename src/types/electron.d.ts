@@ -1083,8 +1083,9 @@ export interface ElectronAPI {
   // Tavily Search API
   setTavilyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
 
-  // Dynamic Model Discovery
+  // Dynamic Model Discovery & Live Catalog
   fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude' | 'deepseek' | 'nvidia_nim' | 'openrouter' | 'fluxion' | 'agentrouter', apiKey: string) => Promise<{ success: boolean; models?: {id: string, label: string}[]; error?: string }>
+  onLiveCatalogUpdated: (callback: (data: { provider?: string; models?: { id: string; label: string }[] }) => void) => () => void
   setProviderPreferredModel: (provider: 'gemini' | 'groq' | 'openai' | 'claude' | 'deepseek' | 'nvidia_nim' | 'openrouter' | 'fluxion' | 'agentrouter' | 'litellm' | 'ninerouter', modelId: string) => Promise<void>
 
   // License Management
