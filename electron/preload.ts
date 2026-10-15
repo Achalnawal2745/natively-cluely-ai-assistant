@@ -525,6 +525,7 @@ interface ElectronAPI {
     userRequest?: string,
   ) => Promise<{ refined: string | null; intent: string }>;
   generateRecap: () => Promise<{ summary: string | null }>;
+  generateLiveHelper: (action: 'catch_me_up' | 'define' | 'sound_smart', opts?: { sinceMs?: number }) => Promise<{ text: string | null }>;
   submitManualQuestion: (question: string) => Promise<{ answer: string | null; question: string }>;
   getIntelligenceContext: () => Promise<{
     context: string;
@@ -883,6 +884,21 @@ interface ElectronAPI {
   meetingAutoStopKeepGoing: () => Promise<{ success: boolean }>;
   /** The user is typing in the overlay (throttled by the caller). */
   meetingAutoStopTyping: () => void;
+  /** Assist (electron/services/assist): the daily brief, You owe, Brief me, the catch-up, Last time. */
+  assistGetDailyBrief: (events: unknown[]) => Promise<any>;
+  assistGetOwed: () => Promise<any[]>;
+  assistSetOwedDone: (key: string, done: boolean) => Promise<{ ok: boolean }>;
+  assistGetMeetingBrief: (event: unknown, opts?: { refresh?: boolean }) => Promise<any>;
+  assistGetCatchUp: () => Promise<any>;
+  assistDismissCatchUp: (key: string) => Promise<{ ok: boolean }>;
+  assistGetLiveRecap: () => Promise<any>;
+  assistDismissLiveRecap: () => Promise<{ ok: boolean }>;
+  onAssistLastTimeRecap: (callback: (payload: any) => void) => () => void;
+  getCatchUpEnabled: () => Promise<boolean>;
+  setCatchUpEnabled: (on: boolean) => Promise<{ success: boolean; error?: string }>;
+  assistGetSender: () => Promise<{ name: string | null; email: string | null; google: boolean }>;
+  assistOpenMailDraft: (url: string) => Promise<{ ok: boolean; error?: string }>;
+  onAssistReminderDraft: (callback: (req: { kind: string; event: any }) => void) => () => void;
   /** Show (the time it stops at) or clear (null) the "stops in 1 minute" notice. */
   onMeetingAutoStopNotice: (callback: (data: { stopsAt: number | null }) => void) => () => void;
   /** The notes window (`?window=notes`): the overlay's Notes button, its own X. */
@@ -2148,6 +2164,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('generate-follow-up', intent, userRequest),
   generateFollowUpQuestions: () => ipcRenderer.invoke('generate-follow-up-questions'),
   generateRecap: () => ipcRenderer.invoke('generate-recap'),
+  generateLiveHelper: (action: 'catch_me_up' | 'define' | 'sound_smart', opts?: { sinceMs?: number }) =>
+    ipcRenderer.invoke('generate-live-helper', action, opts),
   submitManualQuestion: (question: string) =>
     ipcRenderer.invoke('submit-manual-question', question),
   getIntelligenceContext: () => ipcRenderer.invoke('get-intelligence-context'),
@@ -2801,6 +2819,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setMeetingAutoStopEnabled: (on: boolean) => ipcRenderer.invoke('set-meeting-auto-stop-enabled', on),
   meetingAutoStopKeepGoing: () => ipcRenderer.invoke('meeting-auto-stop-keep-going'),
   meetingAutoStopTyping: () => ipcRenderer.send('meeting-auto-stop-typing'),
+  assistGetDailyBrief: (events: unknown[]) => ipcRenderer.invoke('assist:get-daily-brief', events),
+  assistGetOwed: () => ipcRenderer.invoke('assist:get-owed'),
+  assistSetOwedDone: (key: string, done: boolean) => ipcRenderer.invoke('assist:set-owed-done', key, done),
+  assistGetMeetingBrief: (event: unknown, opts?: { refresh?: boolean }) => ipcRenderer.invoke('assist:get-meeting-brief', event, opts),
+  assistGetCatchUp: () => ipcRenderer.invoke('assist:get-catch-up'),
+  assistDismissCatchUp: (key: string) => ipcRenderer.invoke('assist:dismiss-catch-up', key),
+  assistGetLiveRecap: () => ipcRenderer.invoke('assist:get-live-recap'),
+  assistDismissLiveRecap: () => ipcRenderer.invoke('assist:dismiss-live-recap'),
+  onAssistLastTimeRecap: (callback: (payload: any) => void) => {
+    const subscription = (_: any, payload: any) => callback(payload && typeof payload === 'object' ? payload : null);
+    ipcRenderer.on('assist:last-time-recap', subscription);
+    return () => {
+      ipcRenderer.removeListener('assist:last-time-recap', subscription);
+    };
+  },
+  getCatchUpEnabled: () => ipcRenderer.invoke('assist:get-catch-up-enabled'),
+  setCatchUpEnabled: (on: boolean) => ipcRenderer.invoke('assist:set-catch-up-enabled', on),
+  assistGetSender: () => ipcRenderer.invoke('assist:get-sender'),
+  assistOpenMailDraft: (url: string) => ipcRenderer.invoke('assist:open-mail-draft', url),
+  onAssistReminderDraft: (callback: (req: { kind: string; event: any }) => void) => {
+    const subscription = (_: any, req: any) => { if (req && typeof req === 'object') callback(req); };
+    ipcRenderer.on('assist:reminder-draft', subscription);
+    return () => {
+      ipcRenderer.removeListener('assist:reminder-draft', subscription);
+    };
+  },
   notesWindowToggle: () => ipcRenderer.invoke('notes-window:toggle'),
   notesWindowClose: () => ipcRenderer.invoke('notes-window:close'),
   notesWindowIsOpen: () => ipcRenderer.invoke('notes-window:is-open'),

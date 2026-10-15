@@ -1341,6 +1341,10 @@ import { setVerboseLoggingFlag } from "./verboseLog"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
 import { linkSessionToCalendar, cancelSessionCalendarLink } from './services/calendar/SessionCalendarLinker'
+import { configureAssistService, getAssistService } from './services/assist/AssistService'
+import { liveHelperDisplayKind, type LiveHelperAction } from './llm/liveHelpers'
+import { buildUserIdentity } from './services/assist/assistPeople'
+import { notesMayUseModel } from './services/assist/assistPrivacy'
 import { wireExtensionMeetingTabs } from './services/meetingDetection/extensionMeetingTabs'
 import { DesktopCallSpeakers } from './services/meetingDetection/desktopCallSpeakers'
 import { SHORTCUT_TOUR_ACTIONS } from './services/shortcutTourActions'
@@ -3600,6 +3604,11 @@ export class AppState {
 
   public getMeetingAutoStop(): MeetingAutoStop {
     return this.meetingAutoStop;
+  }
+
+  /** The user's name, for the assist features (services/assist): who "you" is in the notes. */
+  public getCurrentUserName(): string | null {
+    return this.currentUserName();
   }
 
   /** The user's name: the active résumé's, else the connected Calendar account's. */
@@ -6846,6 +6855,9 @@ export class AppState {
       // follow-up recipients). Decides at once from the cached list; never
       // delays the start. See services/calendar/SessionCalendarLinker.ts.
       linkSessionToCalendar(metadata, () => this.isMeetingActive);
+      // "Last time" for a recurring meeting: looked up after the start, never
+      // delaying it (services/assist/AssistService.noteMeetingStarted).
+      try { getAssistService()?.noteMeetingStarted(metadata, () => this.isMeetingActive && this._meetingGeneration === meetingGeneration); } catch { /* a recap never blocks a start */ }
       this.startDesktopCallSpeakers(metadata, meetingGeneration);
     }
     // Every meeting gets its own conversation history, whether or not a mode
@@ -7150,6 +7162,8 @@ export class AppState {
         properties: { modeTemplateType: am?.templateType },
       });
     } catch { /* non-fatal */ }
+    // The "Last time" recap goes with the meeting (services/assist).
+    try { getAssistService()?.noteMeetingEnded(); } catch { /* nothing showing */ }
 
     // Reset Mouse Passthrough so the next meeting overlay starts fresh and focusable
     if (this.overlayMousePassthrough) {
@@ -7639,6 +7653,20 @@ export class AppState {
     this.intelligenceManager.on('follow_up_questions_token', (token: string) => {
       // Sprint 9: batch.
       queueBatch('follow_up_questions', { token });
+    })
+
+    // The live helpers (What did I miss?, Define, Sound smart) are shown in
+    // the row of the action they read like: Recap's card or Clarify's line
+    // (llm/liveHelpers.ts liveHelperDisplayKind). Same batching, same finals.
+    this.intelligenceManager.on('live_helper_token', (token: string, action: LiveHelperAction) => {
+      queueBatch(liveHelperDisplayKind(action), { token });
+    })
+
+    this.intelligenceManager.on('live_helper', (text: string, action: LiveHelperAction) => {
+      flushBatchesBeforeFinal();
+      const win = mainWindow()
+      if (liveHelperDisplayKind(action) === 'clarify') this.sendToWindow(win, 'intelligence-clarify', { clarification: text })
+      else this.sendToWindow(win, 'intelligence-recap', { summary: text })
     })
 
     this.intelligenceManager.on('manual_answer_started', () => {
@@ -10018,6 +10046,63 @@ if (process.env.THINKING_MATRIX === '1') {
   const meetingDetectionOn = SettingsManager.getInstance().get('meetingDetectionEnabled') ?? true;
   wireExtensionMeetingTabs(PhoneMirrorService.getInstance(), meetingDetectionOn);
 
+  // The assist features (services/assist/AssistService.ts): Brief me, the
+  // daily brief and You owe, the catch-up after back-to-back meetings, and the
+  // "Last time" recap when a recurring meeting starts. Local reads; the one
+  // model call (talking points) runs only on the user's button, through the
+  // provider routing the notes use, and only when the notes may go there.
+  configureAssistService({
+    loadMeetings: (sinceMs) => {
+      try { return require('./db/DatabaseManager').DatabaseManager.getInstance().getMeetingsWithNotesSince(sinceMs, 400); } catch { return []; }
+    },
+    kvGet: (key) => {
+      try { return require('./db/DatabaseManager').DatabaseManager.getInstance().getAppState(key); } catch { return null; }
+    },
+    kvSet: (key, value) => {
+      try { require('./db/DatabaseManager').DatabaseManager.getInstance().setAppState(key, value); } catch { /* kept for this run only */ }
+    },
+    identity: () => {
+      let email: string | undefined;
+      let calendarName: string | undefined;
+      try {
+        const status = require('./services/CalendarManager').CalendarManager.getInstance().getConnectionStatus();
+        email = status?.email;
+        calendarName = status?.name;
+      } catch { /* no calendar */ }
+      return buildUserIdentity({ names: [appState.getCurrentUserName(), calendarName], emails: [email] });
+    },
+    setting: (key) => (SettingsManager.getInstance() as any).get(key),
+    meetingActive: () => appState.getIsMeetingActive(),
+    modelAllowed: () => {
+      try {
+        const scopes = SettingsManager.getInstance().get('providerDataScopes') as { post_call_summary?: boolean } | undefined;
+        const llm = appState.processingHelper?.getLLMHelper?.();
+        return notesMayUseModel(scopes, !!llm?.isUsingOllama?.());
+      } catch { return false; }
+    },
+    generateTalkingPoints: async (system, user, shape, validate) => {
+      const llm = appState.processingHelper?.getLLMHelper?.();
+      if (!llm) return null;
+      const { generateStructured, NOTE_CALL_TIMEOUT_MS } = require('./services/meeting/generateStructured');
+      const result = await generateStructured({
+        schemaName: 'meeting brief talking points',
+        jsonShapeHint: shape,
+        systemPrompt: system,
+        userContent: user,
+        validate,
+        llmHelper: llm,
+        disableRepairRetry: true,
+        callOpts: { timeoutMs: NOTE_CALL_TIMEOUT_MS },
+      });
+      return result.ok && Array.isArray(result.data) ? result.data : null;
+    },
+    broadcast: (channel, payload) => {
+      for (const w of BrowserWindow.getAllWindows()) {
+        try { if (!w.isDestroyed()) w.webContents.send(channel, payload); } catch { /* window going away */ }
+      }
+    },
+  });
+
   // Starts a meeting the way the Launcher's button does (saved devices,
   // retention, the mic-permission recovery) when a notification asks: the
   // meeting-detected one and the calendar reminder. The launcher's renderer
@@ -10263,6 +10348,16 @@ if (process.env.THINKING_MATRIX === '1') {
 
     calMgr.on('open-requested', () => {
       appState.centerAndShowWindow();
+    });
+
+    // The reminder's "Running late": the launcher opens the draft for this
+    // event (src/components/assist/AssistToday.tsx). Nothing is sent.
+    calMgr.on('reminder-draft-requested', (event: any) => {
+      appState.centerAndShowWindow();
+      const launcher = appState.getWindowHelper().getLauncherWindow();
+      if (launcher && !launcher.isDestroyed()) {
+        launcher.webContents.send('assist:reminder-draft', { kind: 'running_late', event });
+      }
     });
 
     console.log('[Main] CalendarManager initialized');

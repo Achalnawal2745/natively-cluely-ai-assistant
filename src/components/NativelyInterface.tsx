@@ -2,12 +2,14 @@ import { animate, AnimatePresence, motion, motionValue, useMotionValue, useTrans
 import {
   ArrowRight,
   ArrowDown,
+  BookOpen,
   ChevronDown,
   Code,
   Copy,
   Check,
   Globe,
   HelpCircle,
+  History,
   Image,
   Keyboard,
   Lightbulb,
@@ -18,6 +20,7 @@ import {
   NotebookPen,
   Pencil,
   PointerOff,
+  Quote,
   RefreshCw,
   SlidersHorizontal,
   X,
@@ -429,6 +432,8 @@ import ChromeFold from './overlay/ChromeFold';
 import { useOverlayTrial } from './overlay/useOverlayTrial';
 import { TrialChip, TrialNoticeBanner } from './overlay/TrialNotice';
 import { AutoStopNoticeBanner, useMeetingAutoStopNotice } from './overlay/AutoStopNotice';
+import { LastTimeRecapBanner, useLastTimeRecap } from './overlay/LastTimeRecapNotice';
+import type { LiveHelperAction } from '../types/assist';
 
 // PERF: hoisted plugin arrays. ReactMarkdown receives `remarkPlugins` and
 // `rehypePlugins` as new array literals if defined inline at the call site —
@@ -1419,6 +1424,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
   const trial = useOverlayTrial();
   // The automatic stop's "stops in 1 minute" notice, and typing reported to main.
   const autoStop = useMeetingAutoStopNotice();
+  // "Last time" for a recurring meeting (overlay/LastTimeRecapNotice.tsx).
+  const lastTime = useLastTimeRecap();
   const [inputValue, setInputValue] = useState('');
   const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([]);
   const [skillPickerIndex, setSkillPickerIndex] = useState(0);
@@ -8091,6 +8098,24 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
   // (placeholder intent 'what_to_answer') and code_hint (no placeholder call
   // at all). Hardcoded English, matching existing precedent in this file (the
   // 3 screenshot-branch strings below are not run through useT()).
+  // When the user last touched the overlay (a click or a key), and the touch
+  // before that one: the press of What did I miss? is itself a touch, so it
+  // reads `previous`.
+  const lastOverlayTouchRef = useRef<{ last: number | null; previous: number | null }>({ last: null, previous: null });
+  useEffect(() => {
+    const note = () => {
+      const r = lastOverlayTouchRef.current;
+      r.previous = r.last;
+      r.last = Date.now();
+    };
+    window.addEventListener('pointerdown', note, true);
+    window.addEventListener('keydown', note, true);
+    return () => {
+      window.removeEventListener('pointerdown', note, true);
+      window.removeEventListener('keydown', note, true);
+    };
+  }, []);
+
   const QUICK_ACTION_LABELS: Record<string, string> = {
     what_to_say: 'What should I say?',
     recap: 'Recap',
@@ -8100,6 +8125,9 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     brainstorm: 'Brainstorm',
     'follow_up:shorten': 'Shorten',
     'follow_up:rephrase': 'Rephrase',
+    'live:catch_me_up': 'What did I miss?',
+    'live:define': 'Define',
+    'live:sound_smart': 'Sound smart',
   };
 
   const handleWhatToSay = async (promptInstruction?: string | React.MouseEvent) => {
@@ -8468,6 +8496,46 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
       ]);
     } finally {
       endOverlayAction('follow_up_questions');
+      setIsProcessing(false);
+    }
+  };
+
+  // The live helpers: What did I miss?, Define, Sound smart (main:
+  // llm/liveHelpers.ts). Each streams into the row of the action it reads
+  // like: Recap's card for the first two, Clarify's line for Sound smart.
+  // What did I miss? looks back to the user's last touch of the overlay
+  // before this press (lastOverlayTouchRef), held by main to 3-20 minutes.
+  const handleLiveHelper = async (action: LiveHelperAction) => {
+    const actionKey = `live:${action}`;
+    const shownAs = action === 'sound_smart' ? 'clarify' : 'recap';
+    const sinceMs = lastOverlayTouchRef.current.previous;
+    if (!tryBeginOverlayAction(actionKey)) return;
+    setIsExpanded(true);
+    setIsProcessing(true);
+    setMessages((prev) => [
+      ...prev,
+      { id: genMessageId(), role: 'user', text: QUICK_ACTION_LABELS[actionKey], isQuickActionLabel: true },
+    ]);
+    prepareIntelligenceStreamPlaceholder(shownAs);
+    analytics.trackCommandExecuted(`live_${action}`);
+
+    try {
+      const result = await window.electronAPI.generateLiveHelper?.(action, action === 'catch_me_up' && sinceMs ? { sinceMs } : undefined);
+      // Nothing came back: cancelled, or overtaken by an answer (see
+      // handleClarify). A real failure arrives as onIntelligenceError.
+      if (!result?.text) discardEmptyPlaceholder(shownAs);
+    } catch (err) {
+      discardEmptyPlaceholder(shownAs);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: genMessageId(),
+          role: 'system',
+          ...failedLine(err),
+        },
+      ]);
+    } finally {
+      endOverlayAction(actionKey);
       setIsProcessing(false);
     }
   };
@@ -11616,6 +11684,12 @@ Provide only the answer, nothing else.`;
               })()}
               </ChromeFold>
 
+              {/* A recurring meeting started: what last time's notes left open
+                  (overlay/LastTimeRecapNotice.tsx; main: AssistService). */}
+              <ChromeFold show={!!lastTime.recap} overlayVisible={isExpanded} requestHeightMotion={requestChromeHeightMotion} innerClassName="pt-3 pb-1" testId="fold-last-time">
+              {lastTime.recap && <LastTimeRecapBanner state={lastTime} />}
+              </ChromeFold>
+
               {/* The free trial that starts by itself with a meeting: it began,
                   it is nearly over, it ran out, or it could not start
                   (overlay/TrialNotice.tsx). Never blocks the overlay. */}
@@ -12313,6 +12387,19 @@ Provide only the answer, nothing else.`;
                               </SwapText>
                             </span>
                           </span>
+                        </button>
+                        {/* The live helpers sit on a line of their own under
+                            the main actions, at any width, so the collapsed
+                            panel keeps its measured width (measureRow). */}
+                        <span className="basis-full h-0" aria-hidden />
+                        <button onClick={() => handleLiveHelper('catch_me_up')} className={chipClass} style={appearance.chipStyle}>
+                          <History className="w-3 h-3 opacity-70" /> {t('What did I miss?')}
+                        </button>
+                        <button onClick={() => handleLiveHelper('define')} className={chipClass} style={appearance.chipStyle}>
+                          <BookOpen className="w-3 h-3 opacity-70" /> {t('Define')}
+                        </button>
+                        <button onClick={() => handleLiveHelper('sound_smart')} className={chipClass} style={appearance.chipStyle}>
+                          <Quote className="w-3 h-3 opacity-70" /> {t('Sound smart')}
                         </button>
                       </div>
                       {measureRow('recap', recapRowMeasureRef)}

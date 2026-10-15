@@ -3,6 +3,7 @@
 // Extracted from IntelligenceManager to decouple LLM logic from state management.
 
 import type { SessionWriteDecision } from './llm/FinalAnswerGenerationPolicy';
+import { LiveHelperLLM, LIVE_HELPER_EMPTY, LIVE_HELPER_WINDOW_SECONDS, catchUpWindowSeconds, liveHelperDisplayKind, type LiveHelperAction } from './llm/liveHelpers';
 import { repairCapReached, endsInsideFence } from './llm/repairCap';
 import { EventEmitter } from 'events';
 import { LLMHelper } from './LLMHelper';
@@ -174,6 +175,10 @@ export interface IntelligenceModeEvents {
     'clarify_token': (token: string) => void;
     'follow_up_questions_update': (questions: string) => void;
     'follow_up_questions_token': (token: string) => void;
+    // The live helpers (llm/liveHelpers.ts). main shows them in the Recap or
+    // Clarify row (liveHelperDisplayKind), so the overlay needs no new stream.
+    'live_helper': (text: string, action: LiveHelperAction) => void;
+    'live_helper_token': (token: string, action: LiveHelperAction) => void;
     'manual_answer_started': () => void;
     'manual_answer_result': (answer: string, question: string) => void;
     'mode_changed': (mode: IntelligenceMode) => void;
@@ -238,6 +243,7 @@ export class IntelligenceEngine extends EventEmitter {
     private followUpQuestionsLLM: FollowUpQuestionsLLM | null = null;
     private whatToAnswerLLM: WhatToAnswerLLM | null = null;
     private codeHintLLM: CodeHintLLM | null = null;
+    private liveHelperLLM: LiveHelperLLM | null = null;
     private brainstormLLM: BrainstormLLM | null = null;
 
     // Concurrency tracking
@@ -876,6 +882,7 @@ export class IntelligenceEngine extends EventEmitter {
         this.recapLLM = new RecapLLM(this.llmHelper);
         this.followUpQuestionsLLM = new FollowUpQuestionsLLM(this.llmHelper);
         this.whatToAnswerLLM = new WhatToAnswerLLM(this.llmHelper);
+        this.liveHelperLLM = new LiveHelperLLM(this.llmHelper);
         // Interaction router warmup (2026-09-05). RouterModel.warmup() existed
         // but nothing in production called it, so the first speculative turn
         // paid the 5s load inline. isAvailable() inside warmup() returns false
@@ -7888,6 +7895,91 @@ export class IntelligenceEngine extends EventEmitter {
             // belongs to what overtook it.
             if (generationId !== null && this.currentGenerationId !== generationId) return null;
             this.emit('error', error as Error, 'clarify');
+            this.setMode('idle');
+            return null;
+        }
+    }
+
+    /**
+     * The live helpers: What did I miss?, Define, Sound smart (llm/liveHelpers.ts).
+     *
+     * A quick action like Clarify: the user pressed it, it streams, an answer
+     * that starts after it overtakes it (the generation id), and a failure is
+     * reported with its reason. It runs only on the press, never on its own,
+     * so it adds nothing to any other answer's path.
+     *
+     * The mode and the error carry the row it is shown in (Recap's card or
+     * Clarify's line), which is what the overlay closes on a failure.
+     *
+     * `sinceMs`: the user's last interaction with the overlay before this
+     * press, for What did I miss? (held between 3 and 20 minutes back).
+     */
+    async runLiveHelper(action: LiveHelperAction, opts: { sinceMs?: number } = {}): Promise<string | null> {
+        const shownAs = liveHelperDisplayKind(action);
+        this.setMode(shownAs);
+        let generationId: number | null = null;
+        try {
+            if (!this.liveHelperLLM) {
+                this.setMode('idle');
+                this.emit('error', new Error('This needs an AI model. Add one in Settings, then try again.'), shownAs);
+                return null;
+            }
+
+            let context: string | undefined;
+            let contextIsRendered = false;
+            if (action === 'catch_me_up') {
+                // What people SAID in the window, from the durable transcript
+                // (the rolling window keeps only three minutes).
+                context = this.session.getFormattedSpeech(catchUpWindowSeconds(Date.now(), opts.sinceMs)) || undefined;
+            } else {
+                const actionContext = this.buildActionContextWithManualFallback(LIVE_HELPER_WINDOW_SECONDS[action]);
+                context = actionContext?.text;
+                contextIsRendered = actionContext?.rendered === true;
+            }
+            if (!context || !context.trim()) {
+                this.setMode('idle');
+                // The normal completion, so an open placeholder is closed with a sentence.
+                this.emit('live_helper', LIVE_HELPER_EMPTY[action], action);
+                return null;
+            }
+
+            generationId = ++this.currentGenerationId;
+            let full = '';
+            const stream = this.liveHelperLLM.generateStream(action, context, { contextIsRendered });
+            let aborted = false;
+            for await (const token of stream) {
+                if (this.currentGenerationId !== generationId) {
+                    await stream.return(undefined);
+                    aborted = true;
+                    break;
+                }
+                this.emit('live_helper_token', token, action);
+                full += token;
+            }
+            if (aborted) return null;
+            if (!full.trim() && this.currentGenerationId === generationId) {
+                this.setMode('idle');
+                this.emit('error', new Error('Nothing came back. Try again.'), shownAs);
+                return null;
+            }
+            if (full && this.currentGenerationId === generationId) {
+                this.emit('live_helper', full, action);
+                // Sound smart is a line to say: "make it shorter" can refine it.
+                if (action === 'sound_smart') this.session.addAssistantMessage(full, undefined, 'what_to_answer');
+                this.session.pushUsage({
+                    type: 'chat',
+                    timestamp: Date.now(),
+                    question: action === 'catch_me_up' ? 'What did I miss?' : action === 'define' ? 'Define' : 'Sound smart',
+                    answer: full,
+                    source: 'generated_action',
+                    synthetic: true,
+                });
+            }
+            if (this.currentGenerationId === generationId) this.setMode('idle');
+            return full;
+        } catch (error) {
+            if (generationId !== null && this.currentGenerationId !== generationId) return null;
+            this.emit('error', error as Error, shownAs);
             this.setMode('idle');
             return null;
         }

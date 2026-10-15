@@ -1,3 +1,4 @@
+import type { AssistCatchUp, AssistDailyBrief, AssistEvent, AssistLiveRecap, AssistMeetingBrief, AssistOwedItem, AssistSender, LiveHelperAction } from './assist'
 // Phase 3 — DynamicActionPayload mirrors electron/services/dynamic-actions/DynamicAction.ts.
 // Kept as a structural interface (not a class import) to preserve the strict main↔renderer
 // type boundary — the renderer never imports from electron/* directly.
@@ -464,6 +465,8 @@ export interface ElectronAPI {
   generateFollowUp: (intent: string, userRequest?: string) => Promise<{ refined: string | null; intent: string }>
   generateFollowUpQuestions: () => Promise<{ questions: string | null }>
   generateRecap: () => Promise<{ summary: string | null }>
+  /** The overlay's live helpers: What did I miss?, Define, Sound smart. Streams like Recap and Clarify. */
+  generateLiveHelper?: (action: LiveHelperAction, opts?: { sinceMs?: number }) => Promise<{ text: string | null }>
   submitManualQuestion: (question: string) => Promise<{ answer: string | null; question: string }>
   getIntelligenceContext: () => Promise<{ context: string; lastAssistantMessage: string | null; activeMode: string }>
   resetIntelligence: () => Promise<{ success: boolean; error?: string }>
@@ -993,6 +996,22 @@ export interface ElectronAPI {
   getMeetingAutoStopEnabled?: () => Promise<boolean>
   setMeetingAutoStopEnabled?: (on: boolean) => Promise<{ success: boolean; error?: string }>
   meetingAutoStopKeepGoing?: () => Promise<{ success: boolean }>
+  /** Assist (electron/services/assist): the daily brief, You owe, Brief me, the catch-up, Last time. */
+  assistGetDailyBrief?: (events: AssistEvent[]) => Promise<AssistDailyBrief>
+  assistGetOwed?: () => Promise<AssistOwedItem[]>
+  assistSetOwedDone?: (key: string, done: boolean) => Promise<{ ok: boolean }>
+  assistGetMeetingBrief?: (event: AssistEvent, opts?: { refresh?: boolean }) => Promise<{ ok: true; brief: AssistMeetingBrief } | { ok: false; error: string }>
+  assistGetCatchUp?: () => Promise<AssistCatchUp | null>
+  assistDismissCatchUp?: (key: string) => Promise<{ ok: boolean }>
+  assistGetLiveRecap?: () => Promise<AssistLiveRecap>
+  assistDismissLiveRecap?: () => Promise<{ ok: boolean }>
+  onAssistLastTimeRecap?: (callback: (payload: AssistLiveRecap) => void) => () => void
+  getCatchUpEnabled?: () => Promise<boolean>
+  setCatchUpEnabled?: (on: boolean) => Promise<{ success: boolean; error?: string }>
+  assistGetSender?: () => Promise<AssistSender>
+  assistOpenMailDraft?: (url: string) => Promise<{ ok: boolean; error?: string }>
+  /** The calendar reminder's "Running late": open that draft in the launcher. */
+  onAssistReminderDraft?: (callback: (req: { kind: 'running_late' | 'no_show' | 'reschedule'; event: AssistEvent }) => void) => () => void
   meetingAutoStopTyping?: () => void
   /** The notes window (`?window=notes`): the overlay's Notes button, its own X. */
   notesWindowToggle?: () => Promise<{ open: boolean }>

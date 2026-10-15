@@ -47,6 +47,7 @@ import { AI_RESPONSE_LANGUAGES, RECOGNITION_LANGUAGES } from './config/languages
 import { resolveCodingPromptSignals } from './llm/codingPromptSignals';
 import { resolveDiagramTurn, v3DiagramTurn, withDiagramContract, withDiagramTurnBlock, withMeetingSpeechForDiagramTurn, liveQuestionWantsADrawing, spokenRouteCarriesContract, undecidedTurnAnsweredInWords, turnStartsAFreshDesign, DIAGRAM_SPEECH_WINDOW_SECONDS, type DiagramTurn } from './llm/diagramPromptSignals';
 import { registerDiagramIpc, broadcastDiagramsEnabled } from './services/diagram/diagramIpc';
+import { registerAssistIpc } from './services/assist/assistIpc';
 import { isBareCodeRequest, looksLikeCodingAnswer, buildPriorCodingContextBlock as buildPriorCodingBlockForV3 } from './llm/codingFollowup';
 import { planAnswer, formatAnswerPlanForPrompt, isCodingAnswerType, validateAnswerStructure, validateProfileOutput, validateProfileEvidence, buildProfileRepairInstruction, raceStreamWithDeadline, firstUsefulDeadlineMs, totalHardTimeoutMs, repairDeadlineMs, LIVE_LOCAL_FIRST_USEFUL_TIMEOUT_MS, CODING_REGEN_ABORT_CHARS, isStealthEvasionQuestion, stripProfileTokensFromCoding, isBareFollowUp, isRefinementFollowUp, buildContextFreeClarification, sanitizeCandidateAnswer, acceptRepairedAnswer, CANDIDATE_VOICE_ANSWER_TYPES, detectAssistantVoiceMisfire, ASSISTANT_VOICE_ANSWER_TYPES, piTelemetry, classifyProviderError, detectExplicitCodingContract, isCodingContinuation, buildPriorCodingContextBlock, buildCodingContractPrompt, explicitContractProducesCode, CODING_VERIFICATION_INSTRUCTION, humanizeDirectiveFor, detectCorporateFiller, humanizeForAnswerType, applySpeakabilityBudget, compressTechnicalConcept, checkCodeCompleteness, varySpokenOpening, type ExplicitCodingContract, type AnswerType } from './llm';
 
@@ -338,6 +339,21 @@ export function initializeIpcHandlers(appState: AppState): void {
   // System-design diagram artifacts: repair, export, the feature switch and
   // the Phone Mirror render path. One module, registered once here.
   registerDiagramIpc(appState, safeHandle);
+
+  // Brief me, the daily brief and You owe, the catch-up after back-to-back
+  // meetings, the "Last time" recap and reminder drafts (services/assist).
+  registerAssistIpc(safeHandle, {
+    getSetting: (key) => (SettingsManager.getInstance() as any).get(key),
+    setSetting: (key, value) => (SettingsManager.getInstance() as any).set(key, value),
+    sender: () => {
+      const { CalendarManager } = require('./services/CalendarManager');
+      const cm = CalendarManager.getInstance();
+      const status = cm.getConnectionStatus?.() ?? {};
+      const google = (cm.getSourceStatuses?.() ?? []).some((s: any) => s?.id === 'google' && s?.state === 'connected');
+      return { name: appState.getCurrentUserName?.() ?? status.name ?? null, email: status.email ?? null, google };
+    },
+    openExternal: (url) => shell.openExternal(url),
+  });
 
   // ── Expired free trial (toaster policy Phase 0) ─────────────────────────
   // Defined above every safeHandle registration: source-contract tests scan
@@ -16134,6 +16150,25 @@ export function initializeIpcHandlers(appState: AppState): void {
       throw error;
     }
     }, (r: any) => !r || r.questions === null || r.questions === undefined);
+  });
+
+  // The live helpers: What did I miss?, Define, Sound smart (llm/liveHelpers.ts).
+  // `opts.sinceMs` is the user's last interaction with the overlay before this
+  // press, read by What did I miss? only.
+  safeHandle('generate-live-helper', async (_, action: unknown, opts?: { sinceMs?: unknown }) => {
+    const { isLiveHelperAction } = require('./llm/liveHelpers') as typeof import('./llm/liveHelpers');
+    if (!isLiveHelperAction(action)) return { text: null };
+    const sinceMs = typeof opts?.sinceMs === 'number' && Number.isFinite(opts.sinceMs) ? opts.sinceMs : undefined;
+    return _tracked(async () => {
+      const text = await appState.getIntelligenceManager().runLiveHelper(action, { sinceMs });
+      if (text) {
+        try {
+          const label = action === 'catch_me_up' ? 'What did I miss?' : action === 'define' ? 'Define' : 'Sound smart';
+          PhoneMirrorService.getInstance().publishAssistantMessage(crypto.randomUUID(), text, label);
+        } catch (_) {}
+      }
+      return { text };
+    }, (r: any) => !r || r.text === null || r.text === undefined);
   });
 
   // MODE 5: Manual Answer (Fallback)

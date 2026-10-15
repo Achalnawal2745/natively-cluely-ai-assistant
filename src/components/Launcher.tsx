@@ -5,6 +5,7 @@ import { generateMeetingPDF } from '../utils/pdfGenerator';
 import icon from "./icon.png";
 import mainui from "../UI_comp/mainui.png";
 import UpcomingCalendarCard from './ui/UpcomingCalendarCard';
+import AssistToday from './assist/AssistToday';
 import { useToggleInit } from './settings/useToggleInit';
 import { noteUpcomingEvents, warmCalendarSnapshot } from '../lib/calendarSnapshot.mjs';
 import { plainMeetingTitle } from '../lib/codingAnswer.mjs';
@@ -1213,6 +1214,15 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                             <main className="flex-1 overflow-y-auto custom-scrollbar bg-bg-primary">
                                 <section className="px-8 py-8 min-h-full">
                                     <div className="max-w-4xl mx-auto space-y-8">
+
+                                        {/* Coming up today (Brief me, reminder drafts), You owe, and
+                                            the catch-up after back-to-back meetings (assist/AssistToday). */}
+                                        <AssistToday
+                                            events={upcomingEvents}
+                                            isLight={isLight}
+                                            isMeetingActive={isMeetingActive}
+                                            onOpenMeeting={(id) => { void handleOpenMeeting({ id } as Meeting); }}
+                                        />
 
                                         {/* Iterating Date Groups */}
                                         {sortedGroups.map((label) => (

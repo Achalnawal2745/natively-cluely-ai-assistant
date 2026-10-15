@@ -52,6 +52,12 @@ export interface AppSettings {
     meetingAutoStopEnabled?: boolean;
     // Minutes of silence before the inactivity stop. No UI yet. Unset = 15.
     meetingInactivityStopMinutes?: number;
+    // The catch-up after back-to-back meetings (2026-10-15,
+    // services/assist/backToBack.ts): decisions and the user's action items
+    // across meetings with short gaps, as one launcher card. Unset = on.
+    assistCatchUpEnabled?: boolean;
+    // The longest gap (minutes) between two meetings of one block. No UI. Unset = 15.
+    assistCatchUpGapMinutes?: number;
     // The notes window (`?window=notes`, 2026-10-15): where it was and how big,
     // and whether it was open when last used, so a meeting starting reopens it
     // (without taking focus) for someone who keeps it open.
