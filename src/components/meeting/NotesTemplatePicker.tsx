@@ -15,7 +15,8 @@ const MENU_CLOSE_MS = 150;
  * The follow-up's tone pull-down (MeetingDetails ToneDropdown) is the model:
  * the same clear Liquid Glass pill, the same transitions.dev menu. Who may use
  * which template is main's decision (notesTemplateGate.ts); a template main
- * refused is listed with "Needs Natively Pro".
+ * refused is listed with "Needs Natively Pro" and can still be picked (main
+ * checks again, so it works once Pro or a trial is on).
  */
 export const NotesTemplatePicker: React.FC<{
     options: TemplateOption[];
@@ -117,7 +118,10 @@ export const NotesTemplatePicker: React.FC<{
                             role="menuitemradio"
                             aria-checked={opt.current}
                             tabIndex={-1}
-                            onClick={() => { close(true); if (!opt.current && !gated) onPick(opt); }}
+                            // A template marked "Needs Natively Pro" stays pickable: after
+                            // buying Pro or starting a trial it simply works, and main
+                            // checks again either way (notesTemplateGate.ts).
+                            onClick={() => { close(true); if (!opt.current) onPick(opt); }}
                             className={`w-full min-h-[26px] flex items-center gap-2 pl-2.5 pr-2 py-1 rounded-[5px] text-left text-[12px] font-medium focus-visible:outline-none transition-colors ${opt.current
                                 ? 'text-text-primary'
                                 : 'text-text-secondary hover:text-text-primary focus-visible:text-text-primary'} ${isLight

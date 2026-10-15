@@ -599,6 +599,9 @@ export class CalendarManager extends EventEmitter {
         this.notificationSuppressed = isSuppressed;
     }
 
+    /** Occurrences (event id + start) already reminded: a re-plan never repeats one. */
+    private remindedOccurrences = new Set<string>();
+
     /** The events the reminders were last scheduled for, so a new lead time re-plans them. */
     private reminderEvents: CalendarEvent[] = [];
 
@@ -626,26 +629,18 @@ export class CalendarManager extends EventEmitter {
 
         const now = Date.now();
         const leadMinutes = this.reminderLeadMinutes();
+        const { planReminders, pruneReminded, reminderKey } = require('./meetingDetection/meetingOffer');
+        pruneReminded(this.remindedOccurrences, now);
 
-        events.forEach(event => {
-            const startStr = event.startTime;
-            if (!startStr) return;
-
-            const startTime = new Date(startStr).getTime();
-            // Reminder time: the chosen lead before the start (2 minutes unless changed).
-            const reminderTime = startTime - (leadMinutes * 60 * 1000);
-
-            if (reminderTime > now) {
-                const delay = reminderTime - now;
-                // Only schedule if within next 24h (which fetch already limits)
-                if (delay < 24 * 60 * 60 * 1000) {
-                    const timeout = setTimeout(() => {
-                        this.showNotification(event, leadMinutes);
-                    }, delay);
-                    this.reminderTimeouts.push(timeout);
-                }
-            }
-        });
+        // The chosen lead before each start (2 minutes unless changed), within
+        // the next 24h, skipping occurrences already reminded.
+        for (const { event, delayMs } of planReminders(events, now, leadMinutes, this.remindedOccurrences) as Array<{ event: CalendarEvent; delayMs: number }>) {
+            const timeout = setTimeout(() => {
+                this.remindedOccurrences.add(reminderKey(event));
+                this.showNotification(event, leadMinutes);
+            }, delayMs);
+            this.reminderTimeouts.push(timeout);
+        }
     }
 
     /** The last reminder shown, kept referenced so its buttons still work. */

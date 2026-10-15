@@ -2282,6 +2282,21 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     }, []);
     const [templatesNeedingPro, setTemplatesNeedingPro] = useState<ReadonlySet<string>>(() => new Set());
     const [gatedTemplateName, setGatedTemplateName] = useState<string | null>(null);
+    // A refusal is only remembered until the plan changes: buying Pro, entering
+    // a key, or a trial starting or ending forgets it (main checks again anyway).
+    useEffect(() => {
+        const forget = () => {
+            setTemplatesNeedingPro(new Set());
+            setGatedTemplateName(null);
+            setDetectedNeedsPro(false);
+        };
+        const offs = [
+            window.electronAPI?.onLicenseStatusChanged?.(forget),
+            window.electronAPI?.onTrialStarted?.(forget),
+            window.electronAPI?.onTrialEnded?.(forget),
+        ];
+        return () => { for (const off of offs) { try { off?.(); } catch { /* gone */ } } };
+    }, []);
 
     // Compare (2026-10-15): two versions side by side as A and B, blind until
     // the pick (main: services/meeting/notesCompare.ts).
@@ -2329,6 +2344,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 await loadNotesVersions();
                 setVersionKey('current');
                 setGatedTemplateName(null);
+                // It went through this time (Pro or a trial since): no longer marked.
+                const okId = opts?.modeId;
+                if (okId) setTemplatesNeedingPro((prev) => { if (!prev.has(okId)) return prev; const next = new Set(prev); next.delete(okId); return next; });
             } else if (res?.error === 'pro_required') {
                 // From the picker: that template is marked and the page says why.
                 // Otherwise the suggestion's own refusal, as before.

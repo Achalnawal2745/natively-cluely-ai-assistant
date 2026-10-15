@@ -36,6 +36,21 @@ export const LIVE_SESSION_DEFAULTS: LiveSessionOptions = {
     now: () => Date.now(),
 };
 
+/**
+ * How long each kind of provider may take for its last words. A streaming
+ * provider answers as the audio arrives; a batch one (Groq, Azure, IBM, OpenAI
+ * on a custom endpoint) only after the whole upload; a local model may still
+ * be running inference, or loading.
+ */
+export function liveTimingFor(providerId: string, opts: { openAiCustomEndpoint?: boolean } = {}): Pick<LiveSessionOptions, 'idleMs' | 'timeoutMs'> {
+    if (providerId === 'groq' || providerId === 'azure' || providerId === 'ibmwatson' || (providerId === 'openai' && opts.openAiCustomEndpoint)) {
+        return { idleMs: 8_000, timeoutMs: 45_000 };
+    }
+    if (providerId === 'local-whisper') return { idleMs: 30_000, timeoutMs: 120_000 };
+    if (providerId === 'apple-speech') return { idleMs: 3_000, timeoutMs: 20_000 };
+    return { idleMs: LIVE_SESSION_DEFAULTS.idleMs, timeoutMs: LIVE_SESSION_DEFAULTS.timeoutMs };
+}
+
 /** Frame RMS that counts as speech (the native VAD's start level, as gap recovery uses). */
 export const DICTATION_SPEECH_RMS = 185;
 
@@ -74,6 +89,8 @@ export class LiveDictationSession {
     private error: Error | null = null;
     private opened = false;
     private closed = false;
+    /** A final the provider said is still coming (a local model's finalize() returns true). */
+    private finalPending = false;
 
     constructor(private readonly create: () => ReplayableStt | null, opts: Partial<LiveSessionOptions> = {}) {
         this.o = { ...LIVE_SESSION_DEFAULTS, ...opts };
@@ -93,6 +110,7 @@ export class LiveDictationSession {
                 if (!stt) throw new Error('provider not available');
                 stt.on('transcript', (s) => {
                     this.lastEventAt = this.o.now();
+                    if (s?.isFinal) this.finalPending = false;
                     if (s?.isFinal && typeof s.text === 'string' && s.text.trim()) this.finals.push(s.text.trim());
                 });
                 stt.on('error', (e) => { this.error = e instanceof Error ? e : new Error(String(e)); });
@@ -133,16 +151,25 @@ export class LiveDictationSession {
                 for (let off = 0; off < tail.length; off += slice) stt.write(tail.subarray(off, Math.min(tail.length, off + slice)));
             }
             try { stt.notifySpeechEnded?.(); } catch { /* optional */ }
-            try { stt.finalize?.(); } catch { /* optional */ }
+            try { if ((stt as { finalize?: () => unknown }).finalize?.() === true) this.finalPending = true; } catch { /* optional */ }
             const start = this.o.now();
             this.lastEventAt = Math.max(this.lastEventAt, start);
-            while (!this.error && this.o.now() - this.lastEventAt < this.o.idleMs && this.o.now() - start < this.o.timeoutMs) {
-                await this.o.sleep(Math.min(200, this.o.idleMs));
+            // Until the provider has gone quiet for its own idle time (a batch
+            // upload or a local inference answers late), and while a final it
+            // announced is still on the way; never past its hard limit.
+            while (
+                !this.error
+                && this.o.now() - start < this.o.timeoutMs
+                && (this.finalPending || this.o.now() - this.lastEventAt < this.o.idleMs)
+            ) {
+                await this.o.sleep(Math.max(1, Math.min(200, this.o.idleMs)));
             }
         } finally {
             this.dispose();
         }
-        if (this.error && !this.finals.length) throw this.error;
+        // A provider that failed mid-way may have lost words after its last
+        // final: the whole recording goes to the replay instead.
+        if (this.error) throw this.error;
         return this.finals.join(' ');
     }
 

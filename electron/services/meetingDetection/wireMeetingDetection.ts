@@ -110,6 +110,8 @@ export function wireMeetingDetection(deps: MeetingDetectionDeps): MeetingDetecto
         notify: deps.notify,
         closeNotification: deps.closeNotification ?? (() => {}),
         launcherFocused: deps.launcherFocused ?? (() => false),
+        // An automatic start only for a call still on (the detector's last poll).
+        callStillOn: (callId) => detector.isPresent(callId),
         now,
         ...(deps.setTimeout ? { setTimeout: deps.setTimeout } : {}),
         ...(deps.clearTimeout ? { clearTimeout: deps.clearTimeout } : {}),
@@ -125,6 +127,8 @@ export function wireMeetingDetection(deps: MeetingDetectionDeps): MeetingDetecto
             self: deps.self,
         }),
         isMeetingActive: deps.isMeetingActive,
+        // The call ended before anyone answered: its offer and countdown go.
+        onGone: (id) => offers.callGone(id),
         onDetected: (d) => {
             if (deps.promptsBlocked()) {
                 console.log(`[MeetingDetection] ${d.app} call detected; prompt skipped (Undetectable or a disguise is on)`);
@@ -134,7 +138,7 @@ export function wireMeetingDetection(deps: MeetingDetectionDeps): MeetingDetecto
             console.log(`[MeetingDetection] ${d.app} call detected (${d.via}${d.key ? `, ${d.key.split(':')[0]}` : ''})`);
             // The call may be started from the launcher meanwhile: the offer
             // checks for a running meeting before it starts one.
-            offers.offer({ app: d.app, title: d.title ?? null, body, start });
+            offers.offer({ app: d.app, title: d.title ?? null, body, start, callId: d.id });
         },
         now,
     });

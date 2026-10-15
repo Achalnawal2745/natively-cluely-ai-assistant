@@ -17,6 +17,7 @@
  */
 import { DictationController, type DictationAudioSink, type DictationCapture } from './DictationController';
 import { formatDictation } from './dictationFormatter';
+import { liveTimingFor } from './dictationSession';
 import type { DictationNotice } from './dictationCopy';
 import type { ReplayableStt, SpeechClip } from '../../audio/sttGapRecovery';
 
@@ -151,6 +152,11 @@ export function wireDictation(w: DictationWiring): DictationController {
         hasProvider: () => sttProvider() !== 'none',
         startCapture: (sink) => openMicrophone(w, sink),
         createLive: () => createLiveInstance(w),
+        liveTiming: () => {
+            let custom = false;
+            try { custom = !!require('../CredentialsManager').CredentialsManager.getInstance().getOpenAiSttBaseUrl?.(); } catch { /* the cloud endpoint */ }
+            return liveTimingFor(sttProvider(), { openAiCustomEndpoint: custom });
+        },
         transcribeClip: (clip) => transcribeWithPlan(w, clip),
         format: async (raw) => {
             const llm = w.llm();

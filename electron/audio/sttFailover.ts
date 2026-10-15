@@ -139,6 +139,19 @@ export function isTerminalSttError(err: unknown): boolean {
         || e?.code === 'local_stt_unavailable';
 }
 
+/**
+ * Stops a stand-in for good. Its text is no longer wanted, but its errors
+ * still are caught: a batch upload (Groq, Azure…) or a socket can fail after
+ * stop(), and an 'error' event with no listener would throw in main. The
+ * swallowing listener is never removed.
+ */
+export function retireStandIn(stt: LiveStt): void {
+    try { stt.removeAllListeners?.('transcript'); } catch { /* gone */ }
+    try { stt.removeAllListeners?.('error'); } catch { /* gone */ }
+    try { stt.on('error', () => { /* retired: a late failure means nothing now */ }); } catch { /* gone */ }
+    try { stt.stop(); } catch { /* gone */ }
+}
+
 export class SttFailover {
     private phase: FailoverPhase = 'primary';
     private fallback: { id: string; stt: LiveStt; errors: number } | null = null;
@@ -274,7 +287,7 @@ export class SttFailover {
                 stt.start();
             } catch (e) {
                 this.deps.log?.(`${this.deps.source}: ${id} did not start: ${(e as Error)?.message}`);
-                try { stt.removeAllListeners?.(); stt.stop(); } catch { /* never started */ }
+                retireStandIn(stt);
                 continue;
             }
             this.fallback = entry;
@@ -289,9 +302,7 @@ export class SttFailover {
     private dropFallback(): void {
         const fb = this.fallback;
         this.fallback = null;
-        if (!fb) return;
-        try { fb.stt.removeAllListeners?.(); } catch { /* gone */ }
-        try { fb.stt.stop(); } catch { /* gone */ }
+        if (fb) retireStandIn(fb.stt);
     }
 
     private startProbe(): void {

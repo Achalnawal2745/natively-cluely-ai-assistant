@@ -237,7 +237,7 @@ test('calendar reminder lead time: 1, 2 or 5 minutes, 2 when unset or invalid', 
     // The reminder reads the setting and says the chosen time.
     const src = fs.readFileSync(path.join(REPO, 'electron/services/CalendarManager.ts'), 'utf8');
     assert.match(src, /reminderMinutes\(SettingsManager\.getInstance\(\)\.get\('calendarReminderMinutes'\)\)/);
-    assert.match(src, /startTime - \(leadMinutes \* 60 \* 1000\)/);
+    assert.match(src, /planReminders\(events, now, leadMinutes, this\.remindedOccurrences\)/);
     assert.doesNotMatch(src, /starts in 2 minutes/);
 });
 

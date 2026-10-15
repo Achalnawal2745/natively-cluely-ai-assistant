@@ -104,3 +104,14 @@ test('wiring: the rating is asked above the notes for the sample, the quiet row 
     assert.match(page, /isV3Summary && !promptRating && \(\s*<NotesRating/);
     assert.match(page, /shouldPromptRating\(baseMeeting\.id, baseMeeting\.detailedSummary, Date\.now\(\)\)/);
 });
+
+test('a template refused for want of Pro stays pickable (main checks again), keeps its label, and the refusal is forgotten when the plan changes', () => {
+    const picker = live(read('../NotesTemplatePicker.tsx'));
+    assert.match(picker, /onClick=\{\(\) => \{ close\(true\); if \(!opt\.current\) onPick\(opt\); \}\}/, 'no gate in the click');
+    assert.match(picker, /gated && <span[^>]*>\{t\('Needs Natively Pro'\)\}/, 'the label stays');
+    const page = live(read('../../MeetingDetails.tsx'));
+    const forget = page.slice(page.indexOf('const forget = () => {'), page.indexOf('const forget = () => {') + 600);
+    assert.match(forget, /setTemplatesNeedingPro\(new Set\(\)\)/);
+    for (const ev of ['onLicenseStatusChanged', 'onTrialStarted', 'onTrialEnded']) assert.ok(forget.includes(ev), ev);
+    assert.match(page, /next\.delete\(okId\)/, 'a success clears that template\'s mark');
+});

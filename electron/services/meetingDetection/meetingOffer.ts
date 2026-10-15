@@ -63,6 +63,8 @@ export interface MeetingOfferDeps {
     closeNotification: () => void;
     /** The launcher is on screen and in front: its panel is enough. */
     launcherFocused: () => boolean;
+    /** Whether the detected call is still on (MeetingDetector.isPresent); checked right before an automatic start. */
+    callStillOn?: (callId: string) => boolean;
     now?: () => number;
     setTimeout?: (fn: () => void, ms: number) => unknown;
     clearTimeout?: (handle: unknown) => void;
@@ -91,6 +93,8 @@ export function closeMeansNotNow(platform: string, reason: string | undefined): 
 
 interface Current {
     view: MeetingOfferView;
+    /** The detector's id for the call this offer is about. */
+    callId: string | null;
     start: MeetingStartRequestLike;
     countdown: unknown;
     expiry: unknown;
@@ -122,7 +126,7 @@ export class MeetingOffers {
     }
 
     /** A new call: replaces any earlier offer. */
-    offer(input: { app: string; title?: string | null; body: string; start: MeetingStartRequestLike }): MeetingOfferView {
+    offer(input: { app: string; title?: string | null; body: string; start: MeetingStartRequestLike; callId?: string }): MeetingOfferView {
         this.clear('replaced');
         const auto = (() => { try { return this.deps.autoStart(); } catch { return false; } })();
         const id = `offer-${++this.seq}`;
@@ -135,6 +139,7 @@ export class MeetingOffers {
         };
         const current: Current = {
             view,
+            callId: input.callId ?? null,
             start: input.start,
             countdown: auto ? this.setT(() => this.fire(id), this.countdownMs) : null,
             expiry: this.setT(() => { if (this.current?.view.id === id) this.clear('expired'); }, this.options.expireMs ?? OFFER_EXPIRE_MS),
@@ -173,6 +178,11 @@ export class MeetingOffers {
         return true;
     }
 
+    /** The detector no longer sees the call: an offer about it (and its countdown) goes. */
+    callGone(callId: string): void {
+        if (this.current && this.current.callId === callId) this.clear('call ended');
+    }
+
     /** Not now, on either surface. */
     dismiss(id: string): void {
         if (this.current?.view.id === id) this.clear('dismissed');
@@ -194,6 +204,13 @@ export class MeetingOffers {
     private fire(id: string): void {
         const cur = this.current;
         if (!cur || cur.view.id !== id) return;
+        // The call may have ended between the detector's polls.
+        let stillOn = true;
+        try { stillOn = cur.callId === null || !this.deps.callStillOn || this.deps.callStillOn(cur.callId); } catch { stillOn = false; }
+        if (!stillOn) {
+            this.clear('call ended');
+            return;
+        }
         this.clear('auto-started');
         if (this.deps.isMeetingActive()) return;
         this.deps.requestStart(cur.start);
@@ -213,4 +230,40 @@ export function reminderMinutes(raw: unknown): number {
 /** "starts in 1 minute" / "starts in 2 minutes". */
 export function reminderLeadText(minutes: number): string {
     return minutes === 1 ? '1 minute' : `${minutes} minutes`;
+}
+
+/** One occurrence of an event: a recurring event's instances differ by start. */
+export function reminderKey(event: { id?: string; startTime?: string }): string {
+    return `${event.id ?? ''}|${event.startTime ?? ''}`;
+}
+
+/**
+ * When each event's reminder fires, `leadMinutes` before its start: only
+ * future reminders within a day, and never one for an occurrence already
+ * reminded (a shorter lead chosen after a reminder fired would repeat it).
+ */
+export function planReminders<E extends { id?: string; startTime?: string }>(
+    events: readonly E[],
+    nowMs: number,
+    leadMinutes: number,
+    reminded: ReadonlySet<string>,
+): Array<{ event: E; delayMs: number }> {
+    const out: Array<{ event: E; delayMs: number }> = [];
+    for (const event of events) {
+        if (!event.startTime) continue;
+        const start = new Date(event.startTime).getTime();
+        if (!Number.isFinite(start)) continue;
+        if (reminded.has(reminderKey(event))) continue;
+        const delayMs = start - leadMinutes * 60_000 - nowMs;
+        if (delayMs > 0 && delayMs < 24 * 60 * 60_000) out.push({ event, delayMs });
+    }
+    return out;
+}
+
+/** Forget occurrences that started over a day ago, so the set stays small. */
+export function pruneReminded(reminded: Set<string>, nowMs: number): void {
+    for (const key of reminded) {
+        const start = new Date(key.slice(key.lastIndexOf('|') + 1)).getTime();
+        if (!Number.isFinite(start) || start < nowMs - 24 * 60 * 60_000) reminded.delete(key);
+    }
 }

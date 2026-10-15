@@ -51,6 +51,8 @@ export interface DictationDeps {
     clearTimer?: (handle: unknown) => void;
     maxMs?: number;
     live?: Partial<LiveSessionOptions>;
+    /** The wait for the last words for the provider in use (liveTimingFor). */
+    liveTiming?: () => Partial<LiveSessionOptions>;
     log?: (msg: string) => void;
 }
 
@@ -107,7 +109,10 @@ export class DictationController {
         this.captureError = null;
         this.startedAt = (this.deps.now ?? Date.now)();
         const maxMs = this.deps.maxMs ?? DICTATION_MAX_MS;
-        this.live = new LiveDictationSession(() => this.deps.createLive(), this.deps.live);
+        // The wait for the last words follows the provider (dictationSession.liveTimingFor).
+        let timing: Partial<LiveSessionOptions> = {};
+        try { timing = this.deps.liveTiming?.() ?? {}; } catch { /* the defaults */ }
+        this.live = new LiveDictationSession(() => this.deps.createLive(), { ...timing, ...(this.deps.live ?? {}) });
         const sink: DictationAudioSink = {
             onAudio: (chunk, rate) => {
                 if (gen !== this.generation || this.state !== 'recording' || !chunk?.length || !(rate > 0)) return;
