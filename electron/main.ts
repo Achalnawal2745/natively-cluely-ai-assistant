@@ -1813,14 +1813,18 @@ export class AppState {
               // Files are missing or corrupt — auto-download in the background
               // so the user doesn't have to open Settings and click Download.
               console.log(`[AppState] Local Whisper model "${id}" not cached — starting background download`);
-              try {
-                const result = LocalModelDownloadService.getInstance().start(resolveLocalModelProviderName(id), id);
-                if (!result.success && !result.alreadyDownloading) {
-                  console.warn(`[AppState] Auto-download for "${id}" rejected:`, result.error);
-                }
-              } catch (dlErr: any) {
-                console.warn(`[AppState] Auto-download for "${id}" failed to start:`, dlErr?.message);
-              }
+              // startWhenReady, not start: it first asks the system which
+              // proxy applies, so the download works on a network that needs one.
+              LocalModelDownloadService.getInstance().startWhenReady(resolveLocalModelProviderName(id), id).then(
+                (result: { success: boolean; error?: string; alreadyDownloading?: boolean }) => {
+                  if (!result.success && !result.alreadyDownloading) {
+                    console.warn(`[AppState] Auto-download for "${id}" rejected:`, result.error);
+                  }
+                },
+                (dlErr: any) => {
+                  console.warn(`[AppState] Auto-download for "${id}" failed to start:`, dlErr?.message);
+                },
+              );
             }
           }
         }
@@ -10594,26 +10598,44 @@ if (process.env.THINKING_MATRIX === '1') {
 
   // Local embedding workers must be idle before the process exits (2026-09-22):
   // quitting while one was inside a native ONNX call aborted the app with
-  // SIGABRT (see LocalEmbeddingProvider.shutdownForQuit). Deferred ONCE, only
-  // when a worker still owes a reply, and bounded so a wedged worker cannot
-  // hold the quit hostage. Same code path on macOS and Windows: both run the
-  // worker on a Node worker_thread that process exit tears down.
+  // SIGABRT (see LocalEmbeddingProvider.shutdownForQuit). Deferred ONCE and
+  // bounded so a wedged worker cannot hold the quit hostage. Same code path on
+  // macOS and Windows: both run the worker on a Node worker_thread that
+  // process exit tears down.
+  //
+  // 2026-10-14: the same is true of EVERY ONNX worker, not only the embedder —
+  // local STT (a quit during a meeting lands mid-inference almost by
+  // definition), a model download in its final load, the reranker, the router.
+  // Process exit stops a worker thread exactly as terminate() does. So the
+  // quit is now deferred whenever any of them is alive: the embedder first
+  // finishes the batch it owes (losing it loses indexed chunks), then every
+  // live worker is asked to exit and the quit waits until they have. An idle
+  // worker is gone in milliseconds; a busy one when its current native call
+  // returns. If one outlasts the bound the quit goes ahead anyway.
   let localEmbeddingQuitDrainStarted = false;
   const LOCAL_EMBEDDING_QUIT_DRAIN_MS = 5_000;
+  const ONNX_WORKER_QUIT_WAIT_MS = 3_000;
   /** True when the quit was deferred; before-quit returns and re-runs on app.quit(). */
   const deferQuitForLocalEmbeddingDrain = (event: Electron.Event): boolean => {
     if (localEmbeddingQuitDrainStarted) return false;
     localEmbeddingQuitDrainStarted = true;
     try {
       const { LocalEmbeddingProvider } = require('./rag/providers/LocalEmbeddingProvider');
-      if (!LocalEmbeddingProvider.hasInFlightWorkForQuit()) return false;
+      const { liveOnnxWorkerCount, retireAllOnnxWorkers } = require('./utils/onnxWorkerShutdown');
+      if (!LocalEmbeddingProvider.hasInFlightWorkForQuit() && liveOnnxWorkerCount() === 0) return false;
       event.preventDefault();
       appState.setQuitting(true);
       const startedAt = Date.now();
-      console.log('[Main] Quit deferred: waiting for the local embedding worker to finish its current batch...');
+      console.log(`[Main] Quit deferred: stopping ${liveOnnxWorkerCount()} local model worker(s) before exit...`);
       void LocalEmbeddingProvider.shutdownAllForQuit(LOCAL_EMBEDDING_QUIT_DRAIN_MS)
         .then((outcomes: string[]) => console.log(`[Main] Local embedding workers stopped for quit in ${Date.now() - startedAt}ms: ${outcomes.join(', ')}`))
         .catch((e: unknown) => console.warn('[Main] Local embedding quit drain failed; quitting anyway:', e))
+        .then(() => retireAllOnnxWorkers(ONNX_WORKER_QUIT_WAIT_MS))
+        .then((r: { asked: number; stillAlive: number }) => {
+          if (r.asked > 0) console.log(`[Main] Local model workers stopped for quit in ${Date.now() - startedAt}ms: ${r.asked - r.stillAlive}/${r.asked} exited`);
+          if (r.stillAlive > 0) console.warn(`[Main] ${r.stillAlive} local model worker(s) still inside a native call at the quit deadline; quitting anyway.`);
+        })
+        .catch((e: unknown) => console.warn('[Main] Local model worker quit stop failed; quitting anyway:', e))
         .finally(() => app.quit());
       return true;
     } catch (e) {

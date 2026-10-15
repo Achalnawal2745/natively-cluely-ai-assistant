@@ -14178,7 +14178,9 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle('local-whisper-start-download', async (_event, modelId: string) => {
     try {
       const { LocalModelDownloadService, resolveLocalModelProviderName } = require('./services/LocalModelDownloadService');
-      const r = LocalModelDownloadService.getInstance().start(resolveLocalModelProviderName(modelId), modelId);
+      // startWhenReady, not start: it first asks the system which proxy
+      // applies, so the download works on a network that requires one.
+      const r = await LocalModelDownloadService.getInstance().startWhenReady(resolveLocalModelProviderName(modelId), modelId);
       // Preserve the original return shape: the panel treats 'already-downloading'
       // as a non-error success.
       if (r.alreadyDownloading) return { success: false, error: 'already-downloading' };

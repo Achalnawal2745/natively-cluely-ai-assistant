@@ -16,6 +16,7 @@
  */
 import { parentPort } from 'worker_threads';
 import { WhisperProgressAggregator } from './whisperProgressAggregator';
+import { downloadModelFilesResumable } from './resumableDownload';
 import { getBoundedOnnxSessionOptions } from '../../utils/onnxThreadConfig';
 // Shared language-capability module (also consumed by ipcHandlers for the
 // Settings UI). Replaces two hand-maintained tables that had both drifted:
@@ -30,6 +31,7 @@ import { getBoundedOnnxSessionOptions } from '../../utils/onnxThreadConfig';
 //    (English-only per NVIDIA's model card). isEnglishOnlyLocalModel() is
 //    derived from MODEL_CATALOG's own `multilingual` flag instead.
 import { isEnglishOnlyLocalModel, resolveWhisperLanguage } from './modelLanguageSupport';
+import { moonshineMaxNewTokens } from './moonshineTokenBudget';
 
 let pipe: any = null;
 let loadedModelId = '';
@@ -257,6 +259,16 @@ async function initParakeetChannel(msg: any, channelId: string): Promise<void> {
 }
 
 parentPort.on('message', async (msg: any) => {
+  if (msg.type === 'shutdown') {
+    // Cooperative stop — see electron/utils/onnxWorkerShutdown.ts. The host
+    // never calls worker.terminate() on this worker: doing that while an ONNX
+    // run() or session load is on this thread aborts the whole app. A message
+    // is only delivered when this thread is idle, so no native call is in
+    // flight here, and process.exit() in a worker thread stops this thread
+    // only. Work still queued behind this message is abandoned on purpose —
+    // the host has already stopped listening for it.
+    process.exit(0);
+  }
   if (msg.type === 'init') {
     if (msg.sessionLayout === 'nemotron-rnnt') {
       const channelId: string | undefined = msg.channelId;
@@ -316,11 +328,27 @@ parentPort.on('message', async (msg: any) => {
       env.cacheDir = msg.cacheDir;
       env.allowRemoteModels = true;
 
-      // Apply hardware-specific execution providers (CoreML, DirectML, CUDA, CPU)
-      const providers: string[] = msg.executionProviders ?? ['cpu'];
-      if (env.backends?.onnx) {
-        env.backends.onnx.executionProviders = providers;
-      }
+      // This path runs on the CPU, on every platform, and says so.
+      //
+      // It used to set `env.backends.onnx.executionProviders` to the host's
+      // list (['coreml','cpu'] on Apple Silicon, ['dml','cpu'] on Windows) and
+      // log "providers=coreml,cpu". transformers.js 3.x never reads that
+      // field: it derives the providers from the pipeline's `device` option,
+      // which defaults to 'cpu' under Node, and only fills
+      // session_options.executionProviders when it is absent. No `device` was
+      // ever passed, so every Whisper, Distil-Whisper and Moonshine session
+      // has always been CPU — while the log and the Settings copy claimed the
+      // GPU.
+      //
+      // The dead assignment is removed rather than "fixed" by wiring the
+      // accelerator in, because the one measurement there is says not to:
+      // Moonshine Base, M4 MacBook Air, 2026-10-14, 2.46 s clip, median of 3 —
+      //   cpu          load  533ms   infer 174ms
+      //   coreml+cpu   load 1126ms   infer 289ms
+      // (the same direction as the Nemotron and Parakeet numbers in
+      // inferenceConfig.ts). DirectML has never been measured for these models
+      // at all. Turning either on is a change to make with numbers, per model.
+      const providers: string[] = ['cpu'];
       // Per-module dtype: required. @huggingface/transformers v3 no longer
       // honors the v2 `quantized: true` flag — must use `dtype` explicitly.
       const dtype: string | Record<string, string> = msg.dtype;
@@ -328,9 +356,18 @@ parentPort.on('message', async (msg: any) => {
       const dtypeDesc = typeof dtype === 'string'
         ? dtype
         : 'mixed:' + Object.entries(dtype).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`).join(',');
-      const sessionOptions = getBoundedOnnxSessionOptions();
+      // Whisper and Distil-Whisper get more than one intra-op thread (the host
+      // decides, see OnnxWorkload 'whisper-encode'); every other model keeps
+      // the shared default.
+      const intraOpThreads = Number(msg.intraOpThreads);
+      const sessionOptions = Number.isInteger(intraOpThreads) && intraOpThreads > 0
+        ? { ...getBoundedOnnxSessionOptions(), intraOpNumThreads: intraOpThreads }
+        : getBoundedOnnxSessionOptions();
+      // The files may come from a different repo than the id Settings stores
+      // (see WhisperModelInfo.repoId). Progress and errors still say modelId.
+      const sourceRepoId: string = typeof msg.sourceRepoId === 'string' && msg.sourceRepoId ? msg.sourceRepoId : msg.modelId;
 
-      console.log(`[WhisperWorker] Loading ${msg.modelId} | providers=${providers.join(',')} | dtype=${dtypeDesc}`);
+      console.log(`[WhisperWorker] Loading ${msg.modelId}${sourceRepoId !== msg.modelId ? ` from ${sourceRepoId}` : ''} | providers=${providers.join(',')} | dtype=${dtypeDesc} | threads=${sessionOptions.intraOpNumThreads}`);
 
       // DIAGNOSTICS (2026-06-13): the model files load fine in isolation (raw ORT +
       // transformers, both in system node), yet the live worker can fail with
@@ -340,7 +377,7 @@ parentPort.on('message', async (msg: any) => {
       try {
         const _fs = require('fs');
         const _path = require('path');
-        const _orgName = String(msg.modelId).split('/');
+        const _orgName = String(sourceRepoId).split('/');
         const _modelDir = _path.join(String(msg.cacheDir), _orgName[0] || '', _orgName[1] || '', 'onnx');
         const _encName = typeof dtype === 'string' && dtype !== 'fp32' ? `encoder_model_${dtype}.onnx` : 'encoder_model.onnx';
         const _decName = typeof dtype === 'string' && dtype !== 'fp32' ? `decoder_model_merged_${dtype}.onnx` : 'decoder_model_merged.onnx';
@@ -384,7 +421,32 @@ parentPort.on('message', async (msg: any) => {
       // "filesystem error: in file_size: ... encoder_model.onnx_data".
       const useExternalDataFormat: boolean | Record<string, boolean> | undefined =
         msg.useExternalDataFormat;
-      pipe = await pipeline('automatic-speech-recognition', msg.modelId, {
+      // Not installed yet: fetch the large files with resume first, so a
+      // dropped connection costs the bytes since the drop, not the whole file.
+      // pipeline() then finds them in its cache and fetches only the small ones.
+      const resumableFiles: string[] = Array.isArray(msg.resumableFiles) ? msg.resumableFiles : [];
+      if (resumableFiles.length > 0) {
+        let lastPct = -1;
+        let lastPostAt = 0;
+        await downloadModelFilesResumable({
+          cacheDir: msg.cacheDir,
+          repo: sourceRepoId,
+          files: resumableFiles,
+          onProgress: (event) => {
+            const { pct } = aggregator.update(event);
+            if (pct === null) return;
+            // One message per step, not per network chunk; but also one every
+            // few seconds while bytes keep arriving, so a meeting waiting on a
+            // big model on a slow line (Turbo: ~28 MB per step) sees it moving.
+            const now = Date.now();
+            if (pct === lastPct && now - lastPostAt < 3000) return;
+            lastPct = pct;
+            lastPostAt = now;
+            parentPort!.postMessage({ type: 'progress', modelId: msg.modelId, progress: pct });
+          },
+        });
+      }
+      pipe = await pipeline('automatic-speech-recognition', sourceRepoId, {
         dtype,
         session_options: sessionOptions,
         ...(useExternalDataFormat !== undefined
@@ -652,6 +714,14 @@ parentPort.on('message', async (msg: any) => {
       // Skip for Moonshine (cached IDs are null in that case anyway).
       if (cachedPromptIds && cachedPromptIds.length > 0 && !isMoonshineModel(loadedModelId)) {
         opts.prompt_ids = cachedPromptIds;
+      }
+
+      // Moonshine: set the token budget ourselves. Left to the library it is
+      // floor(whole seconds) * 6, which is ZERO for anything under a second —
+      // see moonshineTokenBudget.ts. msg.audio is already 16 kHz mono (the
+      // host resamples before posting).
+      if (isMoonshineModel(loadedModelId)) {
+        opts.max_new_tokens = moonshineMaxNewTokens(msg.audio?.length ?? 0, 16000);
       }
 
       const result = await pipe(msg.audio, opts);

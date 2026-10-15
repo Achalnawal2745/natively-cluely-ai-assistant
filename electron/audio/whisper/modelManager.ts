@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import type { WhisperModelId, WhisperModelInfo } from './types';
+import { isCorruptModelFailure } from './loadFailure';
 
 // env is configured lazily via configureTransformersCache()
 // We import the type only here; the actual require() happens at runtime.
@@ -59,7 +60,10 @@ export const MODEL_CATALOG: WhisperModelInfo[] = [
 
   // ── Distil-Whisper — same architecture as Whisper, distilled to 1/2 layers,
   //     ~6× faster CPU/GPU at near-equivalent WER. English-only.
-  { id: 'distil-whisper/distil-small.en',    name: 'Distil Small EN',  sizeMb: 164,  speed: 'very-fast', accuracy: 'high',      multilingual: false, status: 'missing', distilled: true },
+  //     Small EN loads onnx-community's export of the same weights: the
+  //     distil-whisper repo's encoder returns all 12 attention maps as outputs
+  //     (see the Whisper note below).
+  { id: 'distil-whisper/distil-small.en',    name: 'Distil Small EN',  sizeMb: 412,  speed: 'very-fast', accuracy: 'high',      multilingual: false, status: 'missing', distilled: true, repoId: 'onnx-community/distil-small.en', legacyFilesUsable: true },
   { id: 'distil-whisper/distil-medium.en',   name: 'Distil Medium EN', sizeMb: 383,  speed: 'fast',      accuracy: 'very-high', multilingual: false, status: 'missing', distilled: true },
   //   distil-large-v* are external-data checkpoints (fp32 encoder weights in a
   //   sibling encoder_model.onnx_data). Their OWN config.json self-declares it,
@@ -72,28 +76,46 @@ export const MODEL_CATALOG: WhisperModelInfo[] = [
 
   // ── Whisper Large v3 Turbo — 6× faster than Large v3, multilingual.
   //    External-data checkpoint: the fp32 encoder weights live in a sibling
-  //    `encoder_model.onnx_data` (~820MB) that transformers only fetches when
-  //    use_external_data_format is set. Unlike distil-large-v*/medium.en, this
-  //    repo's config.json does NOT self-declare it, so we must — otherwise only
-  //    the 0.4MB graph stub downloads and ORT aborts on load (filesystem error:
-  //    file_size encoder_model.onnx_data). The encoder is fp32 on every
-  //    platform (uniform-fp32 on Apple; encoder_model:'fp32' in the per-module
-  //    map elsewhere), so this key is platform-robust.
-  { id: 'onnx-community/whisper-large-v3-turbo-ONNX', name: 'Whisper Large v3 Turbo', sizeMb: 1031, speed: 'medium', accuracy: 'very-high', multilingual: true, status: 'missing', externalDataFormat: { 'encoder_model.onnx': true } },
+  //    `encoder_model.onnx_data` (2.55 GB) next to a 0.4 MB graph stub. The
+  //    repo's config.json declares it; it is recorded here as well so the
+  //    cache check requires the companion and a stub-only download never
+  //    reads as installed.
+  //
+  //    The id (kept, because Settings stores it) names the repo this used to
+  //    load, `-ONNX`. Its merged decoders take a `cache_position` input that
+  //    transformers.js 3.8.1 never sends, so every transcription failed with
+  //    "Missing the following inputs: cache_position" after a clean load.
+  //    The repo without the suffix has the same encoder and decoders without
+  //    that input: transcribes English and Indonesian correctly (measured
+  //    2026-10-14). Files left under the old repo are useless and are swept at
+  //    launch (OBSOLETE_MODEL_CACHE_DIRS). Real download ~2.99 GB.
+  { id: 'onnx-community/whisper-large-v3-turbo-ONNX', name: 'Whisper Large v3 Turbo', sizeMb: 2850, speed: 'slow', accuracy: 'very-high', multilingual: true, status: 'missing', externalDataFormat: { 'encoder_model.onnx': true }, repoId: 'onnx-community/whisper-large-v3-turbo', legacyFilesUsable: false },
 
   // ── Standard Whisper
-  { id: 'Xenova/whisper-tiny.en',    name: 'Tiny English',    sizeMb: 39,   speed: 'very-fast', accuracy: 'decent',   multilingual: false, status: 'missing' },
-  { id: 'Xenova/whisper-tiny',       name: 'Tiny Multilingual', sizeMb: 74, speed: 'very-fast', accuracy: 'decent',   multilingual: true,  status: 'missing' },
-  { id: 'Xenova/whisper-base.en',    name: 'Base English',    sizeMb: 142,  speed: 'fast',      accuracy: 'good',     multilingual: false, status: 'missing' },
-  { id: 'Xenova/whisper-base',       name: 'Base Multilingual', sizeMb: 145, speed: 'fast',     accuracy: 'good',     multilingual: true,  status: 'missing' },
-  { id: 'Xenova/whisper-small.en',   name: 'Small English',   sizeMb: 244,  speed: 'medium',    accuracy: 'high',     multilingual: false, status: 'missing' },
-  { id: 'Xenova/whisper-small',      name: 'Small Multilingual', sizeMb: 466, speed: 'medium',  accuracy: 'high',     multilingual: true,  status: 'missing' },
+  //    Ids are the Xenova repos the app first shipped with; the files come
+  //    from onnx-community's exports of the same weights. The Xenova encoders
+  //    return every layer's attention map as a graph output (Tiny 4, Base 6,
+  //    Small 12, Medium 24; Medium's are ~3.5 GB per call). onnx-community's
+  //    return the hidden state alone: Small measured 0.65 GB peak against
+  //    3.04 GB, identical encoder output, on an M4 (2026-10-14). Models
+  //    already downloaded from Xenova keep loading until the user reinstalls.
+  //    Sizes are fp32 encoder + q8 merged decoder, rounded down (the progress
+  //    bar needs a lower bound).
+  { id: 'Xenova/whisper-tiny.en',    name: 'Tiny English',    sizeMb: 60,   speed: 'very-fast', accuracy: 'decent',   multilingual: false, status: 'missing', repoId: 'onnx-community/whisper-tiny.en', legacyFilesUsable: true },
+  { id: 'Xenova/whisper-tiny',       name: 'Tiny Multilingual', sizeMb: 60, speed: 'very-fast', accuracy: 'decent',   multilingual: true,  status: 'missing', repoId: 'onnx-community/whisper-tiny', legacyFilesUsable: true },
+  { id: 'Xenova/whisper-base.en',    name: 'Base English',    sizeMb: 130,  speed: 'fast',      accuracy: 'good',     multilingual: false, status: 'missing', repoId: 'onnx-community/whisper-base.en', legacyFilesUsable: true },
+  { id: 'Xenova/whisper-base',       name: 'Base Multilingual', sizeMb: 130, speed: 'fast',     accuracy: 'good',     multilingual: true,  status: 'missing', repoId: 'onnx-community/whisper-base', legacyFilesUsable: true },
+  { id: 'Xenova/whisper-small.en',   name: 'Small English',   sizeMb: 486,  speed: 'medium',    accuracy: 'high',     multilingual: false, status: 'missing', repoId: 'onnx-community/whisper-small.en', legacyFilesUsable: true },
+  { id: 'Xenova/whisper-small',      name: 'Small Multilingual', sizeMb: 486, speed: 'medium',  accuracy: 'high',     multilingual: true,  status: 'missing', repoId: 'onnx-community/whisper-small', legacyFilesUsable: true },
   // whisper-medium.en puts the external-data split on the DECODER (its fp32
   // decoder_model_merged weights live in decoder_model_merged.onnx_data). Its
   // config self-declares it for download; recorded here so the cache check
   // requires the companion of whichever decoder layout it validates.
-  { id: 'Xenova/whisper-medium.en',  name: 'Medium English',  sizeMb: 1500, speed: 'slow',      accuracy: 'very-high', multilingual: false, status: 'missing', requiresAppleSilicon: true, externalDataFormat: { 'decoder_model_merged.onnx': true } },
-  { id: 'Xenova/whisper-medium',     name: 'Medium Multilingual', sizeMb: 1530, speed: 'slow',  accuracy: 'very-high', multilingual: true,  status: 'missing', requiresAppleSilicon: true },
+  // onnx-community has no medium.en, so this is still the Xenova export with
+  // 24 attention maps per call. Offered only where it is already installed:
+  // new installs get Medium Multilingual, which transcribes English too.
+  { id: 'Xenova/whisper-medium.en',  name: 'Medium English',  sizeMb: 1500, speed: 'slow',      accuracy: 'very-high', multilingual: false, status: 'missing', requiresAppleSilicon: true, externalDataFormat: { 'decoder_model_merged.onnx': true }, installedOnly: true },
+  { id: 'Xenova/whisper-medium',     name: 'Medium Multilingual', sizeMb: 1810, speed: 'slow',  accuracy: 'very-high', multilingual: true,  status: 'missing', requiresAppleSilicon: true, repoId: 'onnx-community/whisper-medium-ONNX', legacyFilesUsable: true },
 ];
 
 /**
@@ -142,8 +164,32 @@ export function configureTransformersCache(): void {
  * every model, which masked the path bug because the loader doesn't depend
  * on this check (it reads files directly via env.cacheDir).
  */
-function modelIdToCacheDir(modelId: WhisperModelId): string {
-  return modelId; // already in `<org>/<name>` shape
+function repoDir(cacheDir: string, repo: string): string {
+  return path.join(cacheDir, ...repo.split('/'));
+}
+
+function catalogEntry(modelId: string): WhisperModelInfo | undefined {
+  return MODEL_CATALOG.find(m => m.id === modelId);
+}
+
+/** The repo a model is downloaded from: its `repoId`, or the id itself. */
+export function getModelDownloadRepo(modelId: string): string {
+  return catalogEntry(modelId)?.repoId ?? modelId;
+}
+
+/**
+ * Repos whose files can serve this model, preferred first: the download repo,
+ * then the files a previous version left under the id, when they still work.
+ */
+function candidateRepos(modelId: string): string[] {
+  const m = catalogEntry(modelId);
+  if (!m?.repoId || m.repoId === modelId) return [modelId];
+  return m.legacyFilesUsable ? [m.repoId, modelId] : [m.repoId];
+}
+
+/** Every directory this model's files may sit in, used ones or not. */
+function allRepoDirsFor(modelId: string, cacheDir: string): string[] {
+  return [...new Set([getModelDownloadRepo(modelId), modelId])].map(r => repoDir(cacheDir, r));
 }
 
 // Maps `dtype` keyword to the ONNX filename suffix the loader will look for.
@@ -301,6 +347,46 @@ function isParakeetModelCached(modelDir: string): boolean {
 }
 
 /**
+ * Marker left inside a model's directory for as long as its download is in
+ * progress.
+ *
+ * WHY: transformers.js writes each file straight to its final name (no temp
+ * file, no length check), and every "is it installed" test here only asks
+ * whether the files are bigger than zero. Quit the app, lose the network or
+ * cancel half-way through a 1 GB download and what is left on disk looks
+ * exactly like an installed model: the next launch promoted it to "complete",
+ * skipped the download, and every load then failed with "Protobuf parsing
+ * failed". (Found on a real profile, 2026-10-14: a 2.1 MB encoder_model.onnx
+ * for whisper-small.en, reported as installed.)
+ *
+ * The marker is written before the first byte is fetched and removed only
+ * after a worker has loaded the finished files. While it exists the model is
+ * not cached, whatever else is in the directory.
+ *
+ * `cacheDir` is injectable so this is testable against a temp dir without an
+ * Electron `app`. The file is a plain marker — same on macOS and Windows.
+ */
+export const DOWNLOAD_INCOMPLETE_MARKER = '.natively-download-incomplete';
+
+function downloadMarkerPath(modelId: string, cacheDir: string): string {
+  return path.join(repoDir(cacheDir, getModelDownloadRepo(modelId)), DOWNLOAD_INCOMPLETE_MARKER);
+}
+
+export function markModelDownloadStarted(modelId: string, cacheDir: string = getModelsDir()): void {
+  const marker = downloadMarkerPath(modelId, cacheDir);
+  fs.mkdirSync(path.dirname(marker), { recursive: true });
+  fs.writeFileSync(marker, JSON.stringify({ startedAt: Date.now() }), 'utf8');
+}
+
+export function clearModelDownloadMarker(modelId: string, cacheDir: string = getModelsDir()): void {
+  try { fs.rmSync(downloadMarkerPath(modelId, cacheDir), { force: true }); } catch { /* absent is fine */ }
+}
+
+export function isModelDownloadIncomplete(modelId: string, cacheDir: string = getModelsDir()): boolean {
+  try { return fs.existsSync(downloadMarkerPath(modelId, cacheDir)); } catch { return false; }
+}
+
+/**
  * Returns true when the cache contains the ONNX files the active dtype will
  * actually load. When `dtype` is omitted (legacy callers), falls back to a
  * directory-non-empty check — preserves the previous contract.
@@ -313,10 +399,65 @@ function isParakeetModelCached(modelDir: string): boolean {
  */
 export function isModelCached(modelId: WhisperModelId, dtype?: string | Record<string, string>): boolean {
   const cacheDir = getModelsDir();
-  const modelDir = path.join(cacheDir, modelIdToCacheDir(modelId));
-  if (!fs.existsSync(modelDir)) return false;
+  return candidateRepos(modelId).some(repo => isRepoCached(modelId, repo, dtype, cacheDir));
+}
 
-  const sessionLayout = MODEL_CATALOG.find(m => m.id === modelId)?.sessionLayout;
+/**
+ * Whether the copy a download produces (the download repo) is complete. Unlike
+ * isModelCached, an older copy under the id does not count: this is what the
+ * download service checks, so "download" on a model that only has an older
+ * copy fetches the current one.
+ */
+export function isModelDownloadComplete(modelId: string, dtype?: string | Record<string, string>): boolean {
+  return isRepoCached(modelId, getModelDownloadRepo(modelId), dtype, getModelsDir());
+}
+
+/**
+ * True when the model works from a copy an earlier version downloaded, and a
+ * lighter current copy exists to download (see WhisperModelInfo.repoId).
+ * Settings offers it; nothing downloads it on its own.
+ */
+export function isModelUpgradeAvailable(
+  modelId: string,
+  dtype?: string | Record<string, string>,
+  cacheDir: string = getModelsDir(),
+): boolean {
+  const m = catalogEntry(modelId);
+  if (!m?.repoId || m.repoId === modelId || !m.legacyFilesUsable) return false;
+  return !isRepoCached(modelId, m.repoId, dtype, cacheDir) && isRepoCached(modelId, modelId, dtype, cacheDir);
+}
+
+/**
+ * The repo the worker should load for this model: the first candidate whose
+ * files are complete, else the download repo (the worker then downloads it).
+ * A machine that downloaded a model before its `repoId` existed keeps loading
+ * those files; one that has both loads the new ones.
+ */
+export function resolveModelSourceRepo(
+  modelId: string,
+  dtype?: string | Record<string, string>,
+  cacheDir: string = getModelsDir(),
+): string {
+  for (const repo of candidateRepos(modelId)) {
+    if (isRepoCached(modelId, repo, dtype, cacheDir)) return repo;
+  }
+  return getModelDownloadRepo(modelId);
+}
+
+function isRepoCached(
+  modelId: string,
+  repo: string,
+  dtype: string | Record<string, string> | undefined,
+  cacheDir: string,
+): boolean {
+  const modelDir = repoDir(cacheDir, repo);
+  if (!fs.existsSync(modelDir)) return false;
+  // A download that started and never finished. Every size check below would
+  // pass a truncated file, so this is the only thing that tells "interrupted"
+  // from "installed" — see markModelDownloadStarted.
+  if (fs.existsSync(path.join(modelDir, DOWNLOAD_INCOMPLETE_MARKER))) return false;
+
+  const sessionLayout = catalogEntry(modelId)?.sessionLayout;
   if (sessionLayout === 'nemotron-rnnt') return isNemotronModelCached(modelDir);
   if (sessionLayout === 'parakeet-tdt') return isParakeetModelCached(modelDir);
 
@@ -340,6 +481,50 @@ export function isModelCached(modelId: WhisperModelId, dtype?: string | Record<s
   // External-weight companion(s) of the encoder must exist too, else ORT aborts.
   if (!encoderData.every(present)) return false;
   return decoderOptions.some(opt => opt.every(present));
+}
+
+/**
+ * The large ONNX files a download of this model fetches, as paths inside its
+ * repo, for the worker's resumable downloader: the encoder and the merged
+ * decoder transformers.js loads, with their external-data companions. Empty
+ * for models that download through their own engine (Nemotron, Parakeet).
+ */
+export function getResumableDownloadFiles(modelId: string, dtype: string | Record<string, string>): string[] {
+  const m = catalogEntry(modelId);
+  const layout = m?.sessionLayout;
+  if (!m || layout === 'nemotron-rnnt' || layout === 'parakeet-tdt' || layout === 'single') return [];
+  const { encoder, encoderData, decoderOptions } = expectedOnnxFiles(dtype, m.externalDataFormat, layout);
+  return [encoder, ...encoderData, ...decoderOptions[0]].map(f => `onnx/${f}`);
+}
+
+/**
+ * Clean up after an interrupted download of this model, keeping what the
+ * resumable downloader can reuse (see deleteInterruptedDownloadKeepingParts).
+ * Touches only the download repo, never files an earlier version left under
+ * the id, which may be a working copy.
+ */
+export function deleteInterruptedModelDownload(modelId: string, cacheDir: string = getModelsDir()): void {
+  const { deleteInterruptedDownloadKeepingParts } = require('./resumableDownload') as typeof import('./resumableDownload');
+  deleteInterruptedDownloadKeepingParts(repoDir(cacheDir, getModelDownloadRepo(modelId)));
+}
+
+/**
+ * Remove everything a download of this model wrote, part files included: the
+ * files it produced failed to load as damaged, so the next attempt must not
+ * reuse any of them. Never touches an older copy under the id.
+ */
+export function discardModelDownload(modelId: string, cacheDir: string = getModelsDir()): void {
+  fs.rmSync(repoDir(cacheDir, getModelDownloadRepo(modelId)), { recursive: true, force: true });
+}
+
+/** The platform's active dtype, or undefined where it cannot be resolved (tests). */
+function activeDtype(): string | Record<string, string> | undefined {
+  try {
+    const { resolveInferenceConfig } = require('./inferenceConfig');
+    return resolveInferenceConfig().dtype;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -369,17 +554,17 @@ export function getAvailableModels(): WhisperModelInfo[] {
   // Resolve the active dtype lazily — avoids importing inferenceConfig at
   // module top (which would break the modelPreloader → modelManager require
   // chain on platforms where process info isn't yet available).
-  let dtype: string | Record<string, string> | undefined;
-  try {
-    const { resolveInferenceConfig } = require('./inferenceConfig');
-    dtype = resolveInferenceConfig().dtype;
-  } catch {
-    dtype = undefined; // fall back to legacy directory-non-empty check
-  }
-  return MODEL_CATALOG.filter(m => !m.hidden).map(m => ({
-    ...m,
-    status: isModelCached(m.id, dtype) ? 'available' : 'missing',
-  }));
+  // Undefined falls back to the legacy directory-non-empty check.
+  const dtype = activeDtype();
+  return MODEL_CATALOG.filter(m => !m.hidden).flatMap(m => {
+    const cached = isModelCached(m.id, dtype);
+    if (m.installedOnly && !cached) return [];
+    return [{
+      ...m,
+      status: cached ? 'available' as const : 'missing' as const,
+      upgradeAvailable: cached && dtype !== undefined && isModelUpgradeAvailable(m.id, dtype),
+    }];
+  });
 }
 
 /**
@@ -391,6 +576,11 @@ export function getAvailableModels(): WhisperModelInfo[] {
 export function getModelSizeBytes(modelId: string): number {
   const m = MODEL_CATALOG.find(x => x.id === modelId);
   return m ? Math.round(m.sizeMb * 1024 * 1024) : 0;
+}
+
+/** Catalog size in MB, or undefined for an unknown id (callers then use the flat memory floor). */
+export function getModelSizeMb(modelId: string): number | undefined {
+  return MODEL_CATALOG.find(x => x.id === modelId)?.sizeMb;
 }
 
 /**
@@ -411,11 +601,12 @@ export function getModelExternalDataFormat(
  * Deletes a downloaded model from the cache directory.
  */
 export function deleteModel(modelId: WhisperModelId): void {
-  const cacheDir = getModelsDir();
-  const modelDir = path.join(cacheDir, modelIdToCacheDir(modelId));
-  if (fs.existsSync(modelDir)) {
-    fs.rmSync(modelDir, { recursive: true, force: true });
-    console.log(`[modelManager] Deleted model: ${modelId}`);
+  // Both the download repo and any files an earlier version left under the id.
+  for (const modelDir of allRepoDirsFor(modelId, getModelsDir())) {
+    if (fs.existsSync(modelDir)) {
+      fs.rmSync(modelDir, { recursive: true, force: true });
+      console.log(`[modelManager] Deleted model: ${modelId} (${modelDir})`);
+    }
   }
 }
 
@@ -425,25 +616,33 @@ export function deleteModel(modelId: WhisperModelId): void {
  * transformers.js downloads land here keyed by model id, and nothing removes
  * them when the code that needed them goes. The intent classifier's MobileBERT
  * was removed on 2026-09-05; every machine that ever warmed it still carries a
- * 94 MB copy in this cache. Listed by exact id so the sweep can only ever touch
- * models that were deliberately retired, never a Whisper or Nemotron download.
+ * 94 MB copy in this cache. Listed by exact repo so the sweep can only ever
+ * touch downloads that were deliberately retired, never one a model still loads.
  */
 const OBSOLETE_MODEL_CACHE_DIRS: readonly string[] = [
   'Xenova/mobilebert-uncased-mnli',
+  // Large v3 Turbo's first repo: loads, then fails every transcription
+  // (cache_position). Up to ~3 GB per machine. The catalog entry now
+  // downloads onnx-community/whisper-large-v3-turbo instead.
+  'onnx-community/whisper-large-v3-turbo-ONNX',
 ];
 
 /**
- * Remove retired model caches. Returns the ids it removed. Safe to call on
- * every launch: a missing directory is a no-op, and a failure to remove one
- * (a Windows handle still open, a permission error) is logged and skipped so
- * a stale cache can never block startup.
+ * Remove retired model caches, and older copies of a model whose current
+ * repo is fully installed (see supersededModelCacheDirs). Returns the repos it
+ * removed. Safe to call on every launch: a missing directory is a no-op, and a
+ * failure to remove one (a Windows handle still open, a permission error) is
+ * logged and skipped so a stale cache can never block startup.
  *
- * `cacheDir` is injectable so the sweep can be tested against a temp dir
- * without an Electron `app`.
+ * `cacheDir` and `dtype` are injectable so the sweep can be tested against a
+ * temp dir without an Electron `app`.
  */
-export function purgeObsoleteModelCaches(cacheDir: string = getModelsDir()): string[] {
+export function purgeObsoleteModelCaches(
+  cacheDir: string = getModelsDir(),
+  dtype: string | Record<string, string> | undefined = activeDtype(),
+): string[] {
   const removed: string[] = [];
-  for (const id of OBSOLETE_MODEL_CACHE_DIRS) {
+  for (const id of [...OBSOLETE_MODEL_CACHE_DIRS, ...supersededModelCacheDirs(cacheDir, dtype)]) {
     const dir = path.join(cacheDir, ...id.split('/'));
     try {
       if (!fs.existsSync(dir)) continue;
@@ -458,26 +657,40 @@ export function purgeObsoleteModelCaches(cacheDir: string = getModelsDir()): str
 }
 
 /**
- * Errors that mean "the bytes on disk are not a usable model", as opposed to
- * "this machine cannot run models at all".
- *
- * ORT reports a truncated .onnx as a protobuf failure, because it walks the
- * file and hits EOF mid-message. That is indistinguishable at the API level
- * from any other malformed file, and the distinction does not matter here —
- * every case is fixed by fetching the file again.
- *
- * Deliberately does NOT match the macOS 12 / libonnxruntime symbol errors:
- * those are environment failures, and wiping a perfectly good download because
- * the host cannot load ANY model would turn one bad message into a bad message
- * plus a lost 350 MB.
+ * Older downloads of a model whose current repo is now fully installed next to
+ * them. The resolver already prefers the current repo, so nothing opens these.
+ * Needs the active dtype to tell "fully installed"; without it, sweeps nothing.
  */
-export function isCorruptModelError(message: string): boolean {
-  const m = (message || '').toLowerCase();
-  if (m.includes('symbol not found') || m.includes('libonnxruntime') || m.includes('to_chars')) return false;
-  return m.includes('protobuf parsing failed')
-    || m.includes('failed to load model')  // ORT's generic load-time wrapper
-    || m.includes('invalid model')
-    || m.includes('no such file or directory');
+function supersededModelCacheDirs(
+  cacheDir: string,
+  dtype: string | Record<string, string> | undefined,
+): string[] {
+  if (!dtype) return [];
+  return MODEL_CATALOG
+    .filter(m => m.repoId && m.repoId !== m.id && m.legacyFilesUsable)
+    .filter(m => isRepoCached(m.id, m.repoId!, dtype, cacheDir))
+    .map(m => m.id);
+}
+
+/**
+ * Errors that mean "the bytes on disk are not a usable model", as opposed to
+ * "this machine cannot run models at all" or "this load failed for a reason
+ * that has nothing to do with the files".
+ *
+ * The classification lives in loadFailure.ts. It used to match the phrase
+ * "failed to load model" here, on the belief that it was ONNX Runtime's own
+ * wrapper. It is the prefix whisperWorker.ts puts on EVERY init error, so every
+ * failure — out of memory, no network, a file still in use, a missing Windows
+ * runtime DLL — was classified as corrupt and the model directory was deleted.
+ * Reinstalling then failed the same way and deleted it again.
+ *
+ * Only positive evidence of bad bytes purges now. Deliberately does NOT match
+ * the macOS 12 / libonnxruntime symbol errors either: wiping a perfectly good
+ * download because the host cannot load ANY model would turn one bad message
+ * into a bad message plus a lost 350 MB.
+ */
+export function isCorruptModelError(message: string, platform: NodeJS.Platform = process.platform): boolean {
+  return isCorruptModelFailure(message, { platform });
 }
 
 /**
@@ -497,8 +710,18 @@ export function isCorruptModelError(message: string): boolean {
  */
 export function purgeCorruptModel(modelId: WhisperModelId, reason: string): boolean {
   try {
-    const modelDir = path.join(getModelsDir(), modelIdToCacheDir(modelId));
-    if (!fs.existsSync(modelDir)) return false;
+    // The copy that was being loaded: the resolver picks it the same way here
+    // as it did for the worker, since nothing on disk changed in between. When
+    // that directory is gone, any other copy on disk is incomplete (the
+    // resolver would have picked a complete one), so that one goes instead.
+    const cacheDir = getModelsDir();
+    const resolved = resolveModelSourceRepo(modelId, activeDtype(), cacheDir);
+    // Never a folder a download is still writing: its files are not the ones
+    // that failed, and deleting them under the downloader breaks it.
+    const modelDir = [resolved, ...candidateRepos(modelId)]
+      .map(r => repoDir(cacheDir, r))
+      .find(d => fs.existsSync(d) && !fs.existsSync(path.join(d, DOWNLOAD_INCOMPLETE_MARKER)));
+    if (!modelDir) return false;
     fs.rmSync(modelDir, { recursive: true, force: true });
     console.warn(`[modelManager] Purged corrupt model ${modelId} — ${reason}`);
     return true;

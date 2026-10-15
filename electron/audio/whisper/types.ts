@@ -87,11 +87,48 @@ export interface WhisperModelInfo {
    * real downloaded model.
    */
   hidden?: boolean;
+  /**
+   * Hugging Face repo the files come from, when it is not `id`.
+   *
+   * `id` is what Settings stores, so it never changes once shipped. The repo
+   * behind it can: the Xenova Whisper exports return every encoder layer's
+   * attention map as a graph output (Medium: 24 maps, ~3.5 GB per call), and
+   * the onnx-community exports of the same weights return only the hidden
+   * state. Unset = download from `id`.
+   */
+  repoId?: string;
+  /**
+   * Whether files already downloaded under `id` (before `repoId` existed) are
+   * still loaded. True for the Xenova Whisper exports, which are heavier but
+   * correct. False for the old Large v3 Turbo repo, whose decoder needs an
+   * input transformers.js never sends, so every call failed.
+   */
+  legacyFilesUsable?: boolean;
+  /**
+   * Shown in the picker only on machines that already have it installed. For
+   * a model with no lighter export, kept working for the people using it but
+   * no longer offered to new installs.
+   */
+  installedOnly?: boolean;
+  /**
+   * Set by getAvailableModels: installed from an older, heavier copy, with the
+   * current copy available to download. Settings shows an Update button.
+   */
+  upgradeAvailable?: boolean;
 }
 
 export interface WorkerInitMessage {
   type: 'init';
   modelId: string;
+  // The repo the worker loads, when it differs from modelId (see
+  // WhisperModelInfo.repoId). Progress and errors still report modelId.
+  sourceRepoId?: string;
+  // ONNX intra-op threads for the pipeline() path. Unset = the shared default.
+  intraOpThreads?: number;
+  // Large files (paths inside the repo) the worker downloads itself, with
+  // resume, before pipeline() runs. Set only when the model is not installed.
+  // See resumableDownload.ts.
+  resumableFiles?: string[];
   cacheDir: string;
   executionProviders?: string[];
   // Per-module dtype map (see inferenceConfig.ts). String applies to all

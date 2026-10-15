@@ -87,11 +87,27 @@ function readBoolEnv(name: string, fallback: boolean): boolean {
  *   Parakeet RNN-T puts ~67% of runtime in greedy decoding vs ~33% in the
  *   encoder, and pinning that loop to one thread is what made Nemotron feel
  *   slow next to CTC models of the same parameter count.
+ *
+ * 'whisper-encode' — Whisper and Distil-Whisper through transformers.js. The
+ *   encoder pads every call to 30 s of audio, so a call costs the same for a
+ *   one-word partial as for a full sentence, and on one thread it is longer
+ *   than the 1.5 s partial cadence for Small and up. Measured on an M4
+ *   MacBook Air (4 performance cores), fp32 encoder + q8 decoder, 2026-10-14,
+ *   time per transcription call:
+ *
+ *     model      1 thread    4 threads
+ *     Small      5-11 s      3.5-4.6 s   (Indonesian, 7-12 s clips)
+ *     Medium     ~13 s       ~4.3 s      (encoder alone)
+ *     Turbo      24-28 s     8-11 s
+ *     Base       1.4-4 s     1.3-2.6 s
+ *
+ *   Moonshine is NOT in this group: its encoder sizes to the clip, and more
+ *   threads measured no faster (174 ms on one thread).
  */
-export type OnnxWorkload = 'default' | 'rnnt-decode';
+export type OnnxWorkload = 'default' | 'rnnt-decode' | 'whisper-encode';
 
 /**
- * Intra-op default for the transducer decode loop.
+ * Intra-op default for the transducer decode loop and the Whisper encoder.
  *
  * Measured on an M-series (10 logical / 4 performance cores), Nemotron int4,
  * CPU EP, 2.46s fixture, median of 3 after warmup — identical transcript at
@@ -108,7 +124,7 @@ export type OnnxWorkload = 'default' | 'rnnt-decode';
  * Halving logical cores approximates the perf-core count portably (Apple's
  * hw.perflevel0 has no cross-platform equivalent).
  */
-function defaultRnntIntraOpThreads(): number {
+function defaultPerfCoreIntraOpThreads(): number {
     let logical = 4;
     try {
         logical = (require('os') as typeof import('os')).cpus()?.length || 4;
@@ -127,7 +143,7 @@ function defaultRnntIntraOpThreads(): number {
  * measurements above stay reproducible without a new build.
  */
 export function getBoundedOnnxSessionOptions(workload: OnnxWorkload = 'default'): OnnxThreadBounds {
-    const intraDefault = workload === 'rnnt-decode' ? defaultRnntIntraOpThreads() : 1;
+    const intraDefault = workload === 'default' ? 1 : defaultPerfCoreIntraOpThreads();
     return {
         intraOpNumThreads: readIntEnv('NATIVELY_ONNX_INTRA_OP_THREADS', intraDefault),
         interOpNumThreads: readIntEnv('NATIVELY_ONNX_INTER_OP_THREADS', 1),
@@ -539,6 +555,50 @@ export function hasEnoughMemoryForOnnxSession(extraGB: number = 0): boolean {
  */
 export function getMinFreeGBForOnnxSession(extraGB: number = 0): number {
     return readMinFreeGB() + sanitizeExtraGB(extraGB);
+}
+
+// ── Model-size-aware floor for the local STT models ────────────────────────
+//
+// The shared floor above is one number (2 GB) for every model. That is the
+// right order of magnitude for a 1 GB Whisper Large v3 Turbo and far too much
+// for the 26 MB Moonshine Tiny that the app itself recommends for small
+// machines: an 8 GB laptop with a call client and a browser open routinely has
+// less than 2 GB available, so local STT refused to start on exactly the
+// hardware the smallest model exists for.
+//
+// A model needs roughly its own file size again in working memory once loaded
+// (weights plus session buffers), so the floor is a fixed margin plus twice
+// the catalog size — and never MORE than the shared floor, so no model is
+// refused under conditions that admit it today. This only ever lowers the bar
+// for small models:
+//
+//   Moonshine Tiny   26 MB  -> 0.55 GB      Whisper Small     486 MB -> 1.45 GB
+//   Moonshine Base   60 MB  -> 0.62 GB      Parakeet TDT v3   670 MB -> 1.81 GB
+//   Whisper Base    130 MB  -> 0.75 GB      Large v3 Turbo   2850 MB -> 2.00 GB (shared floor)
+//
+// NATIVELY_ONNX_MIN_FREE_GB still sets the ceiling, so an operator override
+// (including 0, which disables the gate) keeps working.
+const MODEL_FLOOR_MARGIN_GB = 0.5;
+const MODEL_FLOOR_SIZE_FACTOR = 2;
+
+/** Available-memory floor (GB) for loading a model of `modelSizeMb`. Unknown size → the shared floor. */
+export function getMinFreeGBForModelSize(modelSizeMb: number | undefined | null): number {
+    const shared = readMinFreeGB();
+    if (typeof modelSizeMb !== 'number' || !Number.isFinite(modelSizeMb) || modelSizeMb <= 0) return shared;
+    const needed = MODEL_FLOOR_MARGIN_GB + (modelSizeMb / 1024) * MODEL_FLOOR_SIZE_FACTOR;
+    return Math.min(shared, Math.round(needed * 100) / 100);
+}
+
+/**
+ * `hasEnoughMemoryForOnnxSession` for one specific local STT model. Fails OPEN
+ * on a measurement error, exactly like the shared check.
+ */
+export function hasEnoughMemoryForModelSize(modelSizeMb: number | undefined | null): boolean {
+    try {
+        return getAvailableMemoryGB() >= getMinFreeGBForModelSize(modelSizeMb);
+    } catch {
+        return true;
+    }
 }
 
 /** Negative, NaN or non-finite headroom must never LOWER the shared floor. */

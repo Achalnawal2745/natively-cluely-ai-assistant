@@ -80,7 +80,14 @@ function completePackage(t, platform) {
   const native = platform === 'darwin'
     ? gate.REQUIRED_UNPACKED_NATIVE_DARWIN
     : [...gate.REQUIRED_UNPACKED_NATIVE_WIN32, ...gate.REQUIRED_UNPACKED_NATIVE_WIN32_ANY.map((any) => any[0])];
-  for (const rel of [...gate.REQUIRED_UNPACKED_NATIVE_COMMON, ...native]) put(unpacked, rel);
+  // An entry that names a DIRECTORY other entries live in (onnxruntime-node's
+  // win32 bin folder, which also holds the Visual C++ runtime DLLs) exists as
+  // soon as those are written — writing it as a file would block them.
+  const nativeAll = [...gate.REQUIRED_UNPACKED_NATIVE_COMMON, ...native];
+  for (const rel of nativeAll) {
+    if (nativeAll.some((other) => other.startsWith(`${rel}/`))) continue;
+    put(unpacked, rel);
+  }
   for (const rel of gate.REQUIRED_WORKER_FILES) put(unpacked, rel);
   put(unpacked, GGUF_WORKER);
   if (platform === 'darwin') {

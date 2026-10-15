@@ -25,6 +25,7 @@ import { app } from 'electron';
 import { IEmbeddingProvider } from './IEmbeddingProvider';
 import { embeddingSpaceKey } from '../embeddingSpace';
 import { acquireOnnxSlot, acquireOnnxSlotWithin, hasEnoughMemoryForOnnxSession, getMinFreeGBForOnnxSession } from '../../utils/onnxThreadConfig';
+import { retireOnnxWorkerAndWait, trackOnnxWorker } from '../../utils/onnxWorkerShutdown';
 import {
     clearLoadSentinel as clearOnnxLoadSentinel,
     consumePoisonedOnnxLoad,
@@ -51,6 +52,14 @@ let startupPoisoned = false;
  * its own timeout, so this is only a backstop against a wedged thread.
  */
 const DISPOSE_DRAIN_MAX_MS = 120_000;
+/**
+ * How long a teardown waits for a worker that was asked to exit. An idle
+ * worker is gone in milliseconds; one still inside a native call takes as long
+ * as that call. Past this the teardown stops WAITING — the worker is never
+ * killed (see utils/onnxWorkerShutdown.ts), and its ONNX slot is still only
+ * released when it has really exited.
+ */
+const WORKER_EXIT_WAIT_MS = 10_000;
 
 /**
  * Providers whose worker thread is alive, for the quit drain below.
@@ -235,7 +244,7 @@ export class LocalEmbeddingProvider implements IEmbeddingProvider {
       // ORT abort that kills the process before the JS `ready` arrives
       // leaves a recoverable breadcrumb for the next launch's consume.
       writeOnnxLoadSentinel('embeddings', this.model);
-      const spawned = new Worker(this.getWorkerPath());
+      const spawned = trackOnnxWorker(new Worker(this.getWorkerPath()));
       this.worker = spawned;
       liveProviders().add(this);
       spawned.once('exit', () => { if (this.worker === spawned || this.worker === null) liveProviders().delete(this); });
@@ -360,12 +369,9 @@ export class LocalEmbeddingProvider implements IEmbeddingProvider {
       return;
     }
 
-    // Nothing owed — terminate now.
+    // Nothing owed — stop it now.
     if (this.pendingRequests.size === 0) {
-      try { await worker.terminate(); } catch { /* already gone */ }
-      if (pendingSlotRelease) {
-        try { pendingSlotRelease(); } catch { /* best effort */ }
-      }
+      await this.stopWorkerThenReleaseSlot(worker, pendingSlotRelease);
       return;
     }
 
@@ -403,11 +409,29 @@ export class LocalEmbeddingProvider implements IEmbeddingProvider {
     while (this.pendingRequests.size > 0 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    try { await worker.terminate(); } catch { /* already gone */ }
-    // Release the slot only after the worker has exited — preserving memory safety.
-    if (slotRelease) {
-      try { slotRelease(); } catch { /* best effort */ }
-    }
+    await this.stopWorkerThenReleaseSlot(worker, slotRelease);
+  }
+
+  /**
+   * Ask the worker to exit and hand its ONNX slot back once it HAS exited.
+   *
+   * Never worker.terminate(). "Nothing owed" and "the drain deadline passed"
+   * are both statements about this object's bookkeeping, not about what the
+   * worker thread is doing: it can be inside a native session load that no
+   * request is waiting on, or inside the very run() the deadline gave up on.
+   * Terminating there aborts the whole app (utils/onnxWorkerShutdown.ts).
+   *
+   * The slot is released only after the worker has exited — so no replacement
+   * can claim it while this worker's session is still in memory. If the worker
+   * outlasts the wait, the release moves onto its exit event instead of being
+   * forced.
+   */
+  private async stopWorkerThenReleaseSlot(worker: Worker, slotRelease?: (() => void) | null): Promise<void> {
+    const release = () => { if (slotRelease) { try { slotRelease(); } catch { /* best effort */ } } };
+    const gone = await retireOnnxWorkerAndWait(worker, WORKER_EXIT_WAIT_MS);
+    if (gone) { release(); return; }
+    console.warn('[LocalEmbeddingProvider] A retired worker is still running a native call; its ONNX slot is released when it exits.');
+    worker.once('exit', release);
   }
 
   private rejectAllPending(err: Error): void {
@@ -687,8 +711,14 @@ export class LocalEmbeddingProvider implements IEmbeddingProvider {
    * load sentinel behind, so the next launch skipped local embedding.
    *
    * So: refuse new requests, let the ones already sent finish (each is one
-   * batch), then terminate a worker that is idle in its message loop. Bounded:
-   * a wedged worker must not hold the quit hostage.
+   * batch), then ask the worker to exit and wait until it has. Bounded: a
+   * wedged worker must not hold the quit hostage.
+   *
+   * 2026-10-14: the last step used to be worker.terminate(). On a timed-out
+   * drain that is terminate() on a worker still inside run() — the abort this
+   * method exists to prevent, moved a few seconds later. It is asked to exit
+   * instead; if it has not gone by the deadline the outcome is 'timed-out' and
+   * the quit proceeds without killing it here.
    */
   async shutdownForQuit(maxWaitMs: number): Promise<'idle' | 'drained' | 'timed-out'> {
     this.closingForQuit = true;
@@ -699,12 +729,15 @@ export class LocalEmbeddingProvider implements IEmbeddingProvider {
     while (this.pendingRequests.size > 0 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    const outcome = this.pendingRequests.size > 0 ? 'timed-out' : hadWork ? 'drained' : 'idle';
+    const drained = this.pendingRequests.size === 0;
     this.worker = null;
     this.loadingPromise = null;
     try { clearOnnxLoadSentinel('embeddings', this.model); } catch { /* best effort */ }
-    try { await worker.terminate(); } catch { /* already gone */ }
+    // At least a short wait even when the drain used the whole budget: an idle
+    // worker needs a moment to see the message and leave.
+    const gone = await retireOnnxWorkerAndWait(worker, Math.max(250, deadline - Date.now()));
     liveProviders().delete(this);
+    const outcome = !drained || !gone ? 'timed-out' : hadWork ? 'drained' : 'idle';
     return outcome;
   }
 

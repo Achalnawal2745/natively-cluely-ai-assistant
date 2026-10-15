@@ -8,14 +8,19 @@
  */
 const { buildForAfterPack } = require('./build-apple-speech.js');
 const adHocSignModule = require('./ad-hoc-sign.js');
+// Windows targets only (returns at once for macOS): the Visual C++ runtime
+// onnxruntime-node needs, copied next to its binaries. Runs before signing so
+// nothing is added to the app after it.
+const { bundleVcRuntimeForAfterPack } = require('./bundle-vc-runtime.cjs');
 
 const adHocSign = adHocSignModule.default || adHocSignModule;
 
 async function runAfterPack(
   context,
-  { buildHelper = buildForAfterPack, signApp = adHocSign } = {}
+  { buildHelper = buildForAfterPack, signApp = adHocSign, bundleVcRuntime = bundleVcRuntimeForAfterPack } = {}
 ) {
   await buildHelper(context);
+  await bundleVcRuntime(context);
   await signApp(context);
 }
 

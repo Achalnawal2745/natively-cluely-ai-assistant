@@ -168,6 +168,14 @@ const REQUIRED_UNPACKED_NATIVE_WIN32 = [
   'node_modules/onnxruntime-node/bin/napi-v6/win32',
   'node_modules/@img/sharp-win32-x64/lib',
   'node_modules/sqlite-vec-windows-x64/vec0.dll',
+  // The Visual C++ runtime onnxruntime-node's binaries import. Not part of any
+  // npm package: scripts/bundle-vc-runtime.cjs copies them in during afterPack.
+  // Without them every local model fails to load on a PC that has never had
+  // the Visual C++ Redistributable installed.
+  'node_modules/onnxruntime-node/bin/napi-v6/win32/x64/msvcp140.dll',
+  'node_modules/onnxruntime-node/bin/napi-v6/win32/x64/msvcp140_1.dll',
+  'node_modules/onnxruntime-node/bin/napi-v6/win32/x64/vcruntime140.dll',
+  'node_modules/onnxruntime-node/bin/napi-v6/win32/x64/vcruntime140_1.dll',
 ];
 // native-module ships one of two ABI variants per arch (index.js tries msvc
 // first, falls back to gnu) — checked with checkAny, not checkFile.
