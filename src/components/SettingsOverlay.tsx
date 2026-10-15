@@ -804,6 +804,16 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
             .catch(() => { if (live) setFollowMeetingMute(true); });
         return () => { live = false; };
     }, []);
+    // Dictation (Settings › Audio; main: services/dictation). Off unless turned
+    // on. Same save-first pattern as Follow the meeting app's mute.
+    const [dictationEnabled, setDictationEnabled] = useState<boolean | null>(null);
+    useEffect(() => {
+        let live = true;
+        window.electronAPI?.getDictationEnabled?.()
+            .then((on) => { if (live) setDictationEnabled(on === true); })
+            .catch(() => { if (live) setDictationEnabled(false); });
+        return () => { live = false; };
+    }, []);
     // Windows-only. Defaults to true to match the main-process policy (unset ⟹
     // on), so the toggle doesn't flash off before the IPC read lands.
     const [shortcutGuard, setShortcutGuard] = useState(true);
@@ -3554,6 +3564,20 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                         />
                                                     </div>
                                                 </div>
+                                                {/* Dictation: taken from other apps only while Settings › Audio › Dictation is on. */}
+                                                <div className="flex items-center justify-between py-1.5 group">
+                                                    <div className="flex items-center gap-3">
+                                                        <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Mic size={14} /></span>
+                                                        <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">{t('Dictate to Clipboard')}</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        {renderShortcutConflictBadge('dictation')}
+                                                        <KeyRecorder
+                                                            currentKeys={shortcuts.dictation}
+                                                            onSave={(keys) => updateShortcut('dictation', keys)}
+                                                        />
+                                                    </div>
+                                                </div>
                                             </div>
                                         </div>
 
@@ -4531,6 +4555,40 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                                 .catch(() => setFollowMeetingMute(was));
                                                         }}
                                                         className={followMeetingMute ? 'bg-accent-primary border border-transparent' : 'bg-bg-toggle-switch border border-border-muted'}
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            {/* Dictation: a shortcut that copies what you say. Natively
+                                                never pastes or types into another app; you paste. */}
+                                            <div className="rounded-xl border border-border-subtle bg-bg-card">
+                                                <div className="flex items-center justify-between px-4 py-3">
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle text-text-primary flex items-center justify-center shrink-0">
+                                                            <Mic size={20} />
+                                                        </div>
+                                                        <div>
+                                                            <h3 className="text-sm font-bold text-text-primary">{t('Dictation')}</h3>
+                                                            <p className="text-xs text-text-secondary mt-0.5">
+                                                                {t('Press {keys}, speak, then press it again. Natively tidies what you said and copies it, ready to paste with {paste}. Not during a meeting.')
+                                                                    .replace('{keys}', (shortcuts.dictation ?? []).join(isMac ? '' : '+') || t('the dictation shortcut'))
+                                                                    .replace('{paste}', isMac ? '⌘V' : 'Ctrl+V')}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    <SettingsToggle
+                                                        checked={!!dictationEnabled}
+                                                        label={t('Dictation')}
+                                                        disabled={dictationEnabled === null}
+                                                        onChange={() => {
+                                                            const was = dictationEnabled;
+                                                            if (was === null) return;
+                                                            setDictationEnabled(!was);
+                                                            window.electronAPI?.setDictationEnabled?.(!was)
+                                                                .then((r) => { if (!r?.success) setDictationEnabled(was); })
+                                                                .catch(() => setDictationEnabled(was));
+                                                        }}
+                                                        className={dictationEnabled ? 'bg-accent-primary border border-transparent' : 'bg-bg-toggle-switch border border-border-muted'}
                                                     />
                                                 </div>
                                             </div>

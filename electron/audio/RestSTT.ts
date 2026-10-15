@@ -415,6 +415,16 @@ export class RestSTT extends EventEmitter {
         this.flushAndUpload('speech end');
     }
 
+    /**
+     * An upload is on its way, queued behind one, or held by a rate limit:
+     * a transcript may still come. Dictation's last-words wait reads it
+     * (services/dictation/dictationSession.ts); nothing on the meeting path does.
+     */
+    public hasPendingWork(): boolean {
+        if (!this.isActive) return false;
+        return this.isUploading || this.flushPending || (Date.now() < this.rateLimitedUntil && this.totalBufferedBytes > 0);
+    }
+
     public finalize(): void {
         if (!this.isActive) return;
         console.log(`${this.logTag} Finalize — flushing buffer immediately`);

@@ -599,38 +599,54 @@ export class CalendarManager extends EventEmitter {
         this.notificationSuppressed = isSuppressed;
     }
 
+    /** Occurrences (event id + start) already reminded: a re-plan never repeats one. */
+    private remindedOccurrences = new Set<string>();
+
+    /** The events the reminders were last scheduled for, so a new lead time re-plans them. */
+    private reminderEvents: CalendarEvent[] = [];
+
+    /** Settings › Calendar's reminder lead time (1, 2 or 5 minutes; unset = 2). */
+    private reminderLeadMinutes(): number {
+        try {
+            const { reminderMinutes } = require('./meetingDetection/meetingOffer');
+            const { SettingsManager } = require('./SettingsManager');
+            return reminderMinutes(SettingsManager.getInstance().get('calendarReminderMinutes'));
+        } catch {
+            return 2;
+        }
+    }
+
+    /** The lead time changed: the same events, new reminder times. */
+    public rescheduleReminders(): void {
+        this.scheduleReminders(this.reminderEvents);
+    }
+
     private scheduleReminders(events: CalendarEvent[]) {
         // Clear existing
         this.reminderTimeouts.forEach(t => clearTimeout(t));
         this.reminderTimeouts = [];
+        this.reminderEvents = events;
 
         const now = Date.now();
+        const leadMinutes = this.reminderLeadMinutes();
+        const { planReminders, pruneReminded, reminderKey } = require('./meetingDetection/meetingOffer');
+        pruneReminded(this.remindedOccurrences, now);
 
-        events.forEach(event => {
-            const startStr = event.startTime;
-            if (!startStr) return;
-
-            const startTime = new Date(startStr).getTime();
-            // Reminder time: 2 minutes before
-            const reminderTime = startTime - (2 * 60 * 1000);
-
-            if (reminderTime > now) {
-                const delay = reminderTime - now;
-                // Only schedule if within next 24h (which fetch already limits)
-                if (delay < 24 * 60 * 60 * 1000) {
-                    const timeout = setTimeout(() => {
-                        this.showNotification(event);
-                    }, delay);
-                    this.reminderTimeouts.push(timeout);
-                }
-            }
-        });
+        // The chosen lead before each start (2 minutes unless changed), within
+        // the next 24h, skipping occurrences already reminded.
+        for (const { event, delayMs } of planReminders(events, now, leadMinutes, this.remindedOccurrences) as Array<{ event: CalendarEvent; delayMs: number }>) {
+            const timeout = setTimeout(() => {
+                this.remindedOccurrences.add(reminderKey(event));
+                this.showNotification(event, leadMinutes);
+            }, delayMs);
+            this.reminderTimeouts.push(timeout);
+        }
     }
 
     /** The last reminder shown, kept referenced so its buttons still work. */
     private reminderNotification: unknown = null;
 
-    private showNotification(event: CalendarEvent) {
+    private showNotification(event: CalendarEvent, leadMinutes: number = 2) {
         // A system notification is its own OS window (and it chimes), outside
         // the content protection Undetectable mode relies on, so it would show
         // in a screen share. The launcher's calendar card still counts down.
@@ -646,9 +662,11 @@ export class CalendarManager extends EventEmitter {
             const { lastTimeNotificationLine } = require('./meeting/recurringMeetings');
             lastTime = lastTimeNotificationLine(event);
         } catch { /* a recap never blocks the reminder */ }
+        let lead = leadMinutes === 1 ? '1 minute' : `${leadMinutes} minutes`;
+        try { lead = require('./meetingDetection/meetingOffer').reminderLeadText(leadMinutes); } catch { /* the plain wording above */ }
         const notif = new Notification({
             title: 'Meeting starting soon',
-            body: lastTime ? `"${event.title}" starts in 2 minutes.\n${lastTime}` : `"${event.title}" starts in 2 minutes. Start Natively?`,
+            body: lastTime ? `"${event.title}" starts in ${lead}.\n${lastTime}` : `"${event.title}" starts in ${lead}. Start Natively?`,
             actions: [
                 { type: 'button', text: 'Start Meeting' },
                 { type: 'button', text: 'Dismiss' },

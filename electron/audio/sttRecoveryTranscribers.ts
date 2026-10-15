@@ -150,6 +150,17 @@ export function currentRecoveryPlan(source: SttSource, ctx: RecoveryContext): Re
     });
 }
 
+/**
+ * Live stand-ins for a channel whose provider is down (sttFailover.ts): the
+ * recovery plan without the failing provider itself, so the same privacy rule
+ * holds (local-only transcription never reaches a cloud provider).
+ */
+export function failoverCandidates(source: SttSource, ctx: RecoveryContext): string[] {
+    return currentRecoveryPlan(source, ctx)
+        .filter((entry) => entry.kind !== 'same-provider' && entry.id !== ctx.effectiveProvider)
+        .map((entry) => entry.id);
+}
+
 /** Transcribers for one recovery of `source`, in the order the plan allows. */
 export function buildRecoveryTranscribers(source: SttSource, ctx: RecoveryContext): RecoveryTranscriber[] {
     const { CredentialsManager } = require('../services/CredentialsManager');
@@ -171,4 +182,17 @@ export function buildRecoveryTranscribers(source: SttSource, ctx: RecoveryContex
             },
         ),
     );
+}
+
+/**
+ * A private instance of provider `id` for `source`, built from the saved
+ * settings like the recovery ones, or null when it is not set up. Dictation
+ * (services/dictation) streams into one, never wired to a meeting; a live
+ * failover stand-in (sttFailover.ts) is one too, fed the meeting's channel
+ * only while that channel's own provider is down.
+ */
+export function createPrivateSttInstance(id: string, source: SttSource): ReplayableStt | null {
+    const { CredentialsManager } = require('../services/CredentialsManager');
+    const { SettingsManager } = require('../services/SettingsManager');
+    return createInstance(id, source, CredentialsManager.getInstance(), SettingsManager.getInstance());
 }

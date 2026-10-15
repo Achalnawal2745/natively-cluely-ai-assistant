@@ -45,6 +45,13 @@ export interface AppSettings {
     // microphone use) to link a session to its calendar event exactly and to
     // offer to start one. Local only. Unset = on.
     meetingDetectionEnabled?: boolean;
+    // Start automatically (2026-10-15, Settings › Calendar under Detect
+    // meetings): a detected call starts Natively after a 10 s countdown on the
+    // "meeting detected" offer unless Not now is pressed. Unset = off.
+    meetingAutoStartEnabled?: boolean;
+    // Calendar reminder lead time in minutes (2026-10-15, Settings › Calendar):
+    // 1, 2 or 5. Unset = 2, the reminder's time before it was configurable.
+    calendarReminderMinutes?: number;
     // End meetings automatically when the call ends (2026-10-15,
     // services/meeting/MeetingEndDetector.ts): the call's app lets go of the
     // microphone, its browser tab closes, or nothing is said for
@@ -62,6 +69,11 @@ export interface AppSettings {
     // user is muted in Zoom / Teams / Meet (read from the app, never changed),
     // the mic channel carries silence of the same length. Unset = on.
     followMeetingMute?: boolean;
+    // Dictation (2026-10-15, Settings › Audio; services/dictation): its
+    // shortcut (Keybinds › Dictate to Clipboard) records the mic and puts the
+    // tidied text on the clipboard. The shortcut is registered only while on.
+    // Unset = off.
+    dictationEnabled?: boolean;
     // Snapshot shared screens (2026-10-15, Settings › Calendar): while someone
     // else shares a screen in a Zoom / Teams call, a picture every 10 s, kept
     // when it changed, described by the user's vision model for the notes.

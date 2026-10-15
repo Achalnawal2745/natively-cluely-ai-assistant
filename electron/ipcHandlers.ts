@@ -15380,16 +15380,16 @@ export function initializeIpcHandlers(appState: AppState): void {
     // as switching to that mode: modes:set-active refuses a non-general template
     // without Pro or a live trial, and notes must not be a side door to it. A plain
     // regenerate (no override) keeps the meeting's own mode and is never gated.
-    if (modeId || templateType) {
-      let target = templateType;
-      try {
-        if (modeId) {
-          const { ModesManager } = require('./services/ModesManager');
-          target = ModesManager.getInstance().getModes().find((m: { id: string }) => m.id === modeId)?.templateType ?? target;
-        }
-      } catch { /* resolve best-effort; an unknown mode is gated like any non-general one */ }
-      if (target !== 'general' && !isProOrTrialActive()) return { success: false, error: 'pro_required' };
-    }
+    // The meeting page's template picker goes through here too (notesTemplateGate.ts).
+    const { regenerateGate } = require('./services/meeting/notesTemplateGate') as typeof import('./services/meeting/notesTemplateGate');
+    const refused = regenerateGate({ modeId, templateType }, {
+      templateOfMode: (id) => {
+        const { ModesManager } = require('./services/ModesManager');
+        return ModesManager.getInstance().getModes().find((m: { id: string }) => m.id === id)?.templateType;
+      },
+      isProOrTrialActive,
+    });
+    if (refused) return { success: false, error: refused };
     const ok = await mgr.regenerateMeetingSummary(id, { templateType, modeId, tone });
     return { success: ok };
   });
@@ -16468,6 +16468,46 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
+  // Start automatically (Settings › Calendar, under Detect meetings): a detected
+  // call starts Natively after a 10 s countdown unless Not now. Unset = off.
+  // Read when each offer is made.
+  safeHandle('get-meeting-auto-start-enabled', async () => SettingsManager.getInstance().get('meetingAutoStartEnabled') === true);
+  safeHandle('set-meeting-auto-start-enabled', async (_, on: boolean) => {
+    if (typeof on !== 'boolean') return { success: false };
+    if (!SettingsManager.getInstance().set('meetingAutoStartEnabled', on)) return { success: false, error: 'settings_store_degraded' };
+    // Off stops a countdown running now; the offer stays as plain Start / Not now.
+    if (!on) require('./services/meetingDetection/wireMeetingDetection').getMeetingOffers()?.autoStartOff();
+    return { success: true };
+  });
+  // The launcher's "meeting detected" panel: Start and Not now
+  // (services/meetingDetection/meetingOffer.ts).
+  safeHandle('meeting-offer:start', async (_, id: string) => {
+    if (typeof id !== 'string') return { success: false };
+    const offers = require('./services/meetingDetection/wireMeetingDetection').getMeetingOffers();
+    return { success: !!offers?.start(id) };
+  });
+  safeHandle('meeting-offer:dismiss', async (_, id: string) => {
+    if (typeof id !== 'string') return { success: false };
+    require('./services/meetingDetection/wireMeetingDetection').getMeetingOffers()?.dismiss(id);
+    return { success: true };
+  });
+  // The offer on screen now, for a launcher that (re)loads while one is up.
+  safeHandle('meeting-offer:current', async () => require('./services/meetingDetection/wireMeetingDetection').getMeetingOffers()?.view() ?? null);
+  // Calendar reminder lead time (Settings › Calendar): 1, 2 or 5 minutes. Unset = 2.
+  // Applies to reminders scheduled from the next calendar refresh, which this
+  // asks for at once.
+  safeHandle('get-calendar-reminder-minutes', async () => {
+    const { reminderMinutes } = require('./services/meetingDetection/meetingOffer');
+    return reminderMinutes(SettingsManager.getInstance().get('calendarReminderMinutes'));
+  });
+  safeHandle('set-calendar-reminder-minutes', async (_, minutes: number) => {
+    const { REMINDER_MINUTE_CHOICES } = require('./services/meetingDetection/meetingOffer');
+    if (!REMINDER_MINUTE_CHOICES.includes(minutes)) return { success: false };
+    if (!SettingsManager.getInstance().set('calendarReminderMinutes', minutes)) return { success: false, error: 'settings_store_degraded' };
+    try { require('./services/CalendarManager').CalendarManager.getInstance().rescheduleReminders(); } catch { /* next refresh applies it */ }
+    return { success: true };
+  });
+
   // End meetings automatically when the call ends (Settings › Calendar, next to
   // Detect meetings). Unset = on. Read at each meeting start, so a change
   // applies from the next meeting.
@@ -16477,6 +16517,16 @@ export function initializeIpcHandlers(appState: AppState): void {
     if (!SettingsManager.getInstance().set('meetingAutoStopEnabled', on)) return { success: false, error: 'settings_store_degraded' };
     // Off takes effect at once for a running meeting; on, from the next one.
     if (!on) appState.getMeetingAutoStop?.()?.end();
+    return { success: true };
+  });
+  // Dictation (Settings › Audio). Unset = off. Its shortcut is registered only
+  // while on, so the switch re-registers; off drops a dictation in progress.
+  safeHandle('get-dictation-enabled', async () => SettingsManager.getInstance().get('dictationEnabled') === true);
+  safeHandle('set-dictation-enabled', async (_, on: boolean) => {
+    if (typeof on !== 'boolean') return { success: false };
+    if (!SettingsManager.getInstance().set('dictationEnabled', on)) return { success: false, error: 'settings_store_degraded' };
+    if (!on) require('./services/dictation/wireDictation').cancelDictation();
+    try { require('./services/KeybindManager').KeybindManager.getInstance().refreshRegistrations(); } catch { /* applies at the next registration pass */ }
     return { success: true };
   });
   // Follow the meeting app's mute (Settings › Audio). Unset = on. Applies at
@@ -16571,6 +16621,27 @@ export function initializeIpcHandlers(appState: AppState): void {
     const { getMeetingNotesRating } = require('./services/meeting/notesRatings') as typeof import('./services/meeting/notesRatings');
     if (!input || typeof input.meetingId !== 'string') return null;
     return getMeetingNotesRating(DatabaseManager.getInstance(), input.meetingId, typeof input.versionId === 'number' ? input.versionId : null);
+  });
+  // Compare: two versions of the notes as "A" and "B" in a random order, named
+  // only after the pick (services/meeting/notesCompare.ts). Local only.
+  let notesComparisons: import('./services/meeting/notesCompare').NotesComparisons | null = null;
+  const comparisons = () => {
+    if (!notesComparisons) {
+      const { NotesComparisons } = require('./services/meeting/notesCompare') as typeof import('./services/meeting/notesCompare');
+      notesComparisons = new NotesComparisons(DatabaseManager.getInstance());
+    }
+    return notesComparisons;
+  };
+  const versionRef = (v: unknown): number | null | undefined => (v === null || v === 'current' ? null : typeof v === 'number' && Number.isInteger(v) ? v : undefined);
+  safeHandle('meeting-notes:compare-start', async (_event, input: { meetingId?: unknown; versions?: unknown }) => {
+    if (!input || typeof input.meetingId !== 'string' || !Array.isArray(input.versions) || input.versions.length !== 2) return null;
+    const [x, y] = input.versions.map(versionRef);
+    if (x === undefined || y === undefined) return null;
+    return comparisons().start(input.meetingId, [x, y]);
+  });
+  safeHandle('meeting-notes:compare-pick', async (_event, input: { id?: unknown; choice?: unknown; reason?: unknown }) => {
+    if (!input || typeof input.id !== 'string' || (input.choice !== 'A' && input.choice !== 'B' && input.choice !== 'same')) return null;
+    return comparisons().pick(input.id, input.choice, typeof input.reason === 'string' ? input.reason : null);
   });
 
   safeHandle('calendar-refresh', async () => {

@@ -168,7 +168,9 @@ describe('wiring (source contracts)', () => {
     test('Regenerate over edited notes asks with the in-app confirm, then regenerates; the Pro gate is untouched', () => {
         assert.match(DETAILS, /if \(!confirmed && notesWereEdited\(baseMeeting\.detailedSummary\)\) \{\s*setPendingRegenerate/);
         assert.match(DETAILS, /<ConfirmDialog[\s\S]*?Regenerating replaces the edits you made to these notes\. Your current version stays in its tab\./);
-        assert.match(DETAILS, /res\?\.error === 'pro_required'\) setDetectedNeedsPro\(true\)/);
+        // The suggestion's refusal reads as before; a refusal from the template
+        // picker (2026-10-15, NotesFeedback test) marks that template instead.
+        assert.match(DETAILS, /res\?\.error === 'pro_required'\) \{[\s\S]{0,600}else setDetectedNeedsPro\(true\)/);
         assert.doesNotMatch(DETAILS, /window\.confirm\(/);
     });
 

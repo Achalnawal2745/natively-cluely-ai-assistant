@@ -11,6 +11,7 @@ import StartupSequence from "./components/StartupSequence"
 import { EXIT_MS, launcherLanding } from "./components/startup/splashTimeline"
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion"
 import UpdateBanner from "./components/UpdateBanner"
+import MeetingOfferToast from "./components/MeetingOfferToast"
 import { NativelyQuotaBanner } from "./components/NativelyQuotaBanner"
 import { useTrialExpiry }       from "./components/trial/useTrialExpiry"
 import { TrialMeterToaster }    from "./components/trial/TrialMeterToaster"
@@ -1505,6 +1506,8 @@ const App: React.FC = () => {
       <div data-opacity-preview-surface="">
         {!isolateGlobalSurfaces && <UpdateBanner />}
         {!isolateGlobalSurfaces && <NativelyQuotaBanner />}
+        {/* A call was detected: Start / Not now, and the countdown when Start automatically is on. */}
+        {!isolateGlobalSurfaces && (isLauncherWindow || isDefault) && <MeetingOfferToast />}
         {/* The running trial's clock and its two allowances, on Home only. */}
         {!isolateGlobalSurfaces && (isLauncherWindow || isDefault) && <TrialMeterToaster trial={activeTrial} ready={isAppReady && !showTrialExpiredModal} onSeePlans={() => openSettingsExclusive('plans')} />}
 

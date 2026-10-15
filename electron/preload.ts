@@ -86,6 +86,23 @@ type DirectAssistEvent =
   | { type: 'cancel'; requestId: string; sequence: number };
 
 // Types for the exposed Electron API
+/** A blind notes comparison after the pick: which version was A, which was B. */
+interface NotesComparePickResult {
+  choice: 'A' | 'B' | 'same';
+  saved: boolean;
+  a: { version: 'current' | number; label: string; provider: string | null; model: string | null };
+  b: { version: 'current' | number; label: string; provider: string | null; model: string | null };
+}
+
+/** services/meetingDetection/meetingOffer.ts MeetingOfferView. */
+interface MeetingOfferPayload {
+  id: string;
+  title: string | null;
+  app: string;
+  body: string;
+  autoStartAt: number | null;
+}
+
 interface ElectronAPI {
   updateContentDimensions: (dimensions: { width: number; height: number }) => Promise<void>;
   updateContentDimensionsCentered: (dimensions: {
@@ -495,6 +512,8 @@ interface ElectronAPI {
       error?: string;
       channel: 'user' | 'interviewer';
       reconnectAttempts?: number;
+      /** A stand-in carries the channel while `provider` is down (audio/sttFailover.ts). */
+      fallback?: { provider: string; notice: string };
     }) => void,
   ) => () => void;
 
@@ -881,10 +900,21 @@ interface ElectronAPI {
   calendarSourceDisconnect: (id: CalendarSourceIdInfo) => Promise<{ success: boolean }>;
   getMeetingDetectionEnabled: () => Promise<boolean>;
   setMeetingDetectionEnabled: (on: boolean) => Promise<{ success: boolean; error?: string }>;
+  getMeetingAutoStartEnabled: () => Promise<boolean>;
+  setMeetingAutoStartEnabled: (on: boolean) => Promise<{ success: boolean; error?: string }>;
+  getCalendarReminderMinutes: () => Promise<number>;
+  setCalendarReminderMinutes: (minutes: number) => Promise<{ success: boolean; error?: string }>;
+  /** The "meeting detected" offer for the launcher's panel (null clears it). */
+  onMeetingOffer: (callback: (offer: MeetingOfferPayload | null) => void) => () => void;
+  getMeetingOffer: () => Promise<MeetingOfferPayload | null>;
+  startMeetingOffer: (id: string) => Promise<{ success: boolean }>;
+  dismissMeetingOffer: (id: string) => Promise<{ success: boolean }>;
   getMeetingAutoStopEnabled: () => Promise<boolean>;
   setMeetingAutoStopEnabled: (on: boolean) => Promise<{ success: boolean; error?: string }>;
   /** Follow the meeting app's mute (Settings › Audio). */
   getFollowMeetingMute: () => Promise<boolean>;
+  getDictationEnabled: () => Promise<boolean>;
+  setDictationEnabled: (on: boolean) => Promise<{ success: boolean; error?: string }>;
   setFollowMeetingMute: (on: boolean) => Promise<{ success: boolean; error?: string }>;
   /** Whether the user is muted in the meeting app right now, and which app says so. */
   getMeetingMuteState: () => Promise<{ muted: boolean; app: string | null }>;
@@ -931,6 +961,9 @@ interface ElectronAPI {
   /** Thumbs up / down on the notes shown (current: versionId null). */
   rateMeetingNotes: (input: { meetingId: string; rating: 'up' | 'down'; comment?: string; versionId?: number | null }) => Promise<{ success: boolean }>;
   getMeetingNotesRating: (input: { meetingId: string; versionId?: number | null }) => Promise<{ rating: 'up' | 'down'; comment: string | null } | null>;
+  /** Compare two versions of the notes blind: A and B in a random order, named only after the pick. */
+  compareMeetingNotesStart: (input: { meetingId: string; versions: [number | 'current', number | 'current'] }) => Promise<{ id: string; a: any; b: any } | null>;
+  compareMeetingNotesPick: (input: { id: string; choice: 'A' | 'B' | 'same'; reason?: string }) => Promise<NotesComparePickResult | null>;
   /** A notification's Start (a detected call, the calendar reminder), relayed by main to the launcher. */
   onMeetingStartRequest: (callback: (req: { title?: string; calendarEventId?: string; via?: 'detected' | 'reminder' }) => void) => () => void;
   getUpcomingEvents: () => Promise<
@@ -2143,6 +2176,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       error?: string;
       channel: 'user' | 'interviewer';
       reconnectAttempts?: number;
+      /** A stand-in carries the channel while `provider` is down (audio/sttFailover.ts). */
+      fallback?: { provider: string; notice: string };
     }) => void,
   ) => {
     const subscription = (_: any, data: any) => callback(data);
@@ -2860,6 +2895,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   calendarSourceDisconnect: (id: CalendarSourceIdInfo) => ipcRenderer.invoke('calendar-source-disconnect', id),
   getMeetingDetectionEnabled: () => ipcRenderer.invoke('get-meeting-detection-enabled'),
   setMeetingDetectionEnabled: (on: boolean) => ipcRenderer.invoke('set-meeting-detection-enabled', on),
+  getMeetingAutoStartEnabled: () => ipcRenderer.invoke('get-meeting-auto-start-enabled'),
+  setMeetingAutoStartEnabled: (on: boolean) => ipcRenderer.invoke('set-meeting-auto-start-enabled', on),
+  getCalendarReminderMinutes: () => ipcRenderer.invoke('get-calendar-reminder-minutes'),
+  setCalendarReminderMinutes: (minutes: number) => ipcRenderer.invoke('set-calendar-reminder-minutes', minutes),
+  onMeetingOffer: (callback: (offer: MeetingOfferPayload | null) => void) => {
+    const subscription = (_: any, offer: MeetingOfferPayload | null) => callback(offer);
+    ipcRenderer.on('meeting:offer', subscription);
+    return () => {
+      ipcRenderer.removeListener('meeting:offer', subscription);
+    };
+  },
+  getMeetingOffer: () => ipcRenderer.invoke('meeting-offer:current'),
+  startMeetingOffer: (id: string) => ipcRenderer.invoke('meeting-offer:start', id),
+  dismissMeetingOffer: (id: string) => ipcRenderer.invoke('meeting-offer:dismiss', id),
   getMeetingAutoStopEnabled: () => ipcRenderer.invoke('get-meeting-auto-stop-enabled'),
   setMeetingAutoStopEnabled: (on: boolean) => ipcRenderer.invoke('set-meeting-auto-stop-enabled', on),
   meetingAutoStopKeepGoing: () => ipcRenderer.invoke('meeting-auto-stop-keep-going'),
@@ -2891,6 +2940,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     };
   },
   getFollowMeetingMute: () => ipcRenderer.invoke('get-follow-meeting-mute'),
+  getDictationEnabled: () => ipcRenderer.invoke('get-dictation-enabled'),
+  setDictationEnabled: (on: boolean) => ipcRenderer.invoke('set-dictation-enabled', on),
   setFollowMeetingMute: (on: boolean) => ipcRenderer.invoke('set-follow-meeting-mute', on),
   getMeetingMuteState: () => ipcRenderer.invoke('get-meeting-mute-state'),
   onMeetingMuteChanged: (callback: (state: { muted: boolean; app: string | null }) => void) => {
@@ -2932,6 +2983,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMeetingNotesVersions: (meetingId: string) => ipcRenderer.invoke('meeting-notes:versions', meetingId),
   rateMeetingNotes: (input: { meetingId: string; rating: 'up' | 'down'; comment?: string; versionId?: number | null }) => ipcRenderer.invoke('meeting-notes:rate', input),
   getMeetingNotesRating: (input: { meetingId: string; versionId?: number | null }) => ipcRenderer.invoke('meeting-notes:get-rating', input),
+  compareMeetingNotesStart: (input: { meetingId: string; versions: [number | 'current', number | 'current'] }) => ipcRenderer.invoke('meeting-notes:compare-start', input),
+  compareMeetingNotesPick: (input: { id: string; choice: 'A' | 'B' | 'same'; reason?: string }) => ipcRenderer.invoke('meeting-notes:compare-pick', input),
   onMeetingAutoStopNotice: (callback: (data: { stopsAt: number | null }) => void) => {
     const subscription = (_: any, data: { stopsAt: number | null }) => callback(data);
     ipcRenderer.on('meeting-auto-stop-notice', subscription);

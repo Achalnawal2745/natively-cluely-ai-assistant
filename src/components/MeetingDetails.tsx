@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useId, useMemo } from 'react';
 import { useT } from '../i18n';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
-import { ArrowLeft, Search, Mail, Link, ChevronDown, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, RefreshCw, Info, Eye, EyeOff, History, Pencil, X, ChevronRight, ChevronLeft, SquarePen, FileText } from 'lucide-react';
+import { ArrowLeft, Search, Mail, Link, ChevronDown, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, RefreshCw, Info, Eye, EyeOff, History, Pencil, X, ChevronRight, ChevronLeft, SquarePen, FileText, Columns2 } from 'lucide-react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { genMessageId } from '../utils/messageId';
 import { mapLanguageForPrism, isBlockCode } from '../utils/prismLanguage';
@@ -37,7 +37,10 @@ import { followUpChanges, settleFollowUpSave, type FollowUpText } from './meetin
 import { NotesVersionTabs } from './meeting/NotesVersionTabs';
 import { NoteSource } from './meeting/NoteSource';
 import { NotesRating } from './meeting/NotesRating';
-import { noteLineTime, notesContentKey, notesWereEdited, versionTabs, type VersionKey } from './meeting/notesView';
+import { NotesTemplatePicker } from './meeting/NotesTemplatePicker';
+import { NotesCompare, type CompareReveal } from './meeting/NotesCompare';
+import { comparePair, shouldPromptRating, templatePickerOptions } from './meeting/notesFeedback';
+import { noteLineTime, notesContentKey, notesLabel, notesWereEdited, versionTabs, type VersionKey } from './meeting/notesView';
 
 registerPrismLanguages();
 
@@ -887,7 +890,9 @@ const NotesActions: React.FC<{
     onRegenerate: () => void;
     onRegenerateAsSuggested: () => void;
     onToggleEvidence: () => void;
-}> = ({ isRegenerating, showEvidence, suggestion, onRegenerate, onRegenerateAsSuggested, onToggleEvidence }) => {
+    /** More of the same small buttons after Show evidence: Regenerate as, Compare (2026-10-15). */
+    children?: React.ReactNode;
+}> = ({ isRegenerating, showEvidence, suggestion, onRegenerate, onRegenerateAsSuggested, onToggleEvidence, children }) => {
     const t = useT();
     const reduce = useReducedMotion();
     const isLight = useResolvedTheme() === 'light';
@@ -943,6 +948,7 @@ const NotesActions: React.FC<{
                     {evidenceLabel}
                 </SwapText>
             </LiquidGlassButton>
+            {children}
             {/* The suggestion settles in (fade, 2px blur, 250ms) when detection offers one
                 and fades out quicker (150ms) once it has been taken. Not on the page's
                 first paint: the notes' own reveal is already playing then. */}
@@ -1874,6 +1880,12 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     // version, not the words), so the rating reloads for new notes, but not for
     // a follow-up draft or a speaker rename.
     const ratedNotesKey = useMemo(() => notesContentKey(meeting.detailedSummary), [meeting.detailedSummary]);
+    // Thumbs sampling: asked above the current notes while they are new, for
+    // about one meeting in ten, the same meetings every time (notesFeedback.ts).
+    const promptRating = useMemo(
+        () => versionKey === 'current' && shouldPromptRating(baseMeeting.id, baseMeeting.detailedSummary, Date.now()),
+        [versionKey, baseMeeting.id, baseMeeting.detailedSummary],
+    );
     const [activeTab, setActiveTab] = useState<NotesTab>('summary');
     // How the tab panel arrives after the reader switches tabs (see switchTab):
     // from the side of travel, or a plain fade. null until the first switch, so
@@ -2340,6 +2352,60 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     // instead of spinning and silently doing nothing.
     const [detectedNeedsPro, setDetectedNeedsPro] = useState(false);
 
+    // Regenerate as (2026-10-15): every template the user has, from the Modes
+    // Manager. A template main refused for want of Pro (the same gate as the
+    // suggestion above, notesTemplateGate.ts) is marked, and the page says so
+    // with the way to the plans.
+    const [templateModes, setTemplateModes] = useState<Array<{ id: string; name: string; templateType: string }>>([]);
+    useEffect(() => {
+        let live = true;
+        window.electronAPI?.modesGetAll?.()
+            .then((list) => { if (live && Array.isArray(list)) setTemplateModes(list.map((m) => ({ id: m.id, name: m.name, templateType: m.templateType }))); })
+            .catch(() => { /* no picker */ });
+        return () => { live = false; };
+    }, []);
+    const [templatesNeedingPro, setTemplatesNeedingPro] = useState<ReadonlySet<string>>(() => new Set());
+    const [gatedTemplateName, setGatedTemplateName] = useState<string | null>(null);
+    // A refusal is only remembered until the plan changes: buying Pro, entering
+    // a key, or a trial starting or ending forgets it (main checks again anyway).
+    useEffect(() => {
+        const forget = () => {
+            setTemplatesNeedingPro(new Set());
+            setGatedTemplateName(null);
+            setDetectedNeedsPro(false);
+        };
+        const offs = [
+            window.electronAPI?.onLicenseStatusChanged?.(forget),
+            window.electronAPI?.onTrialStarted?.(forget),
+            window.electronAPI?.onTrialEnded?.(forget),
+        ];
+        return () => { for (const off of offs) { try { off?.(); } catch { /* gone */ } } };
+    }, []);
+
+    // Compare (2026-10-15): two versions side by side as A and B, blind until
+    // the pick (main: services/meeting/notesCompare.ts).
+    const [compare, setCompare] = useState<{ id: string; a: any; b: any } | null>(null);
+    const [compareReveal, setCompareReveal] = useState<CompareReveal | null>(null);
+    const [compareBusy, setCompareBusy] = useState(false);
+    useEffect(() => { setCompare(null); setCompareReveal(null); }, [baseMeeting.id]);
+    const openCompare = async () => {
+        const pair = comparePair(versionKey, notesVersions);
+        if (!pair || compareBusy || !window.electronAPI?.compareMeetingNotesStart) return;
+        setCompareBusy(true);
+        try {
+            const started = await window.electronAPI.compareMeetingNotesStart({ meetingId: baseMeeting.id, versions: pair });
+            if (started) { setCompareReveal(null); setCompare(started); }
+        } catch { /* nothing to compare */ } finally { setCompareBusy(false); }
+    };
+    const pickCompare = async (choice: 'A' | 'B' | 'same', reason: string) => {
+        if (!compare || compareBusy || !window.electronAPI?.compareMeetingNotesPick) return;
+        setCompareBusy(true);
+        try {
+            const res = await window.electronAPI.compareMeetingNotesPick({ id: compare.id, choice, ...(reason.trim() ? { reason: reason.trim() } : {}) });
+            if (res) setCompareReveal(res);
+        } catch { /* the pick stays open */ } finally { setCompareBusy(false); }
+    };
+
     // Regenerating over notes the user edited asks first (the edits go; the
     // current version stays in its tab). Holds the request until answered.
     const [pendingRegenerate, setPendingRegenerate] = useState<{ target?: string | { templateType?: string; modeId?: string } } | null>(null);
@@ -2361,7 +2427,20 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 await reloadMeeting();
                 await loadNotesVersions();
                 setVersionKey('current');
-            } else if (res?.error === 'pro_required') setDetectedNeedsPro(true);
+                setGatedTemplateName(null);
+                // It went through this time (Pro or a trial since): no longer marked.
+                const okId = opts?.modeId;
+                if (okId) setTemplatesNeedingPro((prev) => { if (!prev.has(okId)) return prev; const next = new Set(prev); next.delete(okId); return next; });
+            } else if (res?.error === 'pro_required') {
+                // From the picker: that template is marked and the page says why.
+                // Otherwise the suggestion's own refusal, as before.
+                const picked = opts?.modeId && opts.modeId !== v3Mode?.detectedModeId
+                    ? templateModes.find((m) => m.id === opts.modeId) : undefined;
+                if (picked) {
+                    setTemplatesNeedingPro((prev) => new Set(prev).add(picked.id));
+                    setGatedTemplateName(picked.name);
+                } else setDetectedNeedsPro(true);
+            }
         } catch { /* swallow */ } finally { setIsRegenerating(false); }
     };
 
@@ -2985,6 +3064,26 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                     </SwapText>
                                 </motion.button>
                             </motion.div>
+                        ) : compare ? (
+                            /* Compare: the two versions blind, in place of the notes (their
+                               version tabs and template names would give the answer away). */
+                            <motion.div
+                                key="compare"
+                                initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+                                animate={prefersReducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
+                                transition={{ duration: 0.24, ease: [0.23, 1, 0.32, 1] }}
+                            >
+                                <NotesCompare
+                                    a={compare.a}
+                                    b={compare.b}
+                                    reveal={compareReveal}
+                                    busy={compareBusy}
+                                    isLight={isLight}
+                                    onPick={(choice, reason) => { void pickCompare(choice, reason); }}
+                                    onClose={() => { setCompare(null); setCompareReveal(null); }}
+                                    t={t}
+                                />
+                            </motion.div>
                         ) : (
                             <motion.div
                                 key="notes"
@@ -3089,9 +3188,44 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                                         ? { modeId: v3Mode.detectedModeId }
                                                         : { templateType: (v3Mode?.detectedModeName || '').toLowerCase() })}
                                                     onToggleEvidence={() => setShowEvidence(v => !v)}
-                                                />
+                                                >
+                                                    {/* Regenerate as any template; it names the one that wrote the notes shown. */}
+                                                    <NotesTemplatePicker
+                                                        options={templatePickerOptions(templateModes, v3Mode)}
+                                                        currentName={notesLabel(meeting.detailedSummary)}
+                                                        disabled={isRegenerating}
+                                                        needsPro={templatesNeedingPro}
+                                                        isLight={isLight}
+                                                        onPick={(opt) => { setGatedTemplateName(null); void handleRegenerate({ modeId: opt.id }); }}
+                                                        t={t}
+                                                    />
+                                                    {/* Compare two versions blind: only with an earlier version kept. */}
+                                                    {notesVersions.length > 0 && (
+                                                        <LiquidGlassButton
+                                                            variant="clear"
+                                                            className="lg-sm"
+                                                            onClick={() => { void openCompare(); }}
+                                                            disabled={isRegenerating || compareBusy}
+                                                            icon={<Columns2 className="w-3.5 h-3.5" strokeWidth={2.2} />}
+                                                        >
+                                                            {t('Compare')}
+                                                        </LiquidGlassButton>
+                                                    )}
+                                                </NotesActions>
                                             );
                                         })()}
+                                        {gatedTemplateName && (
+                                            <p className="w-full flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-text-secondary">
+                                                <span>{`${gatedTemplateName} ${t('notes need Natively Pro')}`}</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => { void window.electronAPI?.openSettingsTab?.('plans'); }}
+                                                    className="text-[12.5px] font-medium text-text-primary hover:underline"
+                                                >
+                                                    {t('See plans')}
+                                                </button>
+                                            </p>
+                                        )}
                                         {v3SummaryStatus && v3SummaryStatus !== 'completed' && (
                                             <span className="inline-flex items-center gap-1.5 text-[11px] text-amber-400">
                                                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
@@ -3102,6 +3236,20 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                 ); })()}
 
                                 {/* 3. Mode auto-detect suggestion: now the blue glass button at the end of the actions row above. */}
+
+                                {/* New notes ask for a rating up here for about one meeting in ten
+                                    (notesFeedback.ts, by the meeting's id); otherwise the quiet
+                                    row stays at the end of the notes. */}
+                                {isV3Summary && promptRating && (
+                                    <NotesRating
+                                        meetingId={meeting.id}
+                                        versionId={null}
+                                        contentKey={ratedNotesKey}
+                                        isLight={isLight}
+                                        prompted
+                                        t={t}
+                                    />
+                                )}
 
                                 {/* 4. Cross-meeting recall — still-open carryover from prior meetings (Phase 13). */}
                                 {isV3Summary && meeting.detailedSummary?.crossMeeting?.stillOpen && meeting.detailedSummary.crossMeeting.stillOpen.length > 0 && (() => { const c = cardIn(); return (
@@ -3223,7 +3371,7 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                 )}
 
                                 {/* Thumbs up / down on the notes shown, kept on this machine. */}
-                                {isV3Summary && (
+                                {isV3Summary && !promptRating && (
                                     <NotesRating
                                         meetingId={meeting.id}
                                         versionId={versionKey === 'current' ? null : versionKey}

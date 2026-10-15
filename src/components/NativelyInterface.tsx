@@ -1451,6 +1451,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     'connected' | 'reconnecting' | 'failed' | 'awaiting-audio' | 'preparing'
   >('awaiting-audio');
   const [sttInterviewerError, setSttInterviewerError] = useState<string>('');
+  // A stand-in provider carries a channel while its own is down (main:
+  // audio/sttFailover.ts): main's sentence, "Transcribing with X while Y is down."
+  const [sttUserFallback, setSttUserFallback] = useState<string>('');
+  const [sttInterviewerFallback, setSttInterviewerFallback] = useState<string>('');
   const [sttInterviewerProvider, setSttInterviewerProvider] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -5602,11 +5606,13 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
       if (data.channel === 'user') {
         setSttUserStatus(data.state);
         setSttUserProvider(data.provider);
+        setSttUserFallback(data.fallback?.notice ?? '');
         if (data.error) setSttUserError(data.error);
         if (data.state === 'connected' || data.state === 'awaiting-audio') setSttUserError('');
       } else if (data.channel === 'interviewer') {
         setSttInterviewerStatus(data.state);
         setSttInterviewerProvider(data.provider);
+        setSttInterviewerFallback(data.fallback?.notice ?? '');
         if (data.error) setSttInterviewerError(data.error);
         if (data.state === 'connected' || data.state === 'awaiting-audio') setSttInterviewerError('');
       }
@@ -11219,7 +11225,14 @@ Provide only the answer, nothing else.`;
               title: t('Transcription Reconnecting'),
               message: t('The connection to your speech-to-text provider dropped. Retrying.'),
             }
-          : null;
+          : (sttUserFallback || sttInterviewerFallback)
+            ? {
+                // Still transcribing, on a stand-in: a warning, not a failure.
+                tone: 'warning',
+                title: t('Transcribing on a backup provider'),
+                message: sttInterviewerFallback || sttUserFallback,
+              }
+            : null;
   // Whether the vision chip will render (mirrors the IIFE's early-return guard).
   const visionPillFailed = screenContextStatus === 'failed' || !!latestVisionFailureReason;
   const visionPillSucceeded =
