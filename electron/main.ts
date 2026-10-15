@@ -1342,11 +1342,16 @@ import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
 import { linkSessionToCalendar, cancelSessionCalendarLink } from './services/calendar/SessionCalendarLinker'
 import { wireExtensionMeetingTabs } from './services/meetingDetection/extensionMeetingTabs'
-import { DesktopCallSpeakers } from './services/meetingDetection/desktopCallSpeakers'
+import { DesktopCallSpeakers, type DesktopCallReport } from './services/meetingDetection/desktopCallSpeakers'
+import { meetingMuteSync, muteSourceName, type MuteSource } from './services/meeting/MeetingMuteSync'
+import { ScreenShareContext } from './services/meeting/ScreenShareContext'
+import { captureShareFrame, clearScreenShareFrames } from './services/meeting/screenShareCapture'
 import { SHORTCUT_TOUR_ACTIONS } from './services/shortcutTourActions'
 import { wireMeetingDetection, registerMeetingDetection, electronNotify, type MeetingStartRequest } from './services/meetingDetection/wireMeetingDetection'
 import { createMeetingAutoStop, inactivityMinutes, registerQuitFlush, type MeetingAutoStop } from './services/meeting/wireMeetingAutoStop'
 import { liveMeetings } from './services/meetingDetection/liveMeetings'
+/** The Zoom / Teams window reader's place in liveMeetings (its meeting, once the window names it). */
+const DESKTOP_CALL_LIVE_SOURCE = Symbol('desktop-call-window')
 import { ProviderStatusRegistry } from './services/ProviderStatusRegistry'
 import { decideToggle, decideDockTransition } from './services/toggleStateReducer'
 import { nativePromptsBlocked } from './services/stealthPromptGate'
@@ -1490,6 +1495,16 @@ export class AppState {
   // Reads who speaks in a Zoom / Teams desktop call while a meeting runs
   // (services/meetingDetection/desktopCallSpeakers.ts). One per meeting.
   private desktopCallSpeakers: DesktopCallSpeakers | null = null;
+  // Snapshot shared screens (services/meeting/ScreenShareContext.ts). One per meeting.
+  private screenShareContext: ScreenShareContext | null = null;
+  // The overlay's "Muted in Zoom" pill follows the meeting app's mute
+  // (services/meeting/MeetingMuteSync.ts; the mic path reads it in wireMicCapture).
+  private readonly _meetingMuteListener = meetingMuteSync.onChange((state) => {
+    try {
+      this.sendToWindow(this.getWindowHelper().getOverlayWindow(), 'meeting-mute-changed', { muted: state.muted, app: muteSourceName(state.app) });
+    } catch { /* the overlay may not exist yet */ }
+    console.log(`[Main] Meeting app mute: ${state.muted ? `muted in ${muteSourceName(state.app)}; the mic channel carries silence` : 'live'}`);
+  });
   // Serializes start/stop so two transitions can never interleave. This is the
   // ONLY mutual-exclusion layer: _meetingGeneration, the _audioInitPromise
   // abort-and-await and _pendingTeardown each guard a hazard INSIDE a
@@ -4579,11 +4594,15 @@ export class AppState {
       // path (F-102): only the capture that owns this.microphoneCapture may
       // feed the user STT socket.
       if (this.microphoneCapture === capture) {
-        this.googleSTT_User?.write(chunk);
+        // Muted in the meeting app ("Follow the meeting app's mute"): silence of
+        // the same length, so the stream keeps its timing. The checks above
+        // still read the real chunk.
+        const heard = meetingMuteSync.gate(chunk);
+        this.googleSTT_User?.write(heard);
         // Gap recovery's ring buffer (sttGapRecovery.ts): a copy, nothing waits.
         if (this.sttGap.isActive()) {
           if (!gapRate) gapRate = capture.getSampleRate();
-          this.sttGap.onAudio('mic', chunk, gapRate);
+          this.sttGap.onAudio('mic', heard, gapRate);
         }
       }
     });
@@ -6846,8 +6865,9 @@ export class AppState {
       // follow-up recipients). Decides at once from the cached list; never
       // delays the start. See services/calendar/SessionCalendarLinker.ts.
       linkSessionToCalendar(metadata, () => this.isMeetingActive);
-      this.startDesktopCallSpeakers(metadata, meetingGeneration);
     }
+    // Zoom / Teams read-only signals: who speaks, the meeting ID, mute, a shared screen.
+    this.startDesktopCallSpeakers(metadata ?? null, meetingGeneration);
     // Every meeting gets its own conversation history, whether or not a mode
     // is active (the dynamic-action session id below exists only WITH a mode,
     // and without one every meeting shared one history — 2026-09-24).
@@ -7068,16 +7088,91 @@ export class AppState {
   }
 
   /**
-   * Who speaks in a Zoom / Teams desktop call: read from the app's window while
-   * the meeting runs, so the saved transcript names the other side's lines (the
-   * same roster the Meet page fills). Only with "Speaker labels" on and audio
-   * being captured. The session takes the call's key when no meeting tab gave
-   * one. macOS reads need the Accessibility permission, never asked for here.
+   * The Zoom / Teams desktop call, read from the app's window while the
+   * meeting runs (services/meetingDetection/desktopCallSpeakers.ts). Read-only:
+   * nothing here presses, opens, types or focuses anything in the other app.
+   * Each read gives:
+   *   - who speaks, so the saved transcript names the other side's lines (the
+   *     same roster the Meet page fills; used at save only with "Speaker
+   *     labels" on). The session takes the call's key when no tab gave one.
+   *   - the meeting ID when the window shows it: listed as a live meeting, so
+   *     calendar linking picks the right one of overlapping events;
+   *   - the user's own name there, for "Me" when the calendar gives none;
+   *   - whether the user is muted ("Follow the meeting app's mute");
+   *   - whether someone else is sharing a screen ("Snapshot shared screens").
+   * macOS reads need the Accessibility permission, never asked for here.
    */
   private startDesktopCallSpeakers(metadata: any, generation: number): void {
     this.desktopCallSpeakers?.stop();
     this.desktopCallSpeakers = null;
-    if (this._ambientChatEnabled || !isIntelligenceFlagEnabled('speakerLabelsV1')) return;
+    this.screenShareContext?.stop();
+    this.screenShareContext = null;
+    liveMeetings.set(DESKTOP_CALL_LIVE_SOURCE, null);
+    const settings = SettingsManager.getInstance();
+    meetingMuteSync.setEnabled(settings.get('followMeetingMute') ?? true);
+    meetingMuteSync.setMeetingActive(true);
+    if (this._ambientChatEnabled) return;
+    const current = () => generation === this._meetingGeneration && this.isMeetingActive;
+    // The session's metadata, made on first use: a meeting started without any
+    // (the "Start Natively?" notification passes none) still keeps what the
+    // window shows and the shared screens in its saved notes.
+    const liveMeta = (): any => {
+      if (metadata && typeof metadata === 'object') return metadata;
+      const existing = this.intelligenceManager.liveMeetingMetadata();
+      if (existing && typeof existing === 'object') return (metadata = existing);
+      metadata = {};
+      this.intelligenceManager.setMeetingMetadata(metadata);
+      return metadata;
+    };
+    try {
+      const userData = app.getPath('userData');
+      clearScreenShareFrames(userData);
+      this.screenShareContext = new ScreenShareContext({
+        // Off while Undetectable is on: automatic capture can bring up the OS's
+        // own capture notices (macOS's recording prompts, a capture border on
+        // Windows), which Undetectable must never risk.
+        enabled: () => SettingsManager.getInstance().get('screenShareSnapshots') === true && !nativePromptsBlocked(() => this.isUndetectable),
+        capture: (title) => captureShareFrame(title, userData),
+        describe: async (imagePath, hint) => {
+          const { transcribeScreenForMemory } = require('./services/screen/screenTranscription');
+          return transcribeScreenForMemory([imagePath], hint);
+        },
+        remove: (file) => fs.rm(file, { force: true }, () => {}),
+        onEntries: (entries) => {
+          if (current()) liveMeta().sharedScreens = entries;
+        },
+      });
+    } catch (e: any) {
+      console.warn('[Main] shared-screen snapshots unavailable:', e?.message);
+    }
+    let muteSource: MuteSource | null = null;
+    const onFacts = (report: DesktopCallReport | null) => {
+      if (!current()) return;
+      if (report && (report.selfName || report.meetingKey || report.participantCount !== null)) {
+        const meta = liveMeta();
+        if (report.selfName) meta.callSelfName = report.selfName;
+        if (report.meetingKey) meta.callMeetingKey = report.meetingKey;
+        if (report.participantCount !== null) meta.callParticipantCount = report.participantCount;
+      }
+      // The meeting the window names, as a live meeting: SessionCalendarLinker
+      // links the event whose link is this one, whatever else overlaps it.
+      liveMeetings.set(DESKTOP_CALL_LIVE_SOURCE, report?.meetingKey ? [{
+        key: report.meetingKey,
+        provider: report.app,
+        via: 'app',
+        title: report.app === 'zoom' ? 'Zoom' : 'Microsoft Teams',
+        audible: true,
+        seenAt: report.at,
+        rosterKey: report.rosterKey,
+      }] : null);
+      if (report) {
+        muteSource = report.app === 'zoom' ? 'zoom-app' : 'teams-app';
+        meetingMuteSync.report(muteSource, report.selfMuted);
+      } else if (muteSource) {
+        meetingMuteSync.clear(muteSource);
+      }
+      this.screenShareContext?.update(report ? { app: report.app, share: report.share, at: report.at } : null);
+    };
     try {
       const native = loadNativeModule() as any;
       const dumpDir = process.env.NATIVELY_DUMP_CALL_TREE === '1' && !app.isPackaged
@@ -7092,9 +7187,11 @@ export class AppState {
           return name ? [name] : [];
         },
         onCall: (key) => {
-          if (generation !== this._meetingGeneration || !this.isMeetingActive) return;
-          if (metadata && typeof metadata === 'object' && !metadata.callKey) metadata.callKey = key;
+          if (!current()) return;
+          const meta = liveMeta();
+          if (!meta.callKey) meta.callKey = key;
         },
+        onFacts,
         // Development only: records the trees a real call produces, to pin as
         // test fixtures (they hold participants' names; never in a packaged build).
         dump: dumpDir
@@ -7107,15 +7204,25 @@ export class AppState {
       speakers.start();
       this.desktopCallSpeakers = speakers;
     } catch (e: any) {
-      console.warn('[Main] desktop call names unavailable:', e?.message);
+      console.warn('[Main] desktop call reading unavailable:', e?.message);
     }
+  }
+
+  /** Stops the desktop call reader and what hangs off it (mute, live meeting, snapshots). */
+  private stopDesktopCallSpeakers(): void {
+    this.desktopCallSpeakers?.stop();
+    this.desktopCallSpeakers = null;
+    this.screenShareContext?.stop();
+    this.screenShareContext = null;
+    liveMeetings.set(DESKTOP_CALL_LIVE_SOURCE, null);
+    meetingMuteSync.setMeetingActive(false);
   }
 
   private async endMeetingTransition(): Promise<void> {
     cancelSessionCalendarLink();
     // No more speaking reports once Stop is pressed; the save closes what was open.
-    this.desktopCallSpeakers?.stop();
-    this.desktopCallSpeakers = null;
+    // The mic is live again (no meeting-app mute outside a meeting).
+    this.stopDesktopCallSpeakers();
     // Idempotency guard: a double-click on Stop, or a Stop racing with a
     // global-shortcut reset, can deliver two endMeeting() calls within ms of
     // each other. Without this, both invocations would run the synchronous

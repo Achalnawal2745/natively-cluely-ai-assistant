@@ -992,6 +992,12 @@ export interface ElectronAPI {
   setMeetingDetectionEnabled?: (on: boolean) => Promise<{ success: boolean; error?: string }>
   getMeetingAutoStopEnabled?: () => Promise<boolean>
   setMeetingAutoStopEnabled?: (on: boolean) => Promise<{ success: boolean; error?: string }>
+  getFollowMeetingMute?: () => Promise<boolean>
+  setFollowMeetingMute?: (on: boolean) => Promise<{ success: boolean; error?: string }>
+  getMeetingMuteState?: () => Promise<{ muted: boolean; app: string | null }>
+  onMeetingMuteChanged?: (callback: (state: { muted: boolean; app: string | null }) => void) => () => void
+  getScreenShareSnapshots?: () => Promise<boolean>
+  setScreenShareSnapshots?: (on: boolean) => Promise<{ success: boolean; error?: string }>
   meetingAutoStopKeepGoing?: () => Promise<{ success: boolean }>
   meetingAutoStopTyping?: () => void
   /** The notes window (`?window=notes`): the overlay's Notes button, its own X. */

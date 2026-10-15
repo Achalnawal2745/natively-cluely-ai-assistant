@@ -1120,11 +1120,11 @@ chrome.action.onClicked.addListener(() => { void ensureWsConnected(); });
 
 // The Meet reader's reports (from a Meet page, so checked: our own content
 // script, on meet.google.com), relayed only while the desktop subscribed.
-chrome.runtime.onMessage.addListener((msg: { type?: string; key?: unknown; people?: unknown }, sender) => {
+chrome.runtime.onMessage.addListener((msg: { type?: string; key?: unknown; people?: unknown; selfMuted?: unknown }, sender) => {
   if (msg?.type !== 'meet-people') return;
   if (sender.id !== chrome.runtime.id || !sender.tab || !(sender.url || '').startsWith('https://meet.google.com/')) return;
   if (!meetingTabsOn || sender.tab.incognito) return;
-  wsSend({ type: 'meeting-people', key: msg.key, people: msg.people });
+  wsSend({ type: 'meeting-people', key: msg.key, people: msg.people, ...(typeof msg.selfMuted === 'boolean' ? { selfMuted: msg.selfMuted } : {}) });
 });
 chrome.permissions.onAdded.addListener(() => { void syncMeetReader(); });
 chrome.permissions.onRemoved.addListener(() => { void syncMeetReader(); });

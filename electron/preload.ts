@@ -879,6 +879,15 @@ interface ElectronAPI {
   setMeetingDetectionEnabled: (on: boolean) => Promise<{ success: boolean; error?: string }>;
   getMeetingAutoStopEnabled: () => Promise<boolean>;
   setMeetingAutoStopEnabled: (on: boolean) => Promise<{ success: boolean; error?: string }>;
+  /** Follow the meeting app's mute (Settings › Audio). */
+  getFollowMeetingMute: () => Promise<boolean>;
+  setFollowMeetingMute: (on: boolean) => Promise<{ success: boolean; error?: string }>;
+  /** Whether the user is muted in the meeting app right now, and which app says so. */
+  getMeetingMuteState: () => Promise<{ muted: boolean; app: string | null }>;
+  onMeetingMuteChanged: (callback: (state: { muted: boolean; app: string | null }) => void) => () => void;
+  /** Snapshot shared screens (Settings › Calendar). */
+  getScreenShareSnapshots: () => Promise<boolean>;
+  setScreenShareSnapshots: (on: boolean) => Promise<{ success: boolean; error?: string }>;
   /** The overlay's auto-stop notice: Keep going. */
   meetingAutoStopKeepGoing: () => Promise<{ success: boolean }>;
   /** The user is typing in the overlay (throttled by the caller). */
@@ -2801,6 +2810,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setMeetingAutoStopEnabled: (on: boolean) => ipcRenderer.invoke('set-meeting-auto-stop-enabled', on),
   meetingAutoStopKeepGoing: () => ipcRenderer.invoke('meeting-auto-stop-keep-going'),
   meetingAutoStopTyping: () => ipcRenderer.send('meeting-auto-stop-typing'),
+  getFollowMeetingMute: () => ipcRenderer.invoke('get-follow-meeting-mute'),
+  setFollowMeetingMute: (on: boolean) => ipcRenderer.invoke('set-follow-meeting-mute', on),
+  getMeetingMuteState: () => ipcRenderer.invoke('get-meeting-mute-state'),
+  onMeetingMuteChanged: (callback: (state: { muted: boolean; app: string | null }) => void) => {
+    const subscription = (_: any, state: any) => callback({ muted: state?.muted === true, app: typeof state?.app === 'string' ? state.app : null });
+    ipcRenderer.on('meeting-mute-changed', subscription);
+    return () => {
+      ipcRenderer.removeListener('meeting-mute-changed', subscription);
+    };
+  },
+  getScreenShareSnapshots: () => ipcRenderer.invoke('get-screen-share-snapshots'),
+  setScreenShareSnapshots: (on: boolean) => ipcRenderer.invoke('set-screen-share-snapshots', on),
   notesWindowToggle: () => ipcRenderer.invoke('notes-window:toggle'),
   notesWindowClose: () => ipcRenderer.invoke('notes-window:close'),
   notesWindowIsOpen: () => ipcRenderer.invoke('notes-window:is-open'),

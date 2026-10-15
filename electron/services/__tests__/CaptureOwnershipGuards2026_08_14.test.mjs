@@ -33,7 +33,8 @@ test('system-audio data path is instance-identity guarded', () => {
 });
 
 test('mic data path is instance-identity guarded', () => {
-  const writeIdx = source.indexOf('this.googleSTT_User?.write(chunk)');
+  // The mic chunk goes through the mute gate first ("Follow the meeting app's mute"): `heard`.
+  const writeIdx = source.indexOf('this.googleSTT_User?.write(heard)');
   assert.notEqual(writeIdx, -1, 'mic STT write not found');
   const guardIdx = source.lastIndexOf('this.microphoneCapture === capture', writeIdx);
   assert.notEqual(guardIdx, -1, 'no identity guard before the mic STT write');

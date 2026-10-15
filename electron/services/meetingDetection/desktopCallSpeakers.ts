@@ -17,6 +17,12 @@
  * by that app's detection lag on that OS (DETECTION_LAG_MS), so the spans line
  * up with the audio the transcript came from.
  *
+ * Each read also gives the call's other facts (callFacts.ts: the meeting ID
+ * when the window shows it, the app's head count, the user's own name there;
+ * callMuteState.ts: whether the user is muted; callScreenShare.ts: whether
+ * someone else is sharing a screen), handed to `onFacts` for the session,
+ * the mic and the screen-share snapshots. All read-only.
+ *
  * Never blocks: one read at a time, each bounded in the native module by node
  * count and wall time, and none of it on the audio path. macOS needs the
  * Accessibility permission, which Natively asks for elsewhere (stealth typing)
@@ -27,6 +33,9 @@
 import { appOfProcess, isSelf, type ProcessRef, type SelfIdentity } from './meetingApps';
 import { callRoster as defaultRoster, type CallRoster } from './callRoster';
 import { solveCallTree, type CallTree, type DesktopCallApp } from './callTreeSolvers';
+import { readCallFacts } from './callFacts';
+import { selfMuteFromTree } from './callMuteState';
+import { screenShareFromTree, type ScreenShareReading } from './callScreenShare';
 
 export type { DesktopCallApp } from './callTreeSolvers';
 
@@ -103,6 +112,28 @@ export interface DesktopCallNative {
     readCallTree?: (pid: number, options?: ReadCallTreeOptions | null) => Promise<CallTree | null>;
 }
 
+/** One read's facts about the call, beyond who is speaking. */
+export interface DesktopCallReport {
+    app: DesktopCallApp;
+    platform: string;
+    /** The roster key the people are reported under ('zoom-app:<pid>'). */
+    rosterKey: string;
+    /** When the tree was read. */
+    at: number;
+    /** meetingLinks key, once the window has shown one (kept for the call). */
+    meetingKey: string | null;
+    participantCount: number | null;
+    participants: string[];
+    /** The user's name as the app shows it, once seen (kept for the call). */
+    selfName: string | null;
+    /** true muted, false live, null unknown (counts as live). */
+    selfMuted: boolean | null;
+    share: ScreenShareReading;
+}
+
+/** Reads in a row a different meeting key must show before it replaces the one held. */
+export const MEETING_KEY_SWITCH_READS = 3;
+
 export interface DesktopCallSpeakersDeps {
     platform: string;
     native: DesktopCallNative | null;
@@ -111,6 +142,8 @@ export interface DesktopCallSpeakersDeps {
     selfNames?: () => string[];
     /** A call was found: its roster key, for the session's metadata. */
     onCall?: (key: string) => void;
+    /** Each read's facts; null when there is no call to read (any more). */
+    onFacts?: (report: DesktopCallReport | null) => void;
     /** Each tree read, for recording fixtures (NATIVELY_DUMP_CALL_TREE). */
     dump?: (app: DesktopCallApp, platform: string, tree: CallTree) => void;
     roster?: CallRoster;
@@ -151,6 +184,10 @@ export class DesktopCallSpeakers {
     private unrecognised = 0;
     private everRecognised = false;
     private lastDump = -Infinity;
+    private meetingKey: string | null = null;
+    private nextKey: { key: string; reads: number } | null = null;
+    private selfName: string | null = null;
+    private factsLive = false;
 
     constructor(private readonly deps: DesktopCallSpeakersDeps) {
         this.roster = deps.roster ?? defaultRoster;
@@ -202,6 +239,44 @@ export class DesktopCallSpeakers {
     private release(): void {
         if (this.call) this.roster.end(this.call.key);
         this.call = null;
+        this.meetingKey = null;
+        this.nextKey = null;
+        this.selfName = null;
+        this.reportFacts(null);
+    }
+
+    private reportFacts(report: DesktopCallReport | null): void {
+        if (!report && !this.factsLive) return;
+        this.factsLive = !!report;
+        try {
+            this.deps.onFacts?.(report);
+        } catch (err) {
+            this.once('facts', `a call-facts listener failed (${(err as Error)?.message ?? err})`);
+        }
+    }
+
+    /**
+     * The meeting the window shows: the first key seen holds for the call; a
+     * different one replaces it only after MEETING_KEY_SWITCH_READS reads in a
+     * row (the user moved to another meeting in the same app).
+     */
+    private settleMeetingKey(seen: string | null): string | null {
+        if (!seen || seen === this.meetingKey) {
+            if (seen) this.nextKey = null;
+            return this.meetingKey;
+        }
+        if (this.meetingKey === null) {
+            this.meetingKey = seen;
+            this.log(`the ${this.call?.app ?? 'meeting'} window names its meeting (${seen.split(':')[0]})`);
+            return seen;
+        }
+        this.nextKey = this.nextKey?.key === seen ? { key: seen, reads: this.nextKey.reads + 1 } : { key: seen, reads: 1 };
+        if (this.nextKey.reads >= MEETING_KEY_SWITCH_READS) {
+            this.meetingKey = seen;
+            this.nextKey = null;
+            this.log('the window now names a different meeting');
+        }
+        return this.meetingKey;
     }
 
     private once(id: string, message: string): void {
@@ -252,6 +327,7 @@ export class DesktopCallSpeakers {
         if (!tree) return LOCATE_MS;
         if (!tree.trusted) {
             this.once('untrusted', 'Accessibility is not granted; desktop call names stay off until it is');
+            this.reportFacts(null);
             return UNTRUSTED_RETRY_MS;
         }
         if (this.deps.dump && now - this.lastDump >= DUMP_EVERY_MS) {
@@ -260,7 +336,8 @@ export class DesktopCallSpeakers {
                 this.deps.dump(call.app, this.deps.platform, tree);
             } catch { /* a fixture recorder never stops the reads */ }
         }
-        const solved = solveCallTree(call.app, tree, [...(this.deps.selfNames?.() ?? []), ...this.learnedSelf]);
+        const knownSelf = [...(this.deps.selfNames?.() ?? []), ...this.learnedSelf];
+        const solved = solveCallTree(call.app, tree, knownSelf);
         for (const name of solved.selfNames) this.learnedSelf.add(name);
         if (solved.people.length === 0) {
             if (!this.everRecognised && ++this.unrecognised === UNRECOGNISED_LOG_AFTER) {
@@ -273,6 +350,22 @@ export class DesktopCallSpeakers {
         // The tree is as of the middle of the read; the voice began `lag` earlier.
         const seenAt = now + Math.round((tree.elapsedMs ?? 0) / 2) - call.lag;
         this.roster.report(call.key, solved.people, seenAt);
+        const facts = readCallFacts(call.app, tree, solved);
+        if (facts.participantCount !== null) this.roster.noteCount(call.key, facts.participantCount, now);
+        this.selfName ??= facts.selfName;
+        const mute = selfMuteFromTree(call.app, tree, [...knownSelf, ...solved.selfNames]);
+        this.reportFacts({
+            app: call.app,
+            platform: this.deps.platform,
+            rosterKey: call.key,
+            at: now,
+            meetingKey: this.settleMeetingKey(facts.meetingKey),
+            participantCount: facts.participantCount,
+            participants: facts.participants,
+            selfName: this.selfName,
+            selfMuted: mute.muted,
+            share: screenShareFromTree(call.app, tree),
+        });
         return POLL_MS;
     }
 }

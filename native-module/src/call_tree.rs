@@ -42,8 +42,12 @@ pub struct CallTreeNode {
     pub description: String,
     /// macOS AXValue (strings only); Windows ItemStatus.
     pub value: String,
-    /// macOS AXIdentifier; Windows AutomationId.
+    /// macOS AXIdentifier, else AXDOMIdentifier (a web view's element id);
+    /// Windows AutomationId (a WebView2 element's DOM id).
     pub id: String,
+    /// A link's address: macOS AXURL; Windows a Hyperlink's Value. Empty for
+    /// everything else. Read so a meeting's join link can be recognised.
+    pub url: String,
 }
 
 #[napi(object)]
@@ -98,6 +102,7 @@ pub(crate) struct NodeText {
     pub description: String,
     pub value: String,
     pub id: String,
+    pub url: String,
 }
 
 /// A tree the walk can read: the OS's (AX, UIA) or a test's.
@@ -133,6 +138,23 @@ pub(crate) fn clean_text(raw: &str) -> String {
     out.trim_end().to_string()
 }
 
+const MAX_URL: usize = 600;
+
+/// A link's address, kept only when it is http(s) and short enough to be a
+/// join link; anything else (a file:// path, a data: blob) is dropped.
+pub(crate) fn clean_url(raw: &str) -> String {
+    let url = raw.trim();
+    if url.len() > MAX_URL || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return String::new();
+    }
+    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        url.to_string()
+    } else {
+        String::new()
+    }
+}
+
 /// Walks `root` depth first, in tree order, into `out`. Empty leaves (no text,
 /// no children) are left out; containers stay, so the depths still say which
 /// tile a label belongs to. Returns true when a bound cut the walk short.
@@ -162,6 +184,7 @@ pub(crate) fn flatten<S: TreeSource>(
             description: clean_text(&text.description),
             value: clean_text(&text.value),
             id: clean_text(&text.id),
+            url: clean_url(&text.url),
         };
         let has_text = !(text.name.is_empty() && text.description.is_empty() && text.value.is_empty());
         if has_text || !children.is_empty() || depth == 0 {
@@ -173,6 +196,7 @@ pub(crate) fn flatten<S: TreeSource>(
                 description: text.description,
                 value: text.value,
                 id: text.id,
+                url: text.url,
             });
         }
         if want_children {
@@ -220,6 +244,7 @@ mod imp {
     use core_foundation::array::{CFArray, CFArrayRef};
     use core_foundation::base::{CFGetTypeID, CFType, CFTypeID, CFTypeRef, TCFType};
     use core_foundation::string::{CFString, CFStringRef};
+    use core_foundation::url::CFURL;
     use std::ffi::c_void;
     use std::time::Instant;
 
@@ -262,6 +287,14 @@ mod imp {
         value.downcast::<CFString>().map(|s| s.to_string()).unwrap_or_default()
     }
 
+    /// AXURL is a CFURL (some web views hand back a string instead).
+    fn url_of(value: &CFType) -> String {
+        if let Some(url) = value.downcast::<CFURL>() {
+            return url.get_string().to_string();
+        }
+        string_of(value)
+    }
+
     fn elements_of(value: &CFType, element_type: CFTypeID) -> Vec<Element> {
         let Some(array) = value.downcast::<CFArray<*const c_void>>() else { return Vec::new() };
         let mut out = Vec::with_capacity(array.len() as usize);
@@ -293,12 +326,15 @@ mod imp {
             let get = |i: isize| values.get(i).map(|v| (*v).clone());
             let role = get(0).map(|v| string_of(&v)).unwrap_or_default();
             let subrole = get(1).map(|v| string_of(&v)).unwrap_or_default();
+            let ax_id = get(5).map(|v| string_of(&v)).unwrap_or_default();
             let text = NodeText {
                 role: if subrole.is_empty() { role } else { format!("{}:{}", role, subrole) },
                 name: get(2).map(|v| string_of(&v)).unwrap_or_default(),
                 description: get(3).map(|v| string_of(&v)).unwrap_or_default(),
                 value: get(4).map(|v| string_of(&v)).unwrap_or_default(),
-                id: get(5).map(|v| string_of(&v)).unwrap_or_default(),
+                // A web view (Teams' WKWebView, Chrome) names its elements by DOM id.
+                id: if ax_id.is_empty() { get(7).map(|v| string_of(&v)).unwrap_or_default() } else { ax_id },
+                url: get(8).map(|v| url_of(&v)).unwrap_or_default(),
             };
             let children = if want_children {
                 get(6).map(|v| elements_of(&v, self.element_type)).unwrap_or_default()
@@ -336,7 +372,10 @@ mod imp {
         let app = Element(unsafe { CFType::wrap_under_create_rule(app as CFTypeRef) });
         let element_type = unsafe { AXUIElementGetTypeID() };
         let windows = copy_attribute(&app, "AXWindows").map(|v| elements_of(&v, element_type)).unwrap_or_default();
-        let names = ["AXRole", "AXSubrole", "AXTitle", "AXDescription", "AXValue", "AXIdentifier", "AXChildren"];
+        // Indices are read in Ax::visit: keep the order.
+        let names = [
+            "AXRole", "AXSubrole", "AXTitle", "AXDescription", "AXValue", "AXIdentifier", "AXChildren", "AXDOMIdentifier", "AXURL",
+        ];
         let attrs = CFArray::from_CFTypes(&names.iter().map(|n| CFString::new(n)).collect::<Vec<_>>());
         let mut ax = Ax { attrs, element_type };
         let mut remaining = limits.max_nodes;
@@ -364,11 +403,12 @@ mod imp {
     use super::{flatten, CallTree, CallTreeWindow, Limits, NodeText, TreeSource};
     use std::time::Instant;
     use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::System::Variant::{VariantClear, VT_BSTR};
     use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
     use windows::Win32::UI::Accessibility::{
         CUIAutomation, IUIAutomation, IUIAutomation2, IUIAutomationCacheRequest, IUIAutomationElement, TreeScope_Subtree,
         UIA_AutomationIdPropertyId, UIA_ControlTypePropertyId, UIA_HelpTextPropertyId, UIA_ItemStatusPropertyId,
-        UIA_NamePropertyId,
+        UIA_NamePropertyId, UIA_ValueValuePropertyId,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
@@ -431,12 +471,17 @@ mod imp {
             // SAFETY: cached reads on an element built with the cache request
             // below; no cross-process call happens here.
             unsafe {
+                let role = node.CachedControlType().map(|t| control_type_name(t.0).to_string()).unwrap_or_default();
+                // Only a link's Value is read: an edit field's Value is what
+                // someone is typing, which is none of this reader's business.
+                let url = if role == "Hyperlink" { cached_string(node, UIA_ValueValuePropertyId) } else { String::new() };
                 let text = NodeText {
-                    role: node.CachedControlType().map(|t| control_type_name(t.0).to_string()).unwrap_or_default(),
+                    role,
                     name: node.CachedName().map(|s| s.to_string()).unwrap_or_default(),
                     description: node.CachedHelpText().map(|s| s.to_string()).unwrap_or_default(),
                     value: node.CachedItemStatus().map(|s| s.to_string()).unwrap_or_default(),
                     id: node.CachedAutomationId().map(|s| s.to_string()).unwrap_or_default(),
+                    url,
                 };
                 let mut children = Vec::new();
                 if want_children {
@@ -452,6 +497,15 @@ mod imp {
                 (text, children)
             }
         }
+    }
+
+    /// A cached property that holds a string (VT_BSTR); empty otherwise.
+    unsafe fn cached_string(node: &IUIAutomationElement, prop: windows::Win32::UI::Accessibility::UIA_PROPERTY_ID) -> String {
+        let Ok(mut variant) = node.GetCachedPropertyValue(prop) else { return String::new() };
+        let inner = &variant.Anonymous.Anonymous;
+        let out = if inner.vt == VT_BSTR { (*inner.Anonymous.bstrVal).to_string() } else { String::new() };
+        let _ = VariantClear(&mut variant);
+        out
     }
 
     struct Found {
@@ -483,6 +537,7 @@ mod imp {
                 UIA_AutomationIdPropertyId,
                 UIA_HelpTextPropertyId,
                 UIA_ItemStatusPropertyId,
+                UIA_ValueValuePropertyId,
             ] {
                 request.AddProperty(prop)?;
             }
@@ -628,6 +683,16 @@ mod tests {
         assert_eq!(clean_text("  Ana\n\tLopez \u{0}(Host) "), "Ana Lopez (Host)");
         assert_eq!(clean_text(&"é".repeat(500)).chars().count(), MAX_TEXT);
         assert_eq!(clean_text(""), "");
+    }
+
+    #[test]
+    fn only_web_links_are_kept_as_urls() {
+        assert_eq!(clean_url(" https://us02web.zoom.us/j/81234567890?pwd=x "), "https://us02web.zoom.us/j/81234567890?pwd=x");
+        assert_eq!(clean_url("HTTP://teams.microsoft.com/meet/241342539466"), "HTTP://teams.microsoft.com/meet/241342539466");
+        assert_eq!(clean_url("file:///Users/me/notes.txt"), "");
+        assert_eq!(clean_url("https://a b"), "");
+        assert_eq!(clean_url(&format!("https://x.com/{}", "a".repeat(700))), "");
+        assert_eq!(clean_url(""), "");
     }
 
     #[test]

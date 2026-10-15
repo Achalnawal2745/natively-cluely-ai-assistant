@@ -76,5 +76,9 @@ windows = { version = "0.52.0", features = [
     #   Win32_System_Registry             — the microphone consent store (meeting_signals.rs):
     #                                       which apps are using the microphone right now.
     "Win32_System_Registry",
+    #   Win32_System_Variant / Win32_System_Ole — a cached UI Automation property as a
+    #                                       VARIANT (call_tree.rs: a meeting link's address).
+    "Win32_System_Variant",
+    "Win32_System_Ole",
 ] }
 tracing = "0.1.44"
