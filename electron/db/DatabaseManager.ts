@@ -3759,6 +3759,66 @@ export class DatabaseManager {
         } catch (e) {
             console.error('[DatabaseManager] notes versions / ratings tables could not be created:', e);
         }
+        // Blind A/B picks between two versions of the notes (services/meeting/notesCompare.ts).
+        try {
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS meeting_notes_comparisons (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    meeting_id  TEXT NOT NULL,
+                    a_hash      TEXT NOT NULL,
+                    b_hash      TEXT NOT NULL,
+                    a_label     TEXT,
+                    b_label     TEXT,
+                    a_provider  TEXT,
+                    a_model     TEXT,
+                    b_provider  TEXT,
+                    b_model     TEXT,
+                    choice      TEXT NOT NULL CHECK (choice IN ('a', 'b', 'same')),
+                    reason      TEXT,
+                    created_at  INTEGER NOT NULL,
+                    FOREIGN KEY(meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_meeting_notes_comparisons_meeting ON meeting_notes_comparisons(meeting_id);
+            `);
+        } catch (e) {
+            console.error('[DatabaseManager] notes comparisons table could not be created:', e);
+        }
+    }
+
+    /** Store one blind A/B pick between two versions of a meeting's notes. */
+    public saveNotesComparison(r: {
+        meetingId: string; aHash: string; bHash: string; aLabel: string; bLabel: string;
+        aProvider: string | null; aModel: string | null; bProvider: string | null; bModel: string | null;
+        choice: 'a' | 'b' | 'same'; reason: string | null; createdAt: number;
+    }): boolean {
+        if (!this.db) return false;
+        if (r.choice !== 'a' && r.choice !== 'b' && r.choice !== 'same') return false;
+        try {
+            return this.db.prepare(`
+                INSERT INTO meeting_notes_comparisons (meeting_id, a_hash, b_hash, a_label, b_label, a_provider, a_model, b_provider, b_model, choice, reason, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+                r.meetingId, r.aHash, r.bHash, r.aLabel, r.bLabel, r.aProvider, r.aModel, r.bProvider, r.bModel,
+                r.choice, r.reason?.trim() ? r.reason.trim().slice(0, 2000) : null, r.createdAt,
+            ).changes > 0;
+        } catch (e: any) {
+            console.warn(`[DatabaseManager] the notes comparison was not stored for ${r.meetingId}:`, e?.message);
+            return false;
+        }
+    }
+
+    /** Every blind A/B pick, oldest first. */
+    public listNotesComparisons(): Array<{ meetingId: string; aHash: string; bHash: string; aLabel: string | null; bLabel: string | null; aProvider: string | null; aModel: string | null; bProvider: string | null; bModel: string | null; choice: 'a' | 'b' | 'same'; reason: string | null; createdAt: number }> {
+        if (!this.db) return [];
+        try {
+            return (this.db.prepare('SELECT * FROM meeting_notes_comparisons ORDER BY created_at ASC, id ASC').all() as any[]).map((r) => ({
+                meetingId: r.meeting_id, aHash: r.a_hash, bHash: r.b_hash, aLabel: r.a_label ?? null, bLabel: r.b_label ?? null,
+                aProvider: r.a_provider ?? null, aModel: r.a_model ?? null, bProvider: r.b_provider ?? null, bModel: r.b_model ?? null,
+                choice: r.choice, reason: r.reason ?? null, createdAt: r.created_at,
+            }));
+        } catch {
+            return [];
+        }
     }
 
     public setMeetingUserNotes(id: string, text: string | null): boolean {

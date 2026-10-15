@@ -32,7 +32,8 @@ export function micAppsOf(platform: string, micUsers: ProcessRef[] | null, self:
         if (isSelf(platform, proc, self)) continue;
         const app = appOfProcess(platform, proc);
         if (!app) continue;
-        const list = app.kind === 'meeting' ? meeting : browser;
+        // Chat apps that call (WhatsApp, Slack…) end a call the way meeting apps do.
+        const list = app.kind === 'browser' ? browser : meeting;
         if (!list.includes(app.name)) list.push(app.name);
     }
     return [...meeting, ...browser];

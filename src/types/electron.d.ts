@@ -429,7 +429,7 @@ export interface ElectronAPI {
   onAudioCaptureFailed: (callback: (payload: { channel: 'system' | 'mic'; message: string; attempt: number; maxAttempts: number; terminal?: boolean; stuck?: boolean; titleKey?: string }) => void) => () => void
 
   // STT Status Events
-  onSttStatusChanged: (callback: (data: { state: 'connected' | 'reconnecting' | 'failed' | 'awaiting-audio' | 'preparing'; provider: string; error?: string; channel: 'user' | 'interviewer'; reconnectAttempts?: number }) => void) => () => void
+  onSttStatusChanged: (callback: (data: { state: 'connected' | 'reconnecting' | 'failed' | 'awaiting-audio' | 'preparing'; provider: string; error?: string; channel: 'user' | 'interviewer'; reconnectAttempts?: number; /** A stand-in carries the channel while `provider` is down. */ fallback?: { provider: string; notice: string } }) => void) => () => void
 
   getNativeAudioStatus: () => Promise<{ connected: boolean }>
 
@@ -990,9 +990,22 @@ export interface ElectronAPI {
   /** Meeting detection (Settings › Calendar): offer to start when a call begins. */
   getMeetingDetectionEnabled?: () => Promise<boolean>
   setMeetingDetectionEnabled?: (on: boolean) => Promise<{ success: boolean; error?: string }>
+  /** Start automatically (Settings › Calendar): a detected call starts after a 10 s countdown. Default off. */
+  getMeetingAutoStartEnabled?: () => Promise<boolean>
+  setMeetingAutoStartEnabled?: (on: boolean) => Promise<{ success: boolean; error?: string }>
+  /** Calendar reminder lead time in minutes: 1, 2 or 5. */
+  getCalendarReminderMinutes?: () => Promise<number>
+  setCalendarReminderMinutes?: (minutes: number) => Promise<{ success: boolean; error?: string }>
+  /** The "meeting detected" offer for the launcher's panel (null clears it). autoStartAt: wall time of the automatic start. */
+  onMeetingOffer?: (callback: (offer: { id: string; title: string | null; app: string; body: string; autoStartAt: number | null } | null) => void) => () => void
+  getMeetingOffer?: () => Promise<{ id: string; title: string | null; app: string; body: string; autoStartAt: number | null } | null>
+  startMeetingOffer?: (id: string) => Promise<{ success: boolean }>
+  dismissMeetingOffer?: (id: string) => Promise<{ success: boolean }>
   getMeetingAutoStopEnabled?: () => Promise<boolean>
   setMeetingAutoStopEnabled?: (on: boolean) => Promise<{ success: boolean; error?: string }>
   getFollowMeetingMute?: () => Promise<boolean>
+  getDictationEnabled?: () => Promise<boolean>
+  setDictationEnabled?: (on: boolean) => Promise<{ success: boolean; error?: string }>
   setFollowMeetingMute?: (on: boolean) => Promise<{ success: boolean; error?: string }>
   getMeetingMuteState?: () => Promise<{ muted: boolean; app: string | null }>
   onMeetingMuteChanged?: (callback: (state: { muted: boolean; app: string | null }) => void) => () => void
@@ -1018,6 +1031,9 @@ export interface ElectronAPI {
   /** Thumbs up / down on the notes shown (current: versionId null). */
   rateMeetingNotes?: (input: { meetingId: string; rating: 'up' | 'down'; comment?: string; versionId?: number | null }) => Promise<{ success: boolean }>
   getMeetingNotesRating?: (input: { meetingId: string; versionId?: number | null }) => Promise<{ rating: 'up' | 'down'; comment: string | null } | null>
+  /** Compare two versions of the notes blind: A and B in a random order, named only after the pick. */
+  compareMeetingNotesStart?: (input: { meetingId: string; versions: [number | 'current', number | 'current'] }) => Promise<{ id: string; a: any; b: any } | null>
+  compareMeetingNotesPick?: (input: { id: string; choice: 'A' | 'B' | 'same'; reason?: string }) => Promise<{ choice: 'A' | 'B' | 'same'; saved: boolean; a: { version: 'current' | number; label: string; provider: string | null; model: string | null }; b: { version: 'current' | number; label: string; provider: string | null; model: string | null } } | null>
   onMeetingAutoStopNotice?: (callback: (data: { stopsAt: number | null }) => void) => () => void
   /** A notification's Start (a detected call, the calendar reminder), relayed by main to the launcher. */
   onMeetingStartRequest?: (callback: (req: { title?: string; calendarEventId?: string; via?: 'detected' | 'reminder' }) => void) => () => void

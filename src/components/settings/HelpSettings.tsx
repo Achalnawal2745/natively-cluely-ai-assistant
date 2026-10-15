@@ -627,8 +627,9 @@ const HelpPane: React.FC<{
                         </p>
                         <HelpSubhead>Detect meetings</HelpSubhead>
                         <p>
-                            On by default, in <HelpPath parts={['Calendar']} />, with or without a calendar: when a Zoom, Teams, Meet or Webex
-                            call starts, a notification offers to start Natively. It stays quiet while Undetectable is on.
+                            On by default, in <HelpPath parts={['Calendar']} />, with or without a calendar: when a call starts in Zoom, Teams, Meet,
+                            Webex, Slack or another call app, Natively offers to start: a notice in the window and a notification.
+                            Turn on Start automatically to start after 10 seconds unless you press Not now. It stays quiet while Undetectable is on.
                             {facts.meetingDetection && <> {facts.meetingDetection}</>}
                         </p>
                     </HelpGuideRow>

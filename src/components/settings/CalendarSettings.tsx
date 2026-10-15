@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { AlertCircle, ArrowUpRight, CalendarDays, CalendarRange, Check, Info, Link2, Loader2, PhoneOff, RefreshCw, ScreenShare, Video } from 'lucide-react';
+import { AlertCircle, ArrowUpRight, Bell, CalendarDays, CalendarRange, Check, Info, Link2, Loader2, PhoneOff, RefreshCw, ScreenShare, Video } from 'lucide-react';
 import { useLanguage, useT } from '../../i18n';
 import { useResolvedTheme } from '../../hooks/useResolvedTheme';
 import { Collapse, CollapseItem, Presence, SettingsMotionReady, SwapLabel, useMotionReadyAfter, useSettledFlag } from './SettingsRow';
@@ -286,6 +286,48 @@ export const CalendarSettings: React.FC = () => {
     window.electronAPI?.setMeetingDetectionEnabled?.(!was)
       .then((r) => { if (!r?.success) setDetect(was); })
       .catch(() => setDetect(was));
+  }, []);
+
+  // Start automatically (under Detect meetings): a detected call starts after
+  // the offer's 10 s countdown unless Not now. Off unless turned on. Same
+  // save-first pattern as Detect meetings.
+  const [autoStart, setAutoStart] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    window.electronAPI?.getMeetingAutoStartEnabled?.()
+      .then((on) => { if (live) setAutoStart(on === true); })
+      .catch(() => { if (live) setAutoStart(false); });
+    return () => { live = false; };
+  }, []);
+  const autoStartRef = useRef(autoStart);
+  autoStartRef.current = autoStart;
+  const toggleAutoStart = useCallback(() => {
+    const was = autoStartRef.current;
+    if (was === null) return;
+    setAutoStart(!was);
+    window.electronAPI?.setMeetingAutoStartEnabled?.(!was)
+      .then((r) => { if (!r?.success) setAutoStart(was); })
+      .catch(() => setAutoStart(was));
+  }, []);
+
+  // How long before a calendar meeting the reminder comes: 1, 2 or 5 minutes.
+  const [reminderLead, setReminderLead] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    window.electronAPI?.getCalendarReminderMinutes?.()
+      .then((m) => { if (live) setReminderLead(typeof m === 'number' ? m : 2); })
+      .catch(() => { if (live) setReminderLead(2); });
+    return () => { live = false; };
+  }, []);
+  const reminderLeadRef = useRef(reminderLead);
+  reminderLeadRef.current = reminderLead;
+  const chooseReminderLead = useCallback((minutes: number) => {
+    const was = reminderLeadRef.current;
+    if (was === null || was === minutes) return;
+    setReminderLead(minutes);
+    window.electronAPI?.setCalendarReminderMinutes?.(minutes)
+      .then((r) => { if (!r?.success) setReminderLead(was); })
+      .catch(() => setReminderLead(was));
   }, []);
 
   // End meetings automatically when the call ends (main's MeetingEndDetector).
@@ -852,10 +894,54 @@ export const CalendarSettings: React.FC = () => {
               </span>
             </div>
             <p className="cp-desc" style={{ margin: 0 }}>
-              {t('Offers to start Natively when a Zoom, Teams, Meet or Webex call begins.')}
+              {t('Offers to start Natively when a call begins in Zoom, Teams, Meet, Webex, Slack or another call app.')}
+            </p>
+            <div className="cp-card-header" style={{ marginTop: 12 }}>
+              <h4 className="cp-card-label">{t('Start automatically')}</h4>
+              <span className="ml-auto flex items-center">
+                <SettingsToggle
+                  checked={!!autoStart && !!detect}
+                  onChange={toggleAutoStart}
+                  label={t('Start automatically')}
+                  disabled={autoStart === null || !detect}
+                />
+              </span>
+            </div>
+            <p className="cp-desc" style={{ margin: 0 }}>
+              {t('Starts Natively 10 seconds after a call is detected, unless you press Not now.')}
             </p>
           </div>
         </section>
+
+        {/* ── Calendar reminder lead time ── */}
+        {connected && (
+          <section>
+            <div className="cp-card">
+              <div className="cp-card-header">
+                <span className="cp-card-icon"><Bell size={12} /></span>
+                <h4 className="cp-card-label">{t('Remind me before meetings')}</h4>
+                <span className="ml-auto flex items-center gap-1.5" role="radiogroup" aria-label={t('Remind me before meetings')}>
+                  {[1, 2, 5].map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      role="radio"
+                      aria-checked={reminderLead === m}
+                      className={`cp-pill cp-pill--sm${reminderLead === m ? ' cp-pill--start' : ''}`}
+                      onClick={() => chooseReminderLead(m)}
+                      disabled={reminderLead === null}
+                    >
+                      {m === 1 ? t('1 min') : m === 2 ? t('2 min') : t('5 min')}
+                    </button>
+                  ))}
+                </span>
+              </div>
+              <p className="cp-desc" style={{ margin: 0 }}>
+                {t('A notification before each calendar meeting offers to start Natively.')}
+              </p>
+            </div>
+          </section>
+        )}
 
         {/* ── End meetings automatically ── */}
         <section>

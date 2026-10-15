@@ -4,7 +4,8 @@
  *
  * Every `pollMs` it reads the signals (detectMeeting.ts). A call must hold for
  * `confirmMs` before it is announced, so a microphone test or a two-second
- * voice note isn't; it is announced once, and only announced again after it
+ * voice note isn't (a chat app's, `messagingConfirmMs`: voice notes there run
+ * longer); it is announced once, and only announced again after it
  * has been gone for `rearmMs` (a new call). While a Natively meeting runs,
  * whatever call is on counts as handled, so stopping Natively mid-call doesn't
  * prompt for that same call.
@@ -26,6 +27,8 @@ export interface MeetingDetectorDeps {
 export interface MeetingDetectorOptions {
     pollMs?: number;
     confirmMs?: number;
+    /** A chat app's call (WhatsApp, Slack…): long enough that a voice note is not one. */
+    messagingConfirmMs?: number;
     rearmMs?: number;
 }
 
@@ -38,6 +41,7 @@ interface CallRecord {
 export class MeetingDetector {
     private readonly pollMs: number;
     private readonly confirmMs: number;
+    private readonly messagingConfirmMs: number;
     private readonly rearmMs: number;
     private readonly now: () => number;
     private timer: unknown = null;
@@ -46,6 +50,7 @@ export class MeetingDetector {
     constructor(private readonly deps: MeetingDetectorDeps, options: MeetingDetectorOptions = {}) {
         this.pollMs = options.pollMs ?? 2_000;
         this.confirmMs = options.confirmMs ?? 4_000;
+        this.messagingConfirmMs = options.messagingConfirmMs ?? 20_000;
         this.rearmMs = options.rearmMs ?? 60_000;
         this.now = deps.now ?? Date.now;
     }
@@ -80,7 +85,7 @@ export class MeetingDetector {
             this.calls.set(detection.id, call);
             if (this.deps.isMeetingActive()) {
                 call.announced = true;
-            } else if (!call.announced && now - call.firstSeen >= this.confirmMs) {
+            } else if (!call.announced && now - call.firstSeen >= (detection.messaging ? this.messagingConfirmMs : this.confirmMs)) {
                 call.announced = true;
                 try {
                     this.deps.onDetected(detection);

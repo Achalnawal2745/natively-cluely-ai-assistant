@@ -1239,6 +1239,7 @@ import { AutoAnswerUsageTelemetry } from "./intelligence/autoAnswer/AutoAnswerUs
 import { currentWhisperGlossaryPrompt, nameTerms, setSttContextTerms, setSttDictionaryTerms } from "./audio/sttContextTerms"
 import { getUserDictionary } from "./audio/userDictionary"
 import { LOCAL_STT_PROVIDERS, SttGapRecoveryCoordinator, type RecoveredSegment, type SttSource } from "./audio/sttGapRecovery"
+import { SttFailover, failoverNotice, type FailoverStatus } from "./audio/sttFailover"
 import { resolveAutoAnswerThresholds } from "./context-intelligence/policies/mode-policy-registry"
 import type { SpeechEdge } from "./audio/speechEdge"
 import { SonioxStreamingSTT } from "./audio/SonioxStreamingSTT"
@@ -1276,6 +1277,8 @@ interface SttStatusPayload {
   error?: string;
   channel: 'user' | 'interviewer';
   reconnectAttempts?: number;
+  /** A stand-in carries the channel while `provider` is down (audio/sttFailover.ts). */
+  fallback?: { provider: string; notice: string };
 }
 
 export interface LocalWhisperRecoveryNotice {
@@ -1347,7 +1350,7 @@ import { meetingMuteSync, muteSourceName, type MuteSource } from './services/mee
 import { ScreenShareContext } from './services/meeting/ScreenShareContext'
 import { captureShareFrame, clearScreenShareFrames } from './services/meeting/screenShareCapture'
 import { SHORTCUT_TOUR_ACTIONS } from './services/shortcutTourActions'
-import { wireMeetingDetection, registerMeetingDetection, electronNotify, type MeetingStartRequest } from './services/meetingDetection/wireMeetingDetection'
+import { wireMeetingDetection, registerMeetingDetection, electronNotify, closeDetectedNotification, type MeetingStartRequest } from './services/meetingDetection/wireMeetingDetection'
 import { createMeetingAutoStop, inactivityMinutes, registerQuitFlush, type MeetingAutoStop } from './services/meeting/wireMeetingAutoStop'
 import { liveMeetings } from './services/meetingDetection/liveMeetings'
 /** The Zoom / Teams window reader's place in liveMeetings (its meeting, once the window names it). */
@@ -1991,7 +1994,11 @@ export class AppState {
         return;
       }
       try {
-        if (actionId === 'general:toggle-visibility') {
+        if (actionId === 'dictation:toggle') {
+          // Dictation (services/dictation): the mic to the clipboard. It never
+          // presses keys or moves focus; the user pastes.
+          require('./services/dictation/wireDictation').pressDictation();
+        } else if (actionId === 'general:toggle-visibility') {
           this.toggleMainWindow(true);
         } else if (actionId === 'general:toggle-mouse-passthrough') {
           // Adapted from public PR #113 — verify premium interaction
@@ -2555,6 +2562,11 @@ export class AppState {
 
   public getIsMeetingActive(): boolean {
     return this.isMeetingActive;
+  }
+
+  /** The microphone the last meeting asked for (dictation opens the same one), or undefined for the default. */
+  public getLastInputDeviceId(): string | undefined {
+    return this._lastRequestedInputDeviceId;
   }
 
   public isQuitting(): boolean {
@@ -3421,6 +3433,12 @@ export class AppState {
     mic: { effective: '', streaming: false },
     system: { effective: '', streaming: false },
   };
+  /**
+   * Mid-meeting failover (audio/sttFailover.ts), per source: while the live
+   * cloud provider is down past the reconnect policy, another transcriber the
+   * user set up carries the live stream until it is back.
+   */
+  private readonly _sttFailover: Record<SttSource, SttFailover | null> = { mic: null, system: null };
   private readonly sttGap = new SttGapRecoveryCoordinator({
     transcribers: (source) => {
       const { buildRecoveryTranscribers } = require('./audio/sttRecoveryTranscribers');
@@ -3893,8 +3911,9 @@ export class AppState {
       });
     }
 
-    // Wire Transcript Events
-    stt.on('transcript', (segment: { text: string, isFinal: boolean, confidence: number, speakerId?: string }) => {
+    // Wire Transcript Events. One handler for the provider's segments and,
+    // while it is down, its stand-in's (sttFailover.ts; `sttId` says whose).
+    const onSegment = (segment: { text: string, isFinal: boolean, confidence: number, speakerId?: string }, sttId: string = effectiveSttId) => {
       // Accept transcripts while a meeting is active OR while we're draining
       // trailing finals after Stop. `_isDraining` covers the ~250 ms grace
       // window between Stop click and STT socket close so the user's last
@@ -3921,8 +3940,8 @@ export class AppState {
         // WTA audit F9: provider identity + punctuation provenance, so
         // downstream question scoring can treat a missing '?' as NEUTRAL
         // when this provider never guaranteed punctuation.
-        sttProvider: effectiveSttId,
-        punctuationSource: punctuationSourceFor(effectiveSttId, segment.isFinal),
+        sttProvider: sttId,
+        punctuationSource: punctuationSourceFor(sttId, segment.isFinal),
       });
 
       // Auto Answer (Settings > General, default OFF). Engine per the A/B
@@ -3942,8 +3961,8 @@ export class AppState {
           final: segment.isFinal,
           confidence: segment.confidence,
           origin: 'stt',
-          sttProvider: effectiveSttId,
-          punctuationSource: punctuationSourceFor(effectiveSttId, segment.isFinal),
+          sttProvider: sttId,
+          punctuationSource: punctuationSourceFor(sttId, segment.isFinal),
         } as any);
       }
 
@@ -3987,6 +4006,67 @@ export class AppState {
           this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
         }
       }
+    };
+
+    // Failover (audio/sttFailover.ts): while this provider is down past the
+    // reconnect policy below, the next transcriber the user set up (another
+    // cloud key, else a local model on disk; gap recovery's own privacy plan)
+    // carries the live stream, until this one is back.
+    this._sttFailover[gapSource]?.stop();
+    const rawStop = stt.stop.bind(stt);
+    const failover = new SttFailover({
+      source: gapSource,
+      primary: effectiveSttId,
+      candidates: () => {
+        if (LOCAL_STT_PROVIDERS.has(effectiveSttId)) return [];
+        let localOnly = false;
+        try { localOnly = !!this.processingHelper?.getLLMHelper?.()?.isLocalOnly?.(); } catch { /* not local-only */ }
+        return require('./audio/sttRecoveryTranscribers').failoverCandidates(gapSource, { effectiveProvider: effectiveSttId, localOnly });
+      },
+      create: (id) => require('./audio/sttRecoveryTranscribers').createPrivateSttInstance(id, gapSource),
+      // A provider that reports no confidence counts as sure, as the providers' own do.
+      onTranscript: (seg, id) => onSegment({ ...seg, confidence: typeof seg.confidence === 'number' ? seg.confidence : 1 }, id),
+      onStatus: (st: FailoverStatus) => {
+        if (st.phase === 'fallback' && st.fallback) {
+          _lastState = 'connected';
+          _consecutiveErrors = 0;
+          this.sendSttStatus({
+            state: 'connected',
+            provider: sttProvider,
+            channel: speaker,
+            fallback: { provider: st.fallback, notice: failoverNotice(effectiveSttId, st.fallback) },
+          });
+        } else if (st.reason === 'exhausted') {
+          _lastState = 'failed';
+          this.sendSttStatus({ state: 'failed', provider: sttProvider, channel: speaker, error: 'No other transcription provider could take over.' } as SttStatusPayload);
+        } else if (st.reason === 'recovered') {
+          // Back on the user's own provider: the notice goes.
+          _lastState = 'connected';
+          _consecutiveErrors = 0;
+          this.sendSttStatus({ state: 'connected', provider: sttProvider, channel: speaker } as SttStatusPayload);
+        }
+      },
+      // The probe: a fresh connection for a primary that latched off. Not
+      // through stt.stop(), which also ends the stand-in.
+      restartPrimary: () => {
+        if (!this.isMeetingActive) return;
+        rawStop();
+        stt.start();
+      },
+      log: (line) => console.log(`[STTFailover] ${line}`),
+    });
+    this._sttFailover[gapSource] = failover;
+    // Every teardown of this provider (meeting end, reconfigure, sleep/wake)
+    // ends its stand-in too.
+    (stt as any).stop = () => {
+      failover.stop();
+      return rawStop();
+    };
+    stt.on('transcript', (segment: { text: string, isFinal: boolean, confidence: number, speakerId?: string }) => {
+      // While a stand-in leads, the primary's partials wait; its first final
+      // means it is back (and is dropped when the stand-in already said it).
+      if (!failover.acceptPrimary(segment)) return;
+      onSegment(segment);
     });
 
     // Consecutive failure counter — reset on any successful final transcript
@@ -4060,6 +4140,10 @@ export class AppState {
         return;
       }
 
+      // A stand-in carries this channel (sttFailover.ts): the provider keeps
+      // retrying quietly, and there is no outage to recover.
+      if (failover.active) return;
+
       // Retryable: network drop, timeout, 5xx, 400, 429, WS drop. The audio
       // from here until text comes back is kept for recovery (sttGapRecovery.ts).
       this.sttGap.onProviderError(gapSource);
@@ -4067,6 +4151,9 @@ export class AppState {
       const maxErrors = 5;
 
       if (_consecutiveErrors >= maxErrors || isQuotaError) {
+        // Past the reconnect policy: another transcriber takes the live stream
+        // when the user has one set up (it reports its own status).
+        if (failover.engage()) return;
         _lastState = 'failed';
         this.sendSttStatus( {
           state: 'failed',
@@ -4355,6 +4442,8 @@ export class AppState {
         const rate = capture.getSampleRate();
         this.googleSTT.setSampleRate(rate);
         this.googleSTT.setAudioChannelCount?.(1);
+        this._sttFailover.system?.setSampleRate(rate);
+        this._sttFailover.system?.setAudioChannelCount(1);
         this._sysSttRateApplied = true;
         console.log(`${prefix}Interviewer STT rate locked from first chunk: ${rate}Hz`);
       }
@@ -4376,6 +4465,8 @@ export class AppState {
           if (!gapRate) gapRate = capture.getSampleRate();
           this.sttGap.onAudio('system', chunk, gapRate);
         }
+        // A stand-in while the provider is down (sttFailover.ts); nothing otherwise.
+        this._sttFailover.system?.write(chunk);
         // Smart Turn ring buffer (256 KB, interviewer channel only). Cheap
         // int16 copy; skipped entirely while Auto Answer is off.
       }
@@ -4385,11 +4476,13 @@ export class AppState {
       gapRate = rate;
       if (this.systemAudioCapture === capture) {
         this.googleSTT?.setSampleRate(rate);
+        this._sttFailover.system?.setSampleRate(rate);
       }
     });
     capture.on('speech_ended', () => {
       if (this.systemAudioCapture === capture) {
         this.googleSTT?.notifySpeechEnded?.();
+        this._sttFailover.system?.notifySpeechEnded();
         // Auto Answer: the local VAD saw the interviewer stop. For a provider
         // with no end-of-turn event of its own this is the only early signal;
         // the controller guards against a half-transcribed turn by ignoring the
@@ -4499,6 +4592,8 @@ export class AppState {
         const rate = capture.getSampleRate();
         this.googleSTT_User.setSampleRate(rate);
         this.googleSTT_User.setAudioChannelCount?.(1);
+        this._sttFailover.mic?.setSampleRate(rate);
+        this._sttFailover.mic?.setAudioChannelCount(1);
         this._micSttRateApplied = true;
         console.log(`${prefix}User STT rate locked from first mic chunk: ${rate}Hz`);
       }
@@ -4604,6 +4699,8 @@ export class AppState {
           if (!gapRate) gapRate = capture.getSampleRate();
           this.sttGap.onAudio('mic', heard, gapRate);
         }
+        // A stand-in while the provider is down (sttFailover.ts); nothing otherwise.
+        this._sttFailover.mic?.write(heard);
       }
     });
     capture.on('sample_rate_changed', (rate: number) => {
@@ -4611,11 +4708,13 @@ export class AppState {
       gapRate = rate;
       if (this.microphoneCapture === capture) {
         this.googleSTT_User?.setSampleRate(rate);
+        this._sttFailover.mic?.setSampleRate(rate);
       }
     });
     capture.on('speech_ended', () => {
       if (this.microphoneCapture === capture) {
         this.googleSTT_User?.notifySpeechEnded?.();
+        this._sttFailover.mic?.notifySpeechEnded();
       }
     });
     capture.on('speech_edge', (edge: SpeechEdge) => {
@@ -6846,6 +6945,10 @@ export class AppState {
       this.notesWindowHelper.reopenForMeeting();
     } catch (e) { console.warn('[Main] notes window not reopened:', (e as Error)?.message); }
     this.meetingAutoStop.start({ ambientChat: this._ambientChatEnabled, undetectable: this.isUndetectable });
+    // A "meeting detected" offer still up (panel, notification, countdown) is answered.
+    try { require('./services/meetingDetection/wireMeetingDetection').getMeetingOffers()?.clear('meeting started'); } catch { /* nothing offered */ }
+    // A dictation still recording lets go of the microphone: the meeting owns it now.
+    try { require('./services/dictation/wireDictation').cancelDictation(); } catch { /* no dictation */ }
     // Gap recovery for cloud transcription; a local model has no connection to lose.
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
@@ -10157,9 +10260,42 @@ if (process.env.THINKING_MATRIX === '1') {
     },
     requestStart: requestMeetingStart,
     notify: electronNotify,
+    closeNotification: closeDetectedNotification,
+    // The launcher's "meeting detected" panel (App.tsx MeetingOfferToast). It
+    // shows whenever the launcher is on screen; the notification is skipped
+    // only while the user is looking at the launcher.
+    showPanel: (offer) => {
+      const launcher = appState.getWindowHelper().getLauncherWindow();
+      if (launcher && hasLiveRenderer(launcher)) launcher.webContents.send('meeting:offer', offer);
+    },
+    launcherFocused: () => {
+      const launcher = appState.getWindowHelper().getLauncherWindow();
+      return !!launcher && hasLiveRenderer(launcher) && launcher.isVisible() && !launcher.isMinimized() && launcher.isFocused();
+    },
+    autoStart: () => SettingsManager.getInstance().get('meetingAutoStartEnabled') === true,
     lastTimeLine: (event) => require('./services/meeting/recurringMeetings').lastTimeNotificationLine(event),
   });
   registerMeetingDetection(meetingDetector, PhoneMirrorService.getInstance());
+
+  // Dictation (Settings › Audio, off by default): its shortcut records the
+  // mic, transcribes it with the user's speech provider, tidies it with their
+  // model and puts it on the clipboard. Refused while a meeting runs.
+  try {
+    const { wireDictation, registerDictation } = require('./services/dictation/wireDictation');
+    const dictationWiring = {
+      platform: process.platform,
+      appVersion: app.getVersion(),
+      isEnabled: () => SettingsManager.getInstance().get('dictationEnabled') === true,
+      isMeetingActive: () => appState.getIsMeetingActive(),
+      promptsBlocked: () => nativePromptsBlocked(() => appState.getUndetectable()) || appState.getDisguise() !== 'none',
+      llm: () => appState.processingHelper?.getLLMHelper?.() ?? null,
+      inputDeviceId: () => appState.getLastInputDeviceId(),
+      accelerator: () => KeybindManager.getInstance().getKeybind('dictation:toggle') ?? '',
+    };
+    registerDictation(wireDictation(dictationWiring), dictationWiring);
+  } catch (err) {
+    console.warn('[Main] Dictation unavailable:', (err as Error)?.message);
+  }
 
   // A meeting still running when the app quits (or Windows ends the session,
   // or macOS shuts down) is written to disk for the next launch to recover and
