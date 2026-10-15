@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Check, ChevronDown, Copy, Mail, RefreshCw, X } from 'lucide-react';
 import { useT } from '../../i18n';
 import { buildReminderDraft, clipboardText, mailtoUrl, reminderGmailUrl, type ReminderDraft, type ReminderKind } from '../../lib/reminderDrafts.mjs';
+import { ASSIST_REFRESH_MS, msUntilNextLocalMidnight } from '../../lib/assistRefresh.mjs';
 import type { AssistCatchUp, AssistDailyBrief, AssistEvent, AssistMeetingBrief, AssistOwedItem, AssistSender } from '../../types/assist';
 
 /**
@@ -41,9 +42,11 @@ interface AssistTodayProps {
   isLight: boolean;
   isMeetingActive: boolean;
   onOpenMeeting: (meetingId: string) => void;
+  /** A draft to open (the calendar reminder's "Running late"); a new `seq` is a new request. */
+  draftRequest?: { event: AssistEvent; kind: ReminderKind; seq: number } | null;
 }
 
-export const AssistToday: React.FC<AssistTodayProps> = ({ events, isLight, isMeetingActive, onOpenMeeting }) => {
+export const AssistToday: React.FC<AssistTodayProps> = ({ events, isLight, isMeetingActive, onOpenMeeting, draftRequest }) => {
   const t = useT();
   const api = window.electronAPI;
   const [brief, setBrief] = useState<AssistDailyBrief | null>(null);
@@ -58,10 +61,36 @@ export const AssistToday: React.FC<AssistTodayProps> = ({ events, isLight, isMee
   eventsRef.current = events;
   const hover = isLight ? 'bg-black/[0.05] hover:bg-black/[0.09]' : 'bg-white/[0.06] hover:bg-white/[0.1]';
 
+  // "Show all" expanded: the full list reads again with the rest.
+  const owedExpandedRef = useRef(false);
+  owedExpandedRef.current = owedAll !== null;
   const refresh = useCallback(() => {
     api?.assistGetDailyBrief?.(eventsRef.current ?? []).then((b) => setBrief(b ?? null)).catch(() => {});
     api?.assistGetCatchUp?.().then((c) => setCatchUp(c ?? null)).catch(() => {});
+    if (owedExpandedRef.current) {
+      api?.assistGetOwed?.().then((all) => { if (owedExpandedRef.current) setOwedAll(Array.isArray(all) ? all : []); }).catch(() => {});
+    }
   }, [api]);
+
+  // A launcher left open: read again just after local midnight (a new
+  // "today", new overdue items), every 5 minutes while visible, and when the
+  // window comes back into view (src/lib/assistRefresh.mjs).
+  useEffect(() => {
+    let midnight: ReturnType<typeof setTimeout> | null = null;
+    const armMidnight = () => {
+      midnight = setTimeout(() => { refresh(); armMidnight(); }, msUntilNextLocalMidnight(Date.now()));
+    };
+    armMidnight();
+    const visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden';
+    const every = setInterval(() => { if (visible()) refresh(); }, ASSIST_REFRESH_MS);
+    const onVisibility = () => { if (visible()) refresh(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      if (midnight) clearTimeout(midnight);
+      clearInterval(every);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [refresh]);
 
   // Events change every minute (the launcher's poll); the lists are local reads.
   const eventsKey = useMemo(() => (events ?? []).map((e) => `${e.id}@${e.startTime}`).join('|'), [events]);
@@ -74,15 +103,16 @@ export const AssistToday: React.FC<AssistTodayProps> = ({ events, isLight, isMee
     api?.assistGetSender?.().then((s) => setSender(s ?? null)).catch(() => {});
   }, [api]);
 
-  // The calendar reminder's "Running late" opens that draft here.
+  // The calendar reminder's "Running late": App receives it (always mounted)
+  // and the Launcher hands it down here, back on its list.
+  const handledDraft = useRef(draftRequest?.seq ?? 0);
   useEffect(() => {
-    const off = api?.onAssistReminderDraft?.((req) => {
-      if (!req?.event?.id) return;
-      setDraftFor({ eventId: req.event.id, kind: req.kind ?? 'running_late', event: req.event });
-      setOpenBrief(null);
-    });
-    return () => { off?.(); };
-  }, [api]);
+    if (!draftRequest || draftRequest.seq === handledDraft.current) return;
+    handledDraft.current = draftRequest.seq;
+    setDraftFor({ eventId: draftRequest.event.id, kind: draftRequest.kind, event: draftRequest.event });
+    setOpenBrief(null);
+    setMenuFor(null);
+  }, [draftRequest]);
 
   const eventById = useCallback((id: string) => (events ?? []).find((e) => e.id === id), [events]);
 

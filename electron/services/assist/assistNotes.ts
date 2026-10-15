@@ -121,42 +121,83 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
-function utcDay(ms: number): number {
-  return Math.floor(ms / DAY_MS) * DAY_MS;
+/** A calendar day in the user's time zone (month 0-11). */
+interface CivilDay { y: number; m: number; d: number }
+
+/** The day `ms` falls on in `timeZone` (an IANA name), or on this machine's clock when absent. */
+export function civilDayOf(ms: number, timeZone?: string): CivilDay {
+  if (!timeZone) {
+    const d = new Date(ms);
+    return { y: d.getFullYear(), m: d.getMonth(), d: d.getDate() };
+  }
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(new Date(ms));
+    const n = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+    return { y: n('year'), m: n('month') - 1, d: n('day') };
+  } catch {
+    return civilDayOf(ms);
+  }
+}
+
+/** How far `timeZone` is ahead of UTC at the instant `ms`, in ms. */
+function zoneOffsetMs(ms: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
+  }).formatToParts(new Date(ms));
+  const n = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+  const asUtc = Date.UTC(n('year'), n('month') - 1, n('day'), n('hour') % 24, n('minute'), n('second'));
+  return asUtc - Math.floor(ms / 1000) * 1000;
+}
+
+/** The civil day `n` days after `c` (month and year roll over). */
+function addDays(c: CivilDay, n: number): CivilDay {
+  const t = new Date(Date.UTC(c.y, c.m, c.d + n));
+  return { y: t.getUTCFullYear(), m: t.getUTCMonth(), d: t.getUTCDate() };
+}
+
+const weekdayOf = (c: CivilDay) => new Date(Date.UTC(c.y, c.m, c.d)).getUTCDay();
+
+/** The last millisecond of civil day `c` in `timeZone` (machine clock when absent), daylight saving included. */
+export function endOfCivilDay(c: CivilDay, timeZone?: string): number {
+  const next = addDays(c, 1);
+  if (!timeZone) return new Date(next.y, next.m, next.d).getTime() - 1;
+  try {
+    const guess = Date.UTC(next.y, next.m, next.d);
+    let start = guess - zoneOffsetMs(guess, timeZone);
+    // The offset at midnight itself (differs from the guess's on a change day).
+    start = guess - zoneOffsetMs(start, timeZone);
+    return start - 1;
+  } catch {
+    return endOfCivilDay(c);
+  }
 }
 
 /**
- * When a deadline as the notes wrote it falls, as the end of that day (UTC),
- * read against the meeting it was set in. Understands ISO dates, "Oct 20" /
- * "20 October", weekdays ("Friday", "by Fri": the next one on or after the
- * meeting), "today", "tomorrow", "end of week" / "EOW", "next week", "end of
- * month". Null when it cannot tell (the item is then ordered by age).
+ * When a deadline as the notes wrote it falls: the end of that day in the
+ * user's time zone (`timeZone`, an IANA name; this machine's clock when
+ * absent), read against the day of the meeting it was set in, in that same
+ * zone. A meeting at 23:30 on Thursday sets "today" to Thursday, never to the
+ * UTC Friday it already is.
+ *
+ * Understands ISO dates, "Oct 20" / "20 October", weekdays ("Friday", "by
+ * Fri": the next one on or after the meeting's day), "today", "tomorrow",
+ * "end of week" / "EOW", "next week", "end of month". Null when it cannot tell
+ * (the item is then ordered by age).
  */
-export function parseDeadline(deadline: string | undefined | null, meetingStartMs: number): number | null {
+export function parseDeadline(deadline: string | undefined | null, meetingStartMs: number, timeZone?: string): number | null {
   const text = clean(deadline).toLowerCase().replace(/^(by|before|due|on|until)\s+/, '');
   if (!text || !Number.isFinite(meetingStartMs)) return null;
-  const base = utcDay(meetingStartMs);
-  const endOf = (dayMs: number) => dayMs + DAY_MS - 1;
+  const base = civilDayOf(meetingStartMs, timeZone);
+  const end = (c: CivilDay) => endOfCivilDay(c, timeZone);
+  const toFriday = () => (5 - weekdayOf(base) + 7) % 7;
 
   const iso = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
-  if (iso) {
-    const ms = Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
-    return Number.isFinite(ms) ? endOf(ms) : null;
-  }
-  if (/\b(today|eod|end of day|tonight)\b/.test(text)) return endOf(base);
-  if (/\btomorrow\b/.test(text)) return endOf(base + DAY_MS);
-  if (/\b(end of (the )?week|eow|this week)\b/.test(text)) {
-    const dow = new Date(base).getUTCDay();
-    return endOf(base + ((5 - dow + 7) % 7) * DAY_MS);
-  }
-  if (/\bnext week\b/.test(text)) {
-    const dow = new Date(base).getUTCDay();
-    return endOf(base + (((5 - dow + 7) % 7) + 7) * DAY_MS);
-  }
-  if (/\b(end of (the )?month|eom)\b/.test(text)) {
-    const d = new Date(base);
-    return endOf(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1) - DAY_MS);
-  }
+  if (iso) return end({ y: Number(iso[1]), m: Number(iso[2]) - 1, d: Number(iso[3]) });
+  if (/\b(today|eod|end of day|tonight)\b/.test(text)) return end(base);
+  if (/\btomorrow\b/.test(text)) return end(addDays(base, 1));
+  if (/\b(end of (the )?week|eow|this week)\b/.test(text)) return end(addDays(base, toFriday()));
+  if (/\bnext week\b/.test(text)) return end(addDays(base, toFriday() + 7));
+  if (/\b(end of (the )?month|eom)\b/.test(text)) return end(addDays({ y: base.y, m: base.m + 1, d: 1 }, -1));
   // "Oct 20", "20 Oct", "October 20th"
   const monthDay = text.match(/\b([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b/) || null;
   const dayMonth = text.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3})[a-z]*\b/) || null;
@@ -166,22 +207,73 @@ export function parseDeadline(deadline: string | undefined | null, meetingStartM
       ? { month: MONTHS.indexOf(dayMonth[2]), day: Number(dayMonth[1]) }
       : null;
   if (pick && pick.day >= 1 && pick.day <= 31) {
-    const year = new Date(base).getUTCFullYear();
-    let ms = Date.UTC(year, pick.month, pick.day);
+    let year = base.y;
     // A date well before the meeting is next year's ("Jan 5" said in December).
-    if (ms < base - 60 * DAY_MS) ms = Date.UTC(year + 1, pick.month, pick.day);
-    return endOf(ms);
+    if (Date.UTC(year, pick.month, pick.day) < Date.UTC(base.y, base.m, base.d) - 60 * DAY_MS) year += 1;
+    return end({ y: year, m: pick.month, d: pick.day });
   }
   for (let i = 0; i < WEEKDAYS.length; i++) {
     const full = WEEKDAYS[i];
     if (new RegExp(`\\b(${full}|${full.slice(0, 3)})\\b`).test(text)) {
-      const dow = new Date(base).getUTCDay();
-      const ahead = (i - dow + 7) % 7;
+      const ahead = (i - weekdayOf(base) + 7) % 7;
       const nextWeek = /\bnext\b/.test(text) ? 7 : 0;
-      return endOf(base + (ahead + nextWeek) * DAY_MS);
+      return end(addDays(base, ahead + nextWeek));
     }
   }
   return null;
+}
+
+/**
+ * One task's newest state across meetings. A task is its normalised text and
+ * its owner, so the same words owned by two people are two tasks. Meetings are
+ * read oldest first, so a later "done" closes an earlier open copy (and a
+ * later open copy reopens one). A done copy with no owner closes every owner's
+ * copy of that text: the notes did not say whose, only that it is done.
+ */
+export interface TaskState {
+  /** Normalised text + "|" + normalised owner. */
+  key: string;
+  textKey: string;
+  action: NoteAction;
+  /** The newest meeting that mentions it. */
+  meeting: AssistMeeting;
+  /** Every meeting that mentions it, oldest first. */
+  meetings: AssistMeeting[];
+  firstSeenMs: number;
+  done: boolean;
+}
+
+const ownerKeyOf = (owner?: string) => clean(owner).toLowerCase().replace(/[^\p{L}\p{N}@.\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+
+export function latestTaskStates(meetings: AssistMeeting[], ownerKey: (action: NoteAction) => string | null = (a) => ownerKeyOf(a.owner)): Map<string, TaskState> {
+  const states = new Map<string, TaskState>();
+  const ordered = [...meetings].filter((m) => m && Number.isFinite(m.startMs) && notesReady(m)).sort((a, b) => a.startMs - b.startMs);
+  for (const m of ordered) {
+    for (const action of readActions(m.detailedSummary)) {
+      const textKey = normalizeItemText(action.text);
+      if (!textKey) continue;
+      if (action.done && !clean(action.owner)) {
+        for (const st of states.values()) {
+          if (st.textKey === textKey) { st.done = true; st.meeting = m; st.meetings.push(m); }
+        }
+        continue;
+      }
+      const owner = ownerKey(action);
+      if (owner === null) continue;
+      const key = `${textKey}|${owner}`;
+      const prev = states.get(key);
+      states.set(key, {
+        key,
+        textKey,
+        action: { ...action, ...(!action.deadline && prev?.action.deadline ? { deadline: prev.action.deadline } : {}) },
+        meeting: m,
+        meetings: [...(prev?.meetings ?? []), m],
+        firstSeenMs: prev && !prev.done ? prev.firstSeenMs : m.startMs,
+        done: action.done,
+      });
+    }
+  }
+  return states;
 }
 
 export { DAY_MS };

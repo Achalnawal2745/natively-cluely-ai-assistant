@@ -354,6 +354,18 @@ const App: React.FC = () => {
     const off = window.electronAPI?.onLauncherOpenMeeting?.((id) => { if (id) openLauncherMeeting(id); });
     return () => { off?.(); };
   }, [openLauncherMeeting]);
+  // The calendar reminder's "Running late" (main sends it to the launcher
+  // only): received here, where it is always mounted, so it lands even with a
+  // meeting's page or Settings open. The Launcher goes back to its list and
+  // opens the draft (assist/AssistToday.tsx).
+  useEffect(() => {
+    const off = window.electronAPI?.onAssistReminderDraft?.((req) => {
+      if (!req?.event?.id) return;
+      setIsSettingsOpen(false);
+      setLauncherRequest({ kind: 'reminder-draft', event: req.event, draftKind: req.kind ?? 'running_late', seq: Date.now() });
+    });
+    return () => { off?.(); };
+  }, []);
 
   const openModesExclusive = useCallback(() => {
     if (!activeManagerPanel) rememberManagerOpener();

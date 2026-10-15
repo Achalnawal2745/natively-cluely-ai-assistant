@@ -1345,6 +1345,7 @@ import { configureAssistService, getAssistService } from './services/assist/Assi
 import { liveHelperDisplayKind, type LiveHelperAction } from './llm/liveHelpers'
 import { buildUserIdentity } from './services/assist/assistPeople'
 import { notesMayUseModel } from './services/assist/assistPrivacy'
+import { showLauncherForReminderDraft } from './services/assist/reminderDraftWindow'
 import { wireExtensionMeetingTabs } from './services/meetingDetection/extensionMeetingTabs'
 import { DesktopCallSpeakers } from './services/meetingDetection/desktopCallSpeakers'
 import { SHORTCUT_TOUR_ACTIONS } from './services/shortcutTourActions'
@@ -10351,13 +10352,15 @@ if (process.env.THINKING_MATRIX === '1') {
     });
 
     // The reminder's "Running late": the launcher opens the draft for this
-    // event (src/components/assist/AssistToday.tsx). Nothing is sent.
+    // event (App -> Launcher -> assist/AssistToday.tsx). Nothing is sent.
     calMgr.on('reminder-draft-requested', (event: any) => {
-      appState.centerAndShowWindow();
-      const launcher = appState.getWindowHelper().getLauncherWindow();
-      if (launcher && !launcher.isDestroyed()) {
-        launcher.webContents.send('assist:reminder-draft', { kind: 'running_late', event });
-      }
+      showLauncherForReminderDraft({
+        launcher: appState.getWindowHelper().getLauncherWindow(),
+        meetingActive: appState.getIsMeetingActive(),
+        undetectable: appState.getUndetectable(),
+        centerAndShow: () => appState.centerAndShowWindow(),
+        reassertStealth: () => appState.reassertUndetectableStealth(),
+      }, event);
     });
 
     console.log('[Main] CalendarManager initialized');

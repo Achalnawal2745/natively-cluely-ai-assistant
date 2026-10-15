@@ -125,6 +125,6 @@ export function buildDailyBrief(input: {
       contextMeetingId: ctx.meetingId,
     });
   }
-  const owedAll = collectOwedItems(input.meetings, input.identity, { nowMs: input.nowMs, done: input.done });
+  const owedAll = collectOwedItems(input.meetings, input.identity, { nowMs: input.nowMs, done: input.done, timeZone: input.timeZone });
   return { meetings, owed: owedAll.slice(0, DAILY_OWED_SHOWN), owedTotal: owedAll.length };
 }

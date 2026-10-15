@@ -6,6 +6,7 @@ import icon from "./icon.png";
 import mainui from "../UI_comp/mainui.png";
 import UpcomingCalendarCard from './ui/UpcomingCalendarCard';
 import AssistToday from './assist/AssistToday';
+import type { AssistEvent } from '../types/assist';
 import { useToggleInit } from './settings/useToggleInit';
 import { noteUpcomingEvents, warmCalendarSnapshot } from '../lib/calendarSnapshot.mjs';
 import { plainMeetingTitle } from '../lib/codingAnswer.mjs';
@@ -56,7 +57,10 @@ interface Meeting {
  */
 export type LauncherRequest =
     | { kind: 'search'; seq: number }
-    | { kind: 'meeting'; id: string; seq: number };
+    | { kind: 'meeting'; id: string; seq: number }
+    // The calendar reminder's "Running late" (main: assist/reminderDraftWindow):
+    // back to the list, with that event's draft open.
+    | { kind: 'reminder-draft'; event: AssistEvent; draftKind: 'running_late' | 'no_show' | 'reschedule'; seq: number };
 
 interface LauncherProps {
     request?: LauncherRequest | null;
@@ -469,11 +473,18 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
     // search hit is; one that no longer exists (the demo meeting deleted, say)
     // leaves the Launcher where it is.
     const [searchOpenRequest, setSearchOpenRequest] = useState(0);
+    const [reminderDraftRequest, setReminderDraftRequest] = useState<{ event: AssistEvent; kind: 'running_late' | 'no_show' | 'reschedule'; seq: number } | null>(null);
     const handledRequest = useRef(request?.seq ?? 0);
     useEffect(() => {
         if (!request || request.seq === handledRequest.current) return;
         handledRequest.current = request.seq;
         if (request.kind === 'search') setSearchOpenRequest(request.seq);
+        else if (request.kind === 'reminder-draft') {
+            setSelectedMeeting(null);
+            setSelectedMomentMs(null);
+            setIsGlobalChatOpen(false);
+            setReminderDraftRequest({ event: request.event, kind: request.draftKind, seq: request.seq });
+        }
         else void openMeetingAtMoment(request.id);
         // openMeetingAtMoment only reads setters and the IPC bridge.
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1222,6 +1233,7 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                                             isLight={isLight}
                                             isMeetingActive={isMeetingActive}
                                             onOpenMeeting={(id) => { void handleOpenMeeting({ id } as Meeting); }}
+                                            draftRequest={reminderDraftRequest}
                                         />
 
                                         {/* Iterating Date Groups */}

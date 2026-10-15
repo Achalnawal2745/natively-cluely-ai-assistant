@@ -17,7 +17,7 @@
 
 import { buildLastTimeRecap, findPreviousSeriesMeeting, type LastTimeRecap } from '../meeting/recurringMeetings';
 import { displayName, ownerIsPerson, type UserIdentity } from './assistPeople';
-import { clip, meetingEmails, meetingTitle, notesReady, readActions, readOpenQuestions, type AssistMeeting } from './assistNotes';
+import { clip, latestTaskStates, meetingEmails, meetingTitle, readOpenQuestions, type AssistMeeting } from './assistNotes';
 import { collectOwedItems, type DoneMap, type OwedItem } from './owedItems';
 
 /** The upcoming event, as the calendar list gives it. */
@@ -98,17 +98,14 @@ export function assembleMeetingBrief(input: {
     const email = a.email.toLowerCase();
     const theirs = meetings.filter((m) => meetingEmails(m).has(email));
     const latest = theirs[0];
-    const theirOpenItems: BriefPerson['theirOpenItems'] = [];
-    for (const m of theirs) {
-      if (!notesReady(m)) continue;
-      for (const act of readActions(m.detailedSummary)) {
-        if (act.done || !ownerIsPerson(act.owner, a)) continue;
-        if (theirOpenItems.some((x) => x.text.toLowerCase() === act.text.toLowerCase())) continue;
-        theirOpenItems.push({ text: act.text, meetingId: m.id, ...(act.deadline ? { deadline: act.deadline } : {}) });
-        if (theirOpenItems.length >= 3) break;
-      }
-      if (theirOpenItems.length >= 3) break;
-    }
+    // Each of their tasks at its newest state (assistNotes.latestTaskStates),
+    // so one closed in a later meeting never shows from an older open copy;
+    // only tasks raised in a meeting they were on. Newest first, three at most.
+    const theirOpenItems: BriefPerson['theirOpenItems'] = [...latestTaskStates(meetings, (act) => (ownerIsPerson(act.owner, a) ? 'them' : null)).values()]
+      .filter((st) => !st.done && st.meetings.some((m) => meetingEmails(m).has(email)))
+      .sort((x, y) => y.meeting.startMs - x.meeting.startMs)
+      .slice(0, 3)
+      .map((st) => ({ text: st.action.text, meetingId: st.meeting.id, ...(st.action.deadline ? { deadline: st.action.deadline } : {}) }));
     return {
       email: a.email,
       name: displayName(a),

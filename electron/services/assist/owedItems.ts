@@ -17,7 +17,7 @@
 // Pure, no I/O, no platform branches.
 
 import { ownerIsUser, type UserIdentity } from './assistPeople';
-import { DAY_MS, meetingTitle, normalizeItemText, notesReady, parseDeadline, readActions, type AssistMeeting } from './assistNotes';
+import { DAY_MS, latestTaskStates, meetingTitle, normalizeItemText, parseDeadline, type AssistMeeting } from './assistNotes';
 
 export interface OwedItem {
   /** Stable across meetings: the item's text, normalised. What "done" is stored under. */
@@ -51,8 +51,10 @@ export interface CollectOwedOptions {
   done?: DoneMap;
   lookbackDays?: number;
   limit?: number;
-  /** Only meetings whose invite includes one of these addresses (the brief: items involving these people). */
+  /** Only tasks raised in a meeting whose invite includes one of these addresses (the brief: items involving these people). */
   withEmails?: Set<string>;
+  /** The user's IANA time zone, for reading deadlines; this machine's clock when absent. */
+  timeZone?: string;
 }
 
 /** Sort as the list shows: overdue, then due soonest, then oldest. */
@@ -68,45 +70,42 @@ export function compareOwed(a: OwedItem, b: OwedItem): number {
 export function collectOwedItems(meetings: AssistMeeting[], identity: UserIdentity, opts: CollectOwedOptions): OwedItem[] {
   const lookbackMs = (opts.lookbackDays ?? OWED_LOOKBACK_DAYS) * DAY_MS;
   const done = opts.done ?? {};
-  const byKey = new Map<string, OwedItem>();
-  const ordered = [...meetings]
-    .filter((m) => m && Number.isFinite(m.startMs) && m.startMs <= opts.nowMs && opts.nowMs - m.startMs <= lookbackMs && notesReady(m))
-    .sort((a, b) => a.startMs - b.startMs);
-
-  for (const m of ordered) {
+  const inWindow = meetings.filter((m) => m && Number.isFinite(m.startMs) && m.startMs <= opts.nowMs && opts.nowMs - m.startMs <= lookbackMs);
+  // Each task's newest state first (assistNotes.latestTaskStates): the user's
+  // tasks share one owner key, so "Me" and "Evin" are the same task, and a
+  // later meeting that marks it done closes it whoever wrote it down first.
+  const states = latestTaskStates(inWindow, (a) => (ownerIsUser(a.owner, identity) ? 'user' : null));
+  const out: OwedItem[] = [];
+  for (const st of states.values()) {
+    if (st.done) continue;
     if (opts.withEmails && opts.withEmails.size > 0) {
-      const emails = new Set((m.calendarEvent?.attendees ?? []).map((a) => String(a?.email ?? '').toLowerCase()));
-      const org = (m.calendarEvent as any)?.organizer?.email;
-      if (org) emails.add(String(org).toLowerCase());
-      if (![...opts.withEmails].some((e) => emails.has(e))) continue;
-    }
-    for (const action of readActions(m.detailedSummary)) {
-      if (!ownerIsUser(action.owner, identity)) continue;
-      const key = owedItemKey(action.text);
-      const existing = byKey.get(key);
-      if (action.done) {
-        // Marked done in a later meeting's notes: no longer owed.
-        byKey.delete(key);
-        continue;
-      }
-      const tickedAt = done[key];
-      if (typeof tickedAt === 'number' && m.startMs <= tickedAt) continue;
-      const dueMs = parseDeadline(action.deadline, m.startMs) ?? existing?.dueMs ?? null;
-      byKey.set(key, {
-        key,
-        text: action.text,
-        ...(action.owner ? { owner: action.owner } : {}),
-        ...(action.deadline ? { deadline: action.deadline } : existing?.deadline ? { deadline: existing.deadline } : {}),
-        dueMs,
-        overdue: dueMs !== null && dueMs < opts.nowMs,
-        meetingId: m.id,
-        meetingTitle: meetingTitle(m),
-        meetingStartMs: m.startMs,
-        sinceMs: existing?.sinceMs ?? m.startMs,
+      const withThem = st.meetings.some((m) => {
+        const emails = new Set((m.calendarEvent?.attendees ?? []).map((a) => String(a?.email ?? '').toLowerCase()));
+        const org = (m.calendarEvent as any)?.organizer?.email;
+        if (org) emails.add(String(org).toLowerCase());
+        return [...opts.withEmails!].some((e) => emails.has(e));
       });
+      if (!withThem) continue;
     }
+    const key = owedItemKey(st.action.text);
+    const tickedAt = done[key];
+    // Ticked here: hidden, unless a meeting after the tick raised it again.
+    if (typeof tickedAt === 'number' && st.meeting.startMs <= tickedAt) continue;
+    const dueMs = parseDeadline(st.action.deadline, st.meeting.startMs, opts.timeZone);
+    out.push({
+      key,
+      text: st.action.text,
+      ...(st.action.owner ? { owner: st.action.owner } : {}),
+      ...(st.action.deadline ? { deadline: st.action.deadline } : {}),
+      dueMs,
+      overdue: dueMs !== null && dueMs < opts.nowMs,
+      meetingId: st.meeting.id,
+      meetingTitle: meetingTitle(st.meeting),
+      meetingStartMs: st.meeting.startMs,
+      sinceMs: st.firstSeenMs,
+    });
   }
-  return [...byKey.values()].sort(compareOwed).slice(0, opts.limit ?? OWED_MAX_ITEMS);
+  return out.sort(compareOwed).slice(0, opts.limit ?? OWED_MAX_ITEMS);
 }
 
 /** Drops ticks older than the lookback (nothing they could hide is still read). */

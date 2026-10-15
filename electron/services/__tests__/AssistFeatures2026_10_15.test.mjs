@@ -74,24 +74,50 @@ describe('who "you" is in the notes', () => {
   });
 });
 
-describe('deadlines as the notes write them', () => {
+describe('deadlines as the notes write them, on the user\'s own day', () => {
   const thu = Date.parse('2026-10-15T14:00:00Z');
   const endOfDay = (iso) => Date.parse(`${iso}T23:59:59.999Z`);
-  test('ISO, month names, weekdays, today/tomorrow, end of week', () => {
-    assert.equal(notes.parseDeadline('2026-10-20', thu), endOfDay('2026-10-20'));
-    assert.equal(notes.parseDeadline('Oct 20', thu), endOfDay('2026-10-20'));
-    assert.equal(notes.parseDeadline('by 20th October', thu), endOfDay('2026-10-20'));
-    assert.equal(notes.parseDeadline('Friday', thu), endOfDay('2026-10-16'));
-    assert.equal(notes.parseDeadline('by Mon', thu), endOfDay('2026-10-19'));
-    assert.equal(notes.parseDeadline('tomorrow', thu), endOfDay('2026-10-16'));
-    assert.equal(notes.parseDeadline('today', thu), endOfDay('2026-10-15'));
-    assert.equal(notes.parseDeadline('end of week', thu), endOfDay('2026-10-16'));
-    assert.equal(notes.parseDeadline('Jan 5', Date.parse('2026-12-10T10:00:00Z')), endOfDay('2027-01-05'));
+  const p = (text, at = thu, tz = 'UTC') => notes.parseDeadline(text, at, tz);
+  test('ISO, month names, weekdays, today/tomorrow, end of week (UTC user)', () => {
+    assert.equal(p('2026-10-20'), endOfDay('2026-10-20'));
+    assert.equal(p('Oct 20'), endOfDay('2026-10-20'));
+    assert.equal(p('by 20th October'), endOfDay('2026-10-20'));
+    assert.equal(p('Friday'), endOfDay('2026-10-16'));
+    assert.equal(p('by Mon'), endOfDay('2026-10-19'));
+    assert.equal(p('tomorrow'), endOfDay('2026-10-16'));
+    assert.equal(p('today'), endOfDay('2026-10-15'));
+    assert.equal(p('end of week'), endOfDay('2026-10-16'));
+    assert.equal(p('end of month'), endOfDay('2026-10-31'));
+    assert.equal(p('Jan 5', Date.parse('2026-12-10T10:00:00Z')), endOfDay('2027-01-05'));
   });
+
+  test('a meeting at 23:30 in Los Angeles: "today" is that Thursday there, not the UTC Friday', () => {
+    const lateThuLA = Date.parse('2026-10-16T06:30:00Z'); // Thu 15 Oct, 23:30 PDT
+    const endThuLA = Date.parse('2026-10-16T06:59:59.999Z'); // Thu 15 Oct 23:59:59.999 PDT
+    assert.equal(p('today', lateThuLA, 'America/Los_Angeles'), endThuLA);
+    assert.equal(p('tomorrow', lateThuLA, 'America/Los_Angeles'), endThuLA + 24 * 60 * 60 * 1000);
+    assert.equal(p('Friday', lateThuLA, 'America/Los_Angeles'), endThuLA + 24 * 60 * 60 * 1000);
+    // Read in UTC the same instant is already Friday: what the old reading did.
+    assert.equal(p('today', lateThuLA, 'UTC'), endOfDay('2026-10-16'));
+  });
+
+  test('just after midnight in Tokyo: "today" is the new Tokyo day, which is still yesterday in UTC', () => {
+    const earlyFriTokyo = Date.parse('2026-10-15T15:10:00Z'); // Fri 16 Oct, 00:10 JST
+    assert.equal(p('today', earlyFriTokyo, 'Asia/Tokyo'), Date.parse('2026-10-16T14:59:59.999Z'));
+    assert.equal(p('2026-10-16', earlyFriTokyo, 'Asia/Tokyo'), Date.parse('2026-10-16T14:59:59.999Z'));
+  });
+
+  test('a day that loses an hour to daylight saving still ends at its own midnight', () => {
+    // Europe/London leaves summer time on Sun 25 Oct 2026 (a 25-hour day).
+    const sun = Date.parse('2026-10-25T09:00:00Z');
+    assert.equal(p('today', sun, 'Europe/London'), Date.parse('2026-10-25T23:59:59.999Z'));
+    assert.equal(p('Saturday', Date.parse('2026-10-24T09:00:00Z'), 'Europe/London'), Date.parse('2026-10-24T22:59:59.999Z'));
+  });
+
   test('unreadable deadlines are null', () => {
-    assert.equal(notes.parseDeadline('soon', thu), null);
-    assert.equal(notes.parseDeadline('', thu), null);
-    assert.equal(notes.parseDeadline(undefined, thu), null);
+    assert.equal(p('soon'), null);
+    assert.equal(p(''), null);
+    assert.equal(p(undefined), null);
   });
 });
 
@@ -113,7 +139,7 @@ describe('You owe: ordering and filtering', () => {
   ];
 
   test('only the user\'s open items from written notes within 30 days', () => {
-    const list = owed.collectOwedItems(ms, ME, { nowMs: NOW });
+    const list = owed.collectOwedItems(ms, ME, { nowMs: NOW, timeZone: 'UTC' });
     const texts = list.map((i) => i.text);
     assert.ok(!texts.includes('Share the security review'), 'someone else\'s item');
     assert.ok(!texts.includes('Update the roadmap'), 'done in the notes');
@@ -123,7 +149,7 @@ describe('You owe: ordering and filtering', () => {
   });
 
   test('overdue first (most overdue at the top), then due soonest, then oldest; carried items once', () => {
-    const list = owed.collectOwedItems(ms, ME, { nowMs: NOW });
+    const list = owed.collectOwedItems(ms, ME, { nowMs: NOW, timeZone: 'UTC' });
     assert.deepEqual(list.map((i) => i.text), ['Send the pricing deck', 'Write the summary', 'Draft the SOW', 'Book the workshop room.']);
     assert.equal(list[0].overdue, true);
     assert.equal(list[1].overdue, true);
@@ -150,6 +176,46 @@ describe('You owe: ordering and filtering', () => {
   test('older V2 notes (plain strings) are read; unowned strings are not the user\'s', () => {
     const v2 = { ...meeting('v2', NOW - DAY), detailedSummary: { actionItems: ['Call the bank'], actionItemsStructured: [{ text: 'Email Rob', owner: 'Me' }] } };
     assert.deepEqual(owed.collectOwedItems([v2], ME, { nowMs: NOW }).map((i) => i.text), ['Email Rob']);
+  });
+});
+
+describe('a task\'s newest state wins (closed later = not owed)', () => {
+  test('You owe: closed in a later meeting with no owner written: gone; reopened later: back', () => {
+    const ms = [
+      meeting('o1', NOW - 6 * DAY, { actions: [{ text: 'Send the deck', owner: 'Me' }] }),
+      meeting('o2', NOW - 3 * DAY, { actions: [{ text: 'Send the deck', status: 'done' }] }),
+    ];
+    assert.equal(owed.collectOwedItems(ms, ME, { nowMs: NOW, timeZone: 'UTC' }).length, 0);
+    const reopened = [...ms, meeting('o3', NOW - DAY, { actions: [{ text: 'Send the deck', owner: 'Evin' }] })];
+    const list = owed.collectOwedItems(reopened, ME, { nowMs: NOW, timeZone: 'UTC' });
+    assert.deepEqual(list.map((i) => [i.text, i.meetingId, i.sinceMs]), [['Send the deck', 'o3', NOW - DAY]]);
+  });
+
+  test('You owe: the same words owned by someone else do not close the user\'s task', () => {
+    const ms = [
+      meeting('p1', NOW - 6 * DAY, { actions: [{ text: 'Send the deck', owner: 'Me' }] }),
+      meeting('p2', NOW - 3 * DAY, { actions: [{ text: 'Send the deck', owner: 'Priya', status: 'done' }] }),
+    ];
+    assert.equal(owed.collectOwedItems(ms, ME, { nowMs: NOW, timeZone: 'UTC' }).length, 1);
+  });
+
+  test('Brief me: a task they closed in a later meeting is not listed from an older open copy', () => {
+    const ms = [
+      meeting('b1', NOW - 10 * DAY, { attendees: [priya], actions: [{ text: 'Send the SOW draft', owner: 'Priya' }, { text: 'Book the venue', owner: 'Priya' }] }),
+      meeting('b2', NOW - 5 * DAY, { attendees: [priya], actions: [{ text: 'Send the SOW draft', owner: 'Priya Nair', status: 'done' }] }),
+    ];
+    const ev = { id: 'next', title: 'Check-in', startTime: '2026-10-15T10:00:00Z', attendees: [priya] };
+    const brief = briefMod.assembleMeetingBrief({ event: ev, meetings: ms, identity: ME, nowMs: NOW });
+    assert.deepEqual(brief.people[0].theirOpenItems.map((i) => i.text), ['Book the venue']);
+  });
+
+  test('Brief me: a later "done" with no owner written closes their task', () => {
+    const ms = [
+      meeting('c1', NOW - 10 * DAY, { attendees: [priya], actions: [{ text: 'Share pricing', owner: 'Priya' }] }),
+      meeting('c2', NOW - 5 * DAY, { attendees: [priya], actions: [{ text: 'Share pricing', status: 'done' }] }),
+    ];
+    const ev = { id: 'next', title: 'Check-in', startTime: '2026-10-15T10:00:00Z', attendees: [priya] };
+    assert.deepEqual(briefMod.assembleMeetingBrief({ event: ev, meetings: ms, identity: ME, nowMs: NOW }).people[0].theirOpenItems, []);
   });
 });
 
@@ -497,5 +563,46 @@ describe('assist IPC', () => {
     assert.match(main, /generateStructured\(\{/);
     const handlers = read('electron/ipcHandlers.ts');
     assert.match(handlers, /registerAssistIpc\(safeHandle,/);
+  });
+});
+
+describe('the reminder\'s Running late reaches the launcher, also during a meeting', () => {
+  const win = require(dist('services/assist/reminderDraftWindow.js'));
+  const fakeLauncher = () => {
+    const calls = [];
+    return { calls, isDestroyed: () => false, show: () => calls.push('show'), showInactive: () => calls.push('showInactive'), focus: () => calls.push('focus'), webContents: { send: (c, p) => calls.push(['send', c, p.kind, p.event.id]) } };
+  };
+  const ev = { id: 'e1', title: 'Acme weekly' };
+
+  test('no meeting: the launcher comes up the usual way', () => {
+    const l = fakeLauncher(); const seen = [];
+    assert.equal(win.showLauncherForReminderDraft({ launcher: l, meetingActive: false, undetectable: false, centerAndShow: () => seen.push('center'), reassertStealth: () => seen.push('stealth') }, ev), true);
+    assert.deepEqual(l.calls, [['send', 'assist:reminder-draft', 'running_late', 'e1']]);
+    assert.deepEqual(seen, ['center']);
+  });
+
+  test('during a meeting: the launcher window itself is shown (not the overlay)', () => {
+    const l = fakeLauncher(); const seen = [];
+    win.showLauncherForReminderDraft({ launcher: l, meetingActive: true, undetectable: false, centerAndShow: () => seen.push('center'), reassertStealth: () => seen.push('stealth') }, ev);
+    assert.deepEqual(l.calls.slice(1), ['show', 'focus']);
+    assert.deepEqual(seen, [], 'centerAndShow would bring up the overlay');
+  });
+
+  test('during a meeting in Undetectable: shown without focus, stealth re-applied', () => {
+    const l = fakeLauncher(); const seen = [];
+    win.showLauncherForReminderDraft({ launcher: l, meetingActive: true, undetectable: true, centerAndShow: () => seen.push('center'), reassertStealth: () => seen.push('stealth') }, ev);
+    assert.deepEqual(l.calls.slice(1), ['showInactive']);
+    assert.deepEqual(seen, ['stealth']);
+  });
+
+  test('no launcher: nothing happens', () => {
+    assert.equal(win.showLauncherForReminderDraft({ launcher: null, meetingActive: true, undetectable: false, centerAndShow() {}, reassertStealth() {} }, ev), false);
+  });
+
+  test('main uses it for the calendar reminder\'s action', () => {
+    const main = read('electron/main.ts');
+    const at = main.indexOf("calMgr.on('reminder-draft-requested'");
+    assert.ok(at > 0);
+    assert.match(main.slice(at, at + 600), /showLauncherForReminderDraft\(/);
   });
 });
