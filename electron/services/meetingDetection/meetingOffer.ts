@@ -63,6 +63,13 @@ export interface MeetingOfferDeps {
     closeNotification: () => void;
     /** The launcher is on screen and in front: its panel is enough. */
     launcherFocused: () => boolean;
+    /**
+     * Undetectable or a disguise is on now: nothing may show (no panel, no
+     * notification) and a pending offer is dropped. Checked at every surface,
+     * not only when a call is first detected, since the user can turn it on
+     * while an offer waits.
+     */
+    promptsBlocked?: () => boolean;
     /** Whether the detected call is still on (MeetingDetector.isPresent); checked right before an automatic start. */
     callStillOn?: (callId: string) => boolean;
     now?: () => number;
@@ -167,7 +174,16 @@ export class MeetingOffers {
         return view;
     }
 
+    private blocked(): boolean {
+        try {
+            return this.deps.promptsBlocked?.() === true;
+        } catch {
+            return true;
+        }
+    }
+
     private notifyFor(id: string, input: OfferInput, auto: boolean): boolean {
+        if (this.blocked()) return false;
         const text = offerNotificationText(input.body, auto, this.countdownMs);
         const startReq = input.start;
         return this.deps.notify({
@@ -196,6 +212,10 @@ export class MeetingOffers {
     }
 
     private showWithoutCountdown(cur: Current): void {
+        if (this.blocked()) {
+            this.clear('privacy');
+            return;
+        }
         cur.view = { ...cur.view, autoStartAt: null };
         try { this.deps.showPanel(cur.view); } catch { /* window gone */ }
         if (cur.notified) {
@@ -267,6 +287,10 @@ export class MeetingOffers {
     private fire(id: string): void {
         const cur = this.current;
         if (!cur || cur.view.id !== id) return;
+        if (this.blocked()) {
+            this.clear('privacy');
+            return;
+        }
         // The setting may have been turned off during the countdown.
         let auto = false;
         try { auto = this.deps.autoStart(); } catch { auto = false; }

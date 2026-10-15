@@ -24,6 +24,7 @@ const { liveTimingFor } = require(dist('services/dictation/dictationSession.js')
 function offerRig({ focused = false } = {}) {
     let t = 0;
     let auto = true;
+    let blocked = false;
     const timers = new Map();
     let seq = 0;
     const state = { panel: [], notes: [], closed: 0, starts: [] };
@@ -31,12 +32,13 @@ function offerRig({ focused = false } = {}) {
         isMeetingActive: () => false, requestStart: (r) => state.starts.push(r), autoStart: () => auto,
         showPanel: (o) => state.panel.push(o), notify: (n) => { state.notes.push(n); return true; },
         closeNotification: () => { state.closed++; }, launcherFocused: () => focused,
+        promptsBlocked: () => blocked,
         now: () => t,
         setTimeout: (fn, ms) => { const id = ++seq; timers.set(id, { fn, at: t + ms }); return id; },
         clearTimeout: (id) => timers.delete(id),
     });
     const advance = (ms) => { t += ms; for (const [id, x] of [...timers]) if (x.at <= t) { timers.delete(id); x.fn(); } };
-    return { offers, state, advance, setAuto: (v) => { auto = v; } };
+    return { offers, state, advance, setAuto: (v) => { auto = v; }, setBlocked: (v) => { blocked = v; } };
 }
 const CALL = { app: 'Zoom', body: 'A Zoom call started.', start: { via: 'detected' }, callId: 'app:Zoom' };
 
@@ -149,4 +151,23 @@ test('no stand-in running: the drain returns at once, and main awaits it before 
     assert.match(end, /this\._sttFailover\.mic\?\.drain\(\),/);
     // One timing table for dictation and the drain.
     for (const id of ['groq', 'local-whisper', 'deepgram', 'apple-speech']) assert.deepEqual(liveTimingFor(id), sttTailTimingFor(id), id);
+});
+
+test('Undetectable turned on while an offer waits: nothing shows again and nothing starts', () => {
+    const r = offerRig();
+    r.offers.offer(CALL);
+    const shown = r.state.notes.length;
+    r.advance(3_000);
+    r.setBlocked(true);
+    r.setAuto(false);
+    r.offers.autoStartOff();
+    assert.equal(r.state.notes.length, shown, 'no fresh notification');
+    assert.equal(r.offers.view(), null, 'the offer is dropped');
+    assert.equal(r.state.panel.at(-1), null, 'the panel is cleared');
+    const r2 = offerRig();
+    r2.offers.offer(CALL);
+    r2.advance(2_000);
+    r2.setBlocked(true);
+    r2.advance(20_000);
+    assert.deepEqual(r2.state.starts, [], 'the countdown never starts a meeting under Undetectable');
 });

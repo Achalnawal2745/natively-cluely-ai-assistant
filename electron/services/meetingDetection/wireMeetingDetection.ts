@@ -110,6 +110,7 @@ export function wireMeetingDetection(deps: MeetingDetectionDeps): MeetingDetecto
         notify: deps.notify,
         closeNotification: deps.closeNotification ?? (() => {}),
         launcherFocused: deps.launcherFocused ?? (() => false),
+        promptsBlocked: () => deps.promptsBlocked(),
         // An automatic start only for a call still on (the detector's last poll).
         callStillOn: (callId) => detector.isPresent(callId),
         now,
