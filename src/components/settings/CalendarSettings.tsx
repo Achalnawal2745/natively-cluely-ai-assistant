@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { AlertCircle, ArrowUpRight, CalendarDays, CalendarRange, Check, Info, Link2, Loader2, PhoneOff, RefreshCw, Video } from 'lucide-react';
+import { AlertCircle, ArrowUpRight, CalendarDays, CalendarRange, Check, Info, Link2, Loader2, PhoneOff, RefreshCw, ScreenShare, Video } from 'lucide-react';
 import { useLanguage, useT } from '../../i18n';
 import { useResolvedTheme } from '../../hooks/useResolvedTheme';
 import { Collapse, CollapseItem, Presence, SettingsMotionReady, SwapLabel, useMotionReadyAfter, useSettledFlag } from './SettingsRow';
@@ -307,6 +307,27 @@ export const CalendarSettings: React.FC = () => {
     window.electronAPI?.setMeetingAutoStopEnabled?.(!was)
       .then((r) => { if (!r?.success) setAutoStop(was); })
       .catch(() => setAutoStop(was));
+  }, []);
+
+  // Snapshot shared screens (main: ScreenShareContext). Off unless turned on.
+  // Same save-first pattern as Detect meetings.
+  const [snapshots, setSnapshots] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    window.electronAPI?.getScreenShareSnapshots?.()
+      .then((on) => { if (live) setSnapshots(on === true); })
+      .catch(() => { if (live) setSnapshots(false); });
+    return () => { live = false; };
+  }, []);
+  const snapshotsRef = useRef(snapshots);
+  snapshotsRef.current = snapshots;
+  const toggleSnapshots = useCallback(() => {
+    const was = snapshotsRef.current;
+    if (was === null) return;
+    setSnapshots(!was);
+    window.electronAPI?.setScreenShareSnapshots?.(!was)
+      .then((r) => { if (!r?.success) setSnapshots(was); })
+      .catch(() => setSnapshots(was));
   }, []);
 
   // Stealth-gated calendar polling: no calendar egress while undetectable
@@ -855,6 +876,27 @@ export const CalendarSettings: React.FC = () => {
             </div>
             <p className="cp-desc" style={{ margin: 0 }}>
               {t('Stops Natively and writes your notes when you leave the call, or after 15 minutes with nothing said.')}
+            </p>
+          </div>
+        </section>
+
+        {/* ── Snapshot shared screens ── */}
+        <section>
+          <div className="cp-card">
+            <div className="cp-card-header">
+              <span className="cp-card-icon"><ScreenShare size={12} /></span>
+              <h4 className="cp-card-label">{t('Snapshot shared screens')}</h4>
+              <span className="ml-auto flex items-center">
+                <SettingsToggle
+                  checked={!!snapshots}
+                  onChange={toggleSnapshots}
+                  label={t('Snapshot shared screens')}
+                  disabled={snapshots === null}
+                />
+              </span>
+            </div>
+            <p className="cp-desc" style={{ margin: 0 }}>
+              {t('When someone else shares their screen in Zoom or Teams, Natively takes a picture every 10 seconds and adds what it shows to your notes, using your vision model. Never while you present, and paused while Undetectable is on. Get consent from the people in the meeting first.')}
             </p>
           </div>
         </section>

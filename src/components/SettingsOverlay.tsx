@@ -8,7 +8,7 @@ import {
     Camera, RotateCcw, Eye, Layout, MessageSquare, Crop,
     ChevronDown, ChevronUp, Check, BadgeCheck, Power, Palette, Calendar, Ghost, Sun, Moon, RefreshCw, Info, Globe, FlaskConical, Terminal, Download, Settings, Activity, ExternalLink, Trash2,
     Sparkles, Pencil, Briefcase, Building2, Search, MapPin, CheckCircle, HelpCircle, Zap, SlidersHorizontal, PointerOff, Folder,
-    Star, AlertCircle, Gift, Smartphone, Cpu, Shield, Code2, Headphones, Boxes, Languages, Volume2, KeyRound, Loader2, CornerDownRight, PanelBottomClose, TriangleAlert
+    Star, AlertCircle, Gift, Smartphone, Cpu, Shield, Code2, Headphones, Boxes, Languages, Volume2, KeyRound, Loader2, CornerDownRight, PanelBottomClose, TriangleAlert, MicOff
 } from 'lucide-react';
 import { AutoAnswerIcon } from './AutoAnswerIcon';
 import { HiCreditCard } from 'react-icons/hi2';
@@ -791,6 +791,16 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
     const [isMousePassthrough, setIsMousePassthrough] = useState(false);
     const [disguiseMode, setDisguiseMode] = useState<'terminal' | 'settings' | 'activity' | 'none'>('none');
     const [openOnLogin, setOpenOnLogin] = useState(false);
+    // Follow the meeting app's mute (Settings › Audio; main: MeetingMuteSync).
+    // Null until read; saved first, and a failed save puts the switch back.
+    const [followMeetingMute, setFollowMeetingMute] = useState<boolean | null>(null);
+    useEffect(() => {
+        let live = true;
+        window.electronAPI?.getFollowMeetingMute?.()
+            .then((on) => { if (live) setFollowMeetingMute(on !== false); })
+            .catch(() => { if (live) setFollowMeetingMute(true); });
+        return () => { live = false; };
+    }, []);
     // Windows-only. Defaults to true to match the main-process policy (unset ⟹
     // on), so the toggle doesn't flash off before the IPC read lands.
     const [shortcutGuard, setShortcutGuard] = useState(true);
@@ -4483,6 +4493,37 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                     </div>
                                                 </div>
                                             )}
+
+                                            {/* Follow the meeting app's mute: while Zoom, Teams or Meet shows
+                                                you muted, your mic is transcribed as silence. Natively only
+                                                reads the app; it never changes its mute. */}
+                                            <div className="rounded-xl border border-border-subtle bg-bg-card">
+                                                <div className="flex items-center justify-between px-4 py-3">
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle text-text-primary flex items-center justify-center shrink-0">
+                                                            <MicOff size={20} />
+                                                        </div>
+                                                        <div>
+                                                            <h3 className="text-sm font-bold text-text-primary">{t("Follow the meeting app's mute")}</h3>
+                                                            <p className="text-xs text-text-secondary mt-0.5">{t("While you're muted in Zoom, Teams or Meet, Natively doesn't transcribe your microphone.")}</p>
+                                                        </div>
+                                                    </div>
+                                                    <SettingsToggle
+                                                        checked={!!followMeetingMute}
+                                                        label={t("Follow the meeting app's mute")}
+                                                        disabled={followMeetingMute === null}
+                                                        onChange={() => {
+                                                            const was = followMeetingMute;
+                                                            if (was === null) return;
+                                                            setFollowMeetingMute(!was);
+                                                            window.electronAPI?.setFollowMeetingMute?.(!was)
+                                                                .then((r) => { if (!r?.success) setFollowMeetingMute(was); })
+                                                                .catch(() => setFollowMeetingMute(was));
+                                                        }}
+                                                        className={followMeetingMute ? 'bg-accent-primary border border-transparent' : 'bg-bg-toggle-switch border border-border-muted'}
+                                                    />
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>

@@ -58,6 +58,8 @@ interface CallState {
     open: Map<string, number>;
     spans: SpeakingSpan[];
     lastReport: number;
+    /** The most people the app's own count showed at once (the user included). */
+    maxCount?: number;
 }
 
 const MAX_PEOPLE = 100;
@@ -97,6 +99,21 @@ export class CallRoster {
         }
     }
 
+    /**
+     * The app's own head count ("Participants (3)"), the user included. Kept as
+     * the most seen at once, so the save can tell a one-to-one call from a
+     * group whose other names the reader never recognised.
+     */
+    noteCount(key: string, count: number, now: number): void {
+        if (!Number.isInteger(count) || count < 1 || count > 10_000) return;
+        let call = this.calls.get(key);
+        if (!call) {
+            call = { people: new Map(), open: new Map(), spans: [], lastReport: now };
+            this.calls.set(key, call);
+        }
+        call.maxCount = Math.max(call.maxCount ?? 0, count);
+    }
+
     /** The page went away (tab closed, left the call): close what is open. */
     end(key: string): void {
         const call = this.calls.get(key);
@@ -114,7 +131,7 @@ export class CallRoster {
      * and the speaking spans, clipped to the window. Open spans count up to
      * the last report.
      */
-    snapshot(key: string, fromMs: number, toMs: number): { participants: string[]; spans: SpeakingSpan[] } {
+    snapshot(key: string, fromMs: number, toMs: number): { participants: string[]; spans: SpeakingSpan[]; count?: number } {
         const call = this.calls.get(key);
         if (!call) return { participants: [], spans: [] };
         const participants = [...call.people.entries()]
@@ -126,7 +143,7 @@ export class CallRoster {
             .filter((s) => s.end > fromMs && s.start < toMs)
             .map((s) => ({ name: s.name, start: Math.max(s.start, fromMs), end: Math.min(s.end, toMs) }))
             .sort((a, b) => a.start - b.start);
-        return { participants, spans };
+        return { participants, spans, ...(call.maxCount ? { count: call.maxCount } : {}) };
     }
 
     /**
@@ -134,7 +151,7 @@ export class CallRoster {
      * quit mid-call: LiveMeetingJournal kept `snapshot(key, …)`). Everyone is
      * taken as present for the whole window. Does nothing if the call is known.
      */
-    restore(key: string, saved: { participants: string[]; spans: SpeakingSpan[] }, fromMs: number, toMs: number): void {
+    restore(key: string, saved: { participants: string[]; spans: SpeakingSpan[]; count?: number }, fromMs: number, toMs: number): void {
         if (this.calls.has(key)) return;
         const people = new Map<string, { first: number; last: number }>();
         for (const name of (saved.participants ?? []).slice(0, MAX_PEOPLE)) {
@@ -144,7 +161,8 @@ export class CallRoster {
             .filter((s) => s && typeof s.name === 'string' && Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
             .slice(0, MAX_SPANS)
             .map((s) => ({ name: s.name, start: s.start, end: s.end }));
-        this.calls.set(key, { people, open: new Map(), spans, lastReport: toMs });
+        const maxCount = Number.isInteger(saved.count) && (saved.count as number) > 0 ? saved.count : undefined;
+        this.calls.set(key, { people, open: new Map(), spans, lastReport: toMs, ...(maxCount ? { maxCount } : {}) });
     }
 
     has(key: string): boolean {

@@ -182,6 +182,12 @@ export class SessionTracker {
         /** The call it is in (a meeting tab's key), for who spoke when (meetingDetection/callRoster). */
         callKey?: string;
         source?: 'manual' | 'calendar';
+        /** From the Zoom / Teams window (main: startDesktopCallSpeakers), read-only facts. */
+        callSelfName?: string;
+        callMeetingKey?: string;
+        callParticipantCount?: number;
+        /** What others shared on screen, described (services/meeting/ScreenShareContext.ts). */
+        sharedScreens?: import('./services/meeting/ScreenShareContext').SharedScreenEntry[];
     } | null = null;
 
     // Full Session Tracking (Persisted)

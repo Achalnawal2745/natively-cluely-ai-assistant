@@ -24,6 +24,12 @@ export interface LiveMeeting {
     focused?: boolean;
     /** When the source last reported it. */
     seenAt: number;
+    /**
+     * The callRoster key its people are reported under, when that is not
+     * `key`: a Zoom / Teams window is read as 'zoom-app:<pid>' whichever
+     * meeting it is in (desktopCallSpeakers.ts).
+     */
+    rosterKey?: string;
 }
 
 /** What the linker reads; LiveMeetings in the app, a fake in tests. */

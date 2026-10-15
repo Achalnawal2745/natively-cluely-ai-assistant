@@ -52,6 +52,15 @@ export interface AppSettings {
     meetingAutoStopEnabled?: boolean;
     // Minutes of silence before the inactivity stop. No UI yet. Unset = 15.
     meetingInactivityStopMinutes?: number;
+    // Follow the meeting app's mute (2026-10-15, Settings › Audio): while the
+    // user is muted in Zoom / Teams / Meet (read from the app, never changed),
+    // the mic channel carries silence of the same length. Unset = on.
+    followMeetingMute?: boolean;
+    // Snapshot shared screens (2026-10-15, Settings › Calendar): while someone
+    // else shares a screen in a Zoom / Teams call, a picture every 10 s, kept
+    // when it changed, described by the user's vision model for the notes.
+    // Never while the user presents. Unset = off.
+    screenShareSnapshots?: boolean;
     // The notes window (`?window=notes`, 2026-10-15): where it was and how big,
     // and whether it was open when last used, so a meeting starting reopens it
     // (without taking focus) for someone who keeps it open.

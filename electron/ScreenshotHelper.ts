@@ -441,6 +441,41 @@ async function stitchImages(captures: DisplayCapture[], selection: Electron.Rect
   return stitched;
 }
 
+/**
+ * One meeting app window, as a picture: for "Snapshot shared screens"
+ * (services/meeting/ScreenShareContext.ts), which reads another person's
+ * shared screen out of the Zoom / Teams window it is shown in. A window
+ * source rather than the whole display: the window is captured even when
+ * something covers it, and Natively's own overlay is never in it.
+ *
+ * Same permission gate as every other screenshot (assertScreenRecordingPermission:
+ * macOS Screen Recording must already be granted; it is never asked for from
+ * here, so this never opens a system prompt). Windows needs no permission.
+ * Returns null when no window with one of these titles is on screen.
+ */
+export async function captureWindowThumbnail(titles: string[], maxEdge: number = 1600): Promise<Electron.NativeImage | null> {
+  const wanted = new Set(titles.map((t) => t.trim()).filter(Boolean));
+  if (wanted.size === 0) return null;
+  assertScreenRecordingPermission();
+  const edge = Math.max(320, Math.min(2400, Math.round(maxEdge)));
+  const sources = await desktopCapturer.getSources({
+    types: ['window'],
+    thumbnailSize: { width: edge, height: edge },
+    fetchWindowIcons: false,
+  });
+  let best: Electron.NativeImage | null = null;
+  let bestArea = 0;
+  for (const source of sources) {
+    if (!wanted.has(source.name.trim()) || source.thumbnail.isEmpty()) continue;
+    const { width, height } = source.thumbnail.getSize();
+    if (width * height > bestArea) {
+      best = source.thumbnail;
+      bestArea = width * height;
+    }
+  }
+  return best;
+}
+
 export class ScreenshotHelper {
   private screenshotQueue: string[] = []
   private extraScreenshotQueue: string[] = []

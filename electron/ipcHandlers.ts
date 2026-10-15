@@ -16430,6 +16430,29 @@ export function initializeIpcHandlers(appState: AppState): void {
     if (!on) appState.getMeetingAutoStop?.()?.end();
     return { success: true };
   });
+  // Follow the meeting app's mute (Settings › Audio). Unset = on. Applies at
+  // once: off unmutes the mic channel immediately.
+  safeHandle('get-follow-meeting-mute', async () => SettingsManager.getInstance().get('followMeetingMute') ?? true);
+  safeHandle('set-follow-meeting-mute', async (_, on: boolean) => {
+    if (typeof on !== 'boolean') return { success: false };
+    if (!SettingsManager.getInstance().set('followMeetingMute', on)) return { success: false, error: 'settings_store_degraded' };
+    require('./services/meeting/MeetingMuteSync').meetingMuteSync.setEnabled(on);
+    return { success: true };
+  });
+  // The overlay asks once when it mounts; changes arrive as 'meeting-mute-changed'.
+  safeHandle('get-meeting-mute-state', async () => {
+    const { meetingMuteSync, muteSourceName } = require('./services/meeting/MeetingMuteSync');
+    const state = meetingMuteSync.state();
+    return { muted: state.muted, app: muteSourceName(state.app) };
+  });
+  // Snapshot shared screens (Settings › Calendar). Unset = off. Read at every
+  // picture, so a change applies within one capture interval.
+  safeHandle('get-screen-share-snapshots', async () => SettingsManager.getInstance().get('screenShareSnapshots') === true);
+  safeHandle('set-screen-share-snapshots', async (_, on: boolean) => {
+    if (typeof on !== 'boolean') return { success: false };
+    if (!SettingsManager.getInstance().set('screenShareSnapshots', on)) return { success: false, error: 'settings_store_degraded' };
+    return { success: true };
+  });
   // The overlay's "stops in 1 minute" notice: Keep going.
   safeHandle('meeting-auto-stop-keep-going', async () => {
     appState.getMeetingAutoStop?.()?.keepGoing();

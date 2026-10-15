@@ -35,7 +35,7 @@ export function nameCallLines<T extends LineLike>(
     roster: CallRoster = defaultRoster,
 ): NamedCall<T> | null {
     roster.end(callKey);
-    const { participants, spans } = roster.snapshot(callKey, startMs, startMs + Math.max(0, durationMs) + TAIL_MS);
+    const { participants, spans, count } = roster.snapshot(callKey, startMs, startMs + Math.max(0, durationMs) + TAIL_MS);
     if (participants.length === 0 && spans.length === 0) return null;
     const { ids, labels, confidence } = attributeSpeakers(transcript, spans);
     const named = transcript.map((line, i) => {
@@ -50,10 +50,11 @@ export function nameCallLines<T extends LineLike>(
     });
     // One name means a one-to-one call only when the list is the whole call: the
     // Meet page reports everyone, but the Zoom / Teams desktop reader can stop
-    // short and records only names it recognises. Two provider voices on the
-    // other side also prove it is not one person.
+    // short and records only names it recognises, unless the app's own head
+    // count never went past two (the user and this one person). Two provider
+    // voices on the other side also prove it is not one person.
     const otherVoices = new Set(transcript.filter((l) => isOtherSide(l.speaker) && l.speakerId).map((l) => l.speakerId));
-    const listIsWholeCall = !/^(zoom|teams)-app:/.test(callKey);
+    const listIsWholeCall = !/^(zoom|teams)-app:/.test(callKey) || count === 2;
     if (participants.length === 1 && listIsWholeCall && otherVoices.size <= 1) {
         const only = participants[0];
         const id = Object.keys(labels).find((k) => labels[k] === only) ?? `speaker_${Object.keys(labels).length + 2}`;

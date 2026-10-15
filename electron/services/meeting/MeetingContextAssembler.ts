@@ -51,13 +51,16 @@ export interface AssembleSummaryParams {
   userNotes?: string;
   /** The user's spelling list for names and terms. */
   vocabulary?: string[];
+  /** screenShareNotes.formatSharedScreensBlock: what others shared on screen. */
+  sharedScreensBlock?: string;
 }
 
 /** The NotesPromptContext for these params, or null when they carry none. */
-export function notesContextFromParams(params: Pick<AssembleSummaryParams, 'meetingContextBlock' | 'lastTimeBlock' | 'userNotes' | 'vocabulary'>): NotesPromptContext | null {
+export function notesContextFromParams(params: Pick<AssembleSummaryParams, 'meetingContextBlock' | 'lastTimeBlock' | 'userNotes' | 'vocabulary' | 'sharedScreensBlock'>): NotesPromptContext | null {
   const ctx: NotesPromptContext = {
     ...(params.meetingContextBlock?.trim() ? { meetingContextBlock: params.meetingContextBlock.trim() } : {}),
     ...(params.lastTimeBlock?.trim() ? { lastTimeBlock: params.lastTimeBlock.trim() } : {}),
+    ...(params.sharedScreensBlock?.trim() ? { sharedScreensBlock: params.sharedScreensBlock.trim() } : {}),
   };
   const notes = cleanUserNotes(params.userNotes);
   if (notes) ctx.userNotes = notes;

@@ -24,6 +24,8 @@
  *   - Only Meet. Zoom web and Teams web readers would follow this pattern; the
  *     plan is in electron/services/meetingDetection/callRoster.ts.
  */
+import { muteStateOfControlLabel } from '../../electron/services/meetingDetection/muteLabels';
+
 export interface MeetPerson {
   name: string;
   speaking: boolean;
@@ -114,6 +116,21 @@ export function createMeetReader(doc: Document, now: () => number = Date.now) {
       observer.disconnect();
     },
   };
+}
+
+/**
+ * Is the user muted in this call? Read from the microphone button's own label
+ * ("Turn on microphone" while muted, "Turn off microphone" while live), the
+ * same grammar the desktop reader uses for Zoom and Teams. Null when no such
+ * button is found or two disagree. Read-only: nothing is clicked.
+ */
+export function readSelfMuted(doc: Document): boolean | null {
+  const states = new Set<boolean>();
+  for (const el of Array.from(doc.querySelectorAll('button[aria-label], [role="button"][aria-label]'))) {
+    const s = muteStateOfControlLabel(el.getAttribute('aria-label'));
+    if (s !== null) states.add(s);
+  }
+  return states.size === 1 ? [...states][0] : null;
 }
 
 /** One-shot read with no history (who is in the call; nobody counts as speaking). */
