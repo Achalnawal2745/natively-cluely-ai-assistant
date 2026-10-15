@@ -15,6 +15,7 @@ import type { MeetingSummaryTelemetryMeta } from './services/meeting/types';
 import { TranscriptNormalizer } from './services/meeting/TranscriptNormalizer';
 import { buildShortSessionPrompt, countHumanContent, isShortSession, parseShortSessionNotes } from './services/meeting/shortSessionNotes';
 import { notesContextFromParams } from './services/meeting/MeetingContextAssembler';
+import { formatSharedScreensBlock, sharedScreenEntries } from './services/meeting/screenShareNotes';
 import { buildNotesInputs, type NotesInputs } from './services/meeting/notesInputs';
 import { buildV2FallbackPrompts, parseV2SummaryResponse, v2NotesHaveContent } from './services/meeting/v2FallbackNotes';
 import { MeetingMemoryService, buildPersistedMeetingMemory } from './intelligence/MeetingMemoryService';
@@ -291,6 +292,13 @@ function formatDuration(durationMs: number): string {
  * the caller passed one. Undefined when the list is empty, so the prompts stay
  * exactly as before for users without a dictionary.
  */
+/** The notes' SHARED SCREENS block for a meeting's saved descriptions; undefined for none. */
+function sharedScreensBlockFor(raw: unknown): string | undefined {
+    let timeZone: string | undefined;
+    try { timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { /* UTC */ }
+    return formatSharedScreensBlock(raw, { timeZone }) || undefined;
+}
+
 function notesVocabulary(explicit?: string[]): string[] | undefined {
     if (Array.isArray(explicit)) return explicit;
     const list = getUserDictionary();
@@ -305,7 +313,11 @@ type ProcessMetadata = {
     callKey?: string;
     source?: 'manual' | 'calendar';
     /** A recovered meeting's saved speaking record (the live roster is gone). */
-    callRoster?: { participants: string[]; spans: Array<{ name: string; start: number; end: number }> };
+    callRoster?: { participants: string[]; spans: Array<{ name: string; start: number; end: number }>; count?: number };
+    /** The user's name as the Zoom / Teams window showed it: names "Me" when the calendar gives no name. */
+    callSelfName?: string;
+    /** What others shared on screen, described (ScreenShareContext): context for the notes. */
+    sharedScreens?: import('./services/meeting/ScreenShareContext').SharedScreenEntry[];
     /** The user's own notes typed during the meeting; the notes are built around them when present. */
     userNotes?: string;
     /** The user's spelling list for names and terms. */
@@ -348,6 +360,8 @@ export function recoveryMetadataFor(
     if (source === 'manual' || source === 'calendar') metadata.source = source;
     if (typeof saved?.callKey === 'string') metadata.callKey = saved.callKey;
     if (saved?.callRoster && Array.isArray(saved.callRoster.participants) && Array.isArray(saved.callRoster.spans)) metadata.callRoster = saved.callRoster;
+    if (typeof saved?.callSelfName === 'string' && saved.callSelfName.trim()) metadata.callSelfName = saved.callSelfName;
+    if (Array.isArray(saved?.sharedScreens) && saved.sharedScreens.length > 0) metadata.sharedScreens = saved.sharedScreens;
     // The user's notes from the meeting: the live copy's, else the meeting row's.
     const userNotes = typeof saved?.userNotes === 'string' && saved.userNotes.trim() ? saved.userNotes : details.userNotes;
     if (typeof userNotes === 'string' && userNotes.trim()) metadata.userNotes = userNotes;
@@ -828,6 +842,8 @@ export class MeetingPersistence {
             if (typeof metadata.calendarEventId === 'string') meta.calendarEventId = metadata.calendarEventId;
             if (metadata.calendarEvent && typeof metadata.calendarEvent === 'object') meta.calendarEvent = metadata.calendarEvent;
             if (metadata.source === 'manual' || metadata.source === 'calendar') meta.source = metadata.source;
+            if (typeof metadata.callSelfName === 'string' && metadata.callSelfName) meta.callSelfName = metadata.callSelfName;
+            if (Array.isArray(metadata.sharedScreens) && metadata.sharedScreens.length > 0) meta.sharedScreens = metadata.sharedScreens;
             if (typeof metadata.callKey === 'string') {
                 meta.callKey = metadata.callKey;
                 try {
@@ -965,7 +981,9 @@ export class MeetingPersistence {
         // if the user had typed the names, and under the same "Speaker labels" switch.
         let calendarLabels: Record<string, string> | null = null;
         let llmTranscript = data.transcript;
-        const userName = this.calendarUserName();
+        // No calendar name: the name the Zoom / Teams window showed as the user's.
+        const appSelfName = typeof metadata?.callSelfName === 'string' && metadata.callSelfName.trim() ? metadata.callSelfName.trim() : undefined;
+        const userName = this.calendarUserName() ?? appSelfName;
         if ((calendarEvent || userName) && isIntelligenceFlagEnabled('speakerLabelsV1')) {
             try {
                 const { calendarSpeakerLabels } = require('./services/calendar/calendarSessionMatch') as typeof import('./services/calendar/calendarSessionMatch');
@@ -1064,6 +1082,8 @@ export class MeetingPersistence {
             lastTimeBlock: notesInputs?.lastTimeBlock,
             userNotes: notesInputs?.userNotes,
             vocabulary: notesInputs?.vocabulary,
+            // What others shared on screen ("Snapshot shared screens"), described.
+            sharedScreensBlock: notesInputs ? sharedScreensBlockFor(metadata?.sharedScreens) : undefined,
         };
 
         try {
@@ -1432,6 +1452,9 @@ export class MeetingPersistence {
                 if (callLabels) summaryData = { ...summaryData, speakerLabels: { ...callLabels, ...(summaryData.speakerLabels || {}) } };
                 if (callConfidence && Object.keys(callConfidence).length > 0) summaryData = { ...summaryData, speakerConfidence: callConfidence };
                 if (callParticipants.length > 0) summaryData = { ...summaryData, callParticipants };
+                // Kept with the meeting so Regenerate writes from the same screens.
+                const screens = sharedScreenEntries(metadata?.sharedScreens);
+                if (screens.length > 0) summaryData = { ...summaryData, sharedScreens: screens };
             }
 
             const meetingData: Meeting = {
@@ -1918,6 +1941,7 @@ export class MeetingPersistence {
                 lastTimeBlock: regenInputs?.lastTimeBlock,
                 userNotes: regenInputs?.userNotes,
                 vocabulary: regenInputs?.vocabulary,
+                sharedScreensBlock: regenInputs ? sharedScreensBlockFor((details.detailedSummary as any)?.sharedScreens) : undefined,
             });
 
             if (!assembled.summary) {
@@ -1957,6 +1981,8 @@ export class MeetingPersistence {
             if (recall) detailedSummary.crossMeeting = recall;
             const prevMemory = (details.detailedSummary as any)?.meetingMemory;
             if (prevMemory) detailedSummary.meetingMemory = prevMemory;
+            const prevScreens = sharedScreenEntries((details.detailedSummary as any)?.sharedScreens);
+            if (prevScreens.length > 0) detailedSummary.sharedScreens = prevScreens;
             // The notes being replaced stay as a version the meeting page shows
             // in its own tab (bounded; DatabaseManager.archiveNotesVersion).
             if (isArchivableNotes(details.detailedSummary)) db.archiveNotesVersion(meetingId, details.detailedSummary);

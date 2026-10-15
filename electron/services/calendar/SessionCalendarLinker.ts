@@ -96,7 +96,8 @@ export function linkSessionToCalendar(
     // without a calendar: the saved meeting reads who spoke from it
     // (meetingDetection/callRoster). Kept current while the session runs.
     const noteCall = () => {
-        const key = live?.keys()[0];
+        const best = live?.list().find((m) => m.rosterKey || m.key);
+        const key = best?.rosterKey ?? best?.key;
         if (key && stillThisMeeting()) metadata.callKey = key;
     };
     noteCall();

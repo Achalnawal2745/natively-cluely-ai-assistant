@@ -15,6 +15,7 @@
 // platform branches. Dates are formatted with Intl in the event's own time zone,
 // which behaves the same on macOS and Windows.
 
+import { SHARED_SCREENS_RULES } from './screenShareNotes';
 import type { CalendarEventSnapshot, MatchableAttendee } from '../calendar/calendarSessionMatch';
 import { cleanEventDescription } from '../calendar/calendarSessionMatch';
 
@@ -447,6 +448,8 @@ export interface NotesPromptContext {
   userNotes?: string;
   /** cleanVocabulary output. */
   vocabulary?: string[];
+  /** screenShareNotes.formatSharedScreensBlock output: what others shared on screen. */
+  sharedScreensBlock?: string;
 }
 
 /**
@@ -459,6 +462,7 @@ export function renderNotesPromptContext(ctx: NotesPromptContext | null | undefi
   const parts: string[] = [];
   if (ctx.meetingContextBlock) parts.push(`${ctx.meetingContextBlock}\n\n${MEETING_CONTEXT_RULES}`);
   if (opts.includeLastTime !== false && ctx.lastTimeBlock) parts.push(ctx.lastTimeBlock);
+  if (ctx.sharedScreensBlock) parts.push(`${ctx.sharedScreensBlock}\n\n${SHARED_SCREENS_RULES}`);
   if (ctx.userNotes) parts.push(`${formatUserNotesBlock(ctx.userNotes)}\n\n${USER_NOTES_RULES}`);
   const vocab = formatVocabularyBlock(ctx.vocabulary || []);
   if (vocab) parts.push(vocab);

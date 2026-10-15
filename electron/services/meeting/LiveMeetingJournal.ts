@@ -32,7 +32,11 @@ export interface MeetingRecoveryMeta {
     callKey?: string;
     source?: 'manual' | 'calendar';
     /** The call's own record of who spoke (callRoster), for names on the lines. */
-    callRoster?: { participants: string[]; spans: Array<{ name: string; start: number; end: number }> };
+    callRoster?: { participants: string[]; spans: Array<{ name: string; start: number; end: number }>; count?: number };
+    /** The user's name as the Zoom / Teams window showed it (for "Me" without a calendar). */
+    callSelfName?: string;
+    /** What others shared on screen, described (meeting/ScreenShareContext.ts). */
+    sharedScreens?: import('./ScreenShareContext').SharedScreenEntry[];
     /** The mode that was active, so the notes use its sections. */
     mode?: { id: string; name: string; templateType: string } | null;
     /** True start of the meeting and how long it ran (ms). */

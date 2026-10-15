@@ -58,10 +58,20 @@ interface CallState {
     open: Map<string, number>;
     spans: SpeakingSpan[];
     lastReport: number;
+    /**
+     * The app's own head count over time (the user included): each entry is a
+     * count and the stretch it was seen on screen. Timed, because an app's key
+     * outlives one meeting: the same process can host a two-person call and
+     * then a group call whose count can't be read.
+     */
+    counts: Array<{ from: number; to: number; count: number }>;
 }
 
 const MAX_PEOPLE = 100;
 const MAX_SPANS = 20_000;
+const MAX_COUNTS = 2_000;
+/** A count seen again within this long continues its stretch (the reader polls every 500 ms). */
+const COUNT_GAP_MS = 10_000;
 /** A personal room is the same key every day; older talk is dropped. */
 const KEEP_MS = 6 * 60 * 60_000;
 
@@ -72,7 +82,7 @@ export class CallRoster {
     report(key: string, people: PersonReport[], now: number): void {
         let call = this.calls.get(key);
         if (!call) {
-            call = { people: new Map(), open: new Map(), spans: [], lastReport: now };
+            call = { people: new Map(), open: new Map(), spans: [], lastReport: now, counts: [] };
             this.calls.set(key, call);
         }
         const speaking = new Set<string>();
@@ -94,7 +104,39 @@ export class CallRoster {
         if (call.spans.length > 0 && call.spans[0].end < now - KEEP_MS) {
             call.spans = call.spans.filter((s) => s.end >= now - KEEP_MS);
             for (const [name, seen] of call.people) if (seen.last < now - KEEP_MS) call.people.delete(name);
+            // Keep the last count from before the cut: it still held after it.
+            call.counts = call.counts.filter((c) => c.to >= now - KEEP_MS);
         }
+    }
+
+    /**
+     * The app's own head count ("Participants (3)"), the user included, with
+     * when it was shown. The save takes the most seen during ITS meeting, so it
+     * can tell a one-to-one call from a group whose other names the reader
+     * never recognised, and a call before it in the same app doesn't count.
+     */
+    noteCount(key: string, count: number, now: number): void {
+        if (!Number.isInteger(count) || count < 1 || count > 10_000) return;
+        let call = this.calls.get(key);
+        if (!call) {
+            call = { people: new Map(), open: new Map(), spans: [], lastReport: now, counts: [] };
+            this.calls.set(key, call);
+        }
+        const last = call.counts[call.counts.length - 1];
+        if (last && last.count === count && now - last.to <= COUNT_GAP_MS) {
+            last.to = Math.max(last.to, now);
+            return;
+        }
+        call.counts.push({ from: now, to: now, count });
+        if (call.counts.length > MAX_COUNTS) call.counts.splice(0, call.counts.length - MAX_COUNTS);
+    }
+
+    /** The most people the count showed between `fromMs` and `toMs`, if it showed any. */
+    private countIn(call: CallState, fromMs: number, toMs: number): number | undefined {
+        let max = 0;
+        // Only counts seen on screen during the window.
+        for (const c of call.counts) if (c.from <= toMs && c.to >= fromMs) max = Math.max(max, c.count);
+        return max > 0 ? max : undefined;
     }
 
     /** The page went away (tab closed, left the call): close what is open. */
@@ -114,7 +156,7 @@ export class CallRoster {
      * and the speaking spans, clipped to the window. Open spans count up to
      * the last report.
      */
-    snapshot(key: string, fromMs: number, toMs: number): { participants: string[]; spans: SpeakingSpan[] } {
+    snapshot(key: string, fromMs: number, toMs: number): { participants: string[]; spans: SpeakingSpan[]; count?: number } {
         const call = this.calls.get(key);
         if (!call) return { participants: [], spans: [] };
         const participants = [...call.people.entries()]
@@ -126,7 +168,8 @@ export class CallRoster {
             .filter((s) => s.end > fromMs && s.start < toMs)
             .map((s) => ({ name: s.name, start: Math.max(s.start, fromMs), end: Math.min(s.end, toMs) }))
             .sort((a, b) => a.start - b.start);
-        return { participants, spans };
+        const count = this.countIn(call, fromMs, toMs);
+        return { participants, spans, ...(count ? { count } : {}) };
     }
 
     /**
@@ -134,7 +177,7 @@ export class CallRoster {
      * quit mid-call: LiveMeetingJournal kept `snapshot(key, …)`). Everyone is
      * taken as present for the whole window. Does nothing if the call is known.
      */
-    restore(key: string, saved: { participants: string[]; spans: SpeakingSpan[] }, fromMs: number, toMs: number): void {
+    restore(key: string, saved: { participants: string[]; spans: SpeakingSpan[]; count?: number }, fromMs: number, toMs: number): void {
         if (this.calls.has(key)) return;
         const people = new Map<string, { first: number; last: number }>();
         for (const name of (saved.participants ?? []).slice(0, MAX_PEOPLE)) {
@@ -144,7 +187,8 @@ export class CallRoster {
             .filter((s) => s && typeof s.name === 'string' && Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
             .slice(0, MAX_SPANS)
             .map((s) => ({ name: s.name, start: s.start, end: s.end }));
-        this.calls.set(key, { people, open: new Map(), spans, lastReport: toMs });
+        const count = Number.isInteger(saved.count) && (saved.count as number) > 0 ? (saved.count as number) : undefined;
+        this.calls.set(key, { people, open: new Map(), spans, lastReport: toMs, counts: count ? [{ from: fromMs, to: toMs, count }] : [] });
     }
 
     has(key: string): boolean {

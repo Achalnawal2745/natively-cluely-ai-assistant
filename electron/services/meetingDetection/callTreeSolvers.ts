@@ -32,6 +32,8 @@ export interface CallTreeNode {
     description: string;
     value: string;
     id: string;
+    /** A link's address (AXURL / a Hyperlink's Value); absent from older native builds. */
+    url?: string;
 }
 
 export interface CallTreeWindow {
@@ -77,11 +79,15 @@ const STATE_PART = new RegExp(
         'in the lobby', 'waiting', 'not connected', 'unverified',
         'stummgeschaltet', 'stummschaltung aufgehoben', 'gastgeber', 'micro coupé', 'muet', 'organisateur', 'hôte',
         'silenciado', 'anfitrión', 'organizador', 'sem áudio', 'mudo', 'disattivato', 'gedempt',
+        // Zoom's self/participant tile phrase in its other languages (see callMuteState.ts).
+        'bei computeraudio stummschaltung (?:aktiviert|deaktiviert)', 'audio de la computadora (?:no )?silenciado',
+        'ordinateur mis en sourdine', 'audio komputer (?:dibunyikan|dibisukan)', 'audio computer (?:attivato|disattivato)',
+        'computeraudio (?:ingeschakeld|gedempt)', 'datorljudet (?:aktiverades|inaktiverades)',
     ].join('|')
     + ')$',
     'i',
 );
-const SELF_TAG = /^(?:me|you|myself|ich|moi|yo|eu|io|ik|我|自分|나)$/i;
+export const SELF_TAG = /^(?:me|you|myself|ich|moi|yo|eu|io|ik|我|自分|나)$/i;
 // Labels of the apps' own controls and panes, never a person.
 const UI_WORDS = /^(?:mute|unmute|start video|stop video|participants?|people|chat|share(?: screen)?|more|leave|end|record(?:ing)?|reactions?|apps|security|view|gallery(?: view)?|speaker(?: view)?|close|minimize|maximize|zoom(?: meeting| workplace| webinar)?|microsoft teams|meeting|call|camera|mic(?:rophone)?|audio|video|settings|invite|raise hand|lower hand|you|me|host|guest|in this meeting|in the meeting|attendees|search|send|options|copy|join|admit|deny|remove|rename|pin|spotlight|everyone|waiting room|lobby)$/i;
 
@@ -94,7 +100,7 @@ export function normalizeName(name: string): string {
     return name.normalize('NFKC').toLowerCase().replace(/[\p{P}\p{S}]+/gu, ' ').replace(/\s+/g, ' ').trim();
 }
 
-function plausibleName(raw: string): string | null {
+export function plausibleName(raw: string): string | null {
     const name = raw.replace(/\s+/g, ' ').trim();
     if (name.length < 1 || name.length > 60) return null;
     if (!/\p{L}/u.test(name)) return null;
@@ -105,7 +111,7 @@ function plausibleName(raw: string): string | null {
 }
 
 /** "Ana (Host, me), Muted" → ["Ana (Host, me)", "Muted"]: separators inside brackets stay. */
-function splitOutsideBrackets(text: string): string[] {
+export function splitOutsideBrackets(text: string): string[] {
     const parts: string[] = [];
     let depth = 0;
     let current = '';

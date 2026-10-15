@@ -417,7 +417,8 @@ test('SessionTracker puts a recovered line at its time without triggering anythi
 test('main feeds both captures, opens outages on retryable errors only, and starts recovery for cloud providers only', () => {
     const main = read('electron/main.ts');
     assert.match(main, /this\.googleSTT\?\.write\(chunk\);[\s\S]{0,300}this\.sttGap\.onAudio\('system', chunk, gapRate\)/);
-    assert.match(main, /this\.googleSTT_User\?\.write\(chunk\);[\s\S]{0,300}this\.sttGap\.onAudio\('mic', chunk, gapRate\)/);
+    // The mic chunk passes the mute gate first (MeetingMuteSync); both sinks get the gated copy.
+    assert.match(main, /this\.googleSTT_User\?\.write\(heard\);[\s\S]{0,300}this\.sttGap\.onAudio\('mic', heard, gapRate\)/);
     // The error hook sits after the terminal (auth / local unavailable) return.
     const err = main.indexOf('this.sttGap.onProviderError(gapSource)');
     assert.ok(err > main.indexOf('if (isAuthError || isLocalSttUnavailable) {'));
