@@ -129,6 +129,8 @@ export function wireMeetingDetection(deps: MeetingDetectionDeps): MeetingDetecto
         isMeetingActive: deps.isMeetingActive,
         // The call ended before anyone answered: its offer and countdown go.
         onGone: (id) => offers.callGone(id),
+        // Back within the minute: an offer it lost unanswered is shown again.
+        onBack: (id) => offers.callBack(id),
         onDetected: (d) => {
             if (deps.promptsBlocked()) {
                 console.log(`[MeetingDetection] ${d.app} call detected; prompt skipped (Undetectable or a disguise is on)`);

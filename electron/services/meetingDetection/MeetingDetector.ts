@@ -19,8 +19,15 @@ export interface MeetingDetectorDeps {
     read: () => DetectInput;
     isMeetingActive: () => boolean;
     onDetected: (detection: Detection) => void;
-    /** An announced call is no longer seen (once, until it is seen again). */
+    /**
+     * An announced call is no longer seen (once, until it is seen again). A
+     * call found by its browser tab or title gets a grace period first
+     * (`browserGoneGraceMs`): without microphone information a tab counts only
+     * while it plays sound, and a quiet stretch is not the end of the call.
+     */
     onGone?: (id: string) => void;
+    /** An announced call missed at least one poll and is seen again. */
+    onBack?: (id: string) => void;
     now?: () => number;
     setInterval?: (fn: () => void, ms: number) => unknown;
     clearInterval?: (handle: unknown) => void;
@@ -31,6 +38,8 @@ export interface MeetingDetectorOptions {
     confirmMs?: number;
     /** A chat app's call (WhatsApp, Slack…): long enough that a voice note is not one. */
     messagingConfirmMs?: number;
+    /** How long a browser-found call may go unseen before it counts as gone. */
+    browserGoneGraceMs?: number;
     rearmMs?: number;
 }
 
@@ -39,6 +48,7 @@ interface CallRecord {
     lastSeen: number;
     announced: boolean;
     goneReported?: boolean;
+    via?: Detection['via'];
 }
 
 export class MeetingDetector {
@@ -46,6 +56,7 @@ export class MeetingDetector {
     private readonly confirmMs: number;
     private readonly messagingConfirmMs: number;
     private readonly rearmMs: number;
+    private readonly browserGoneGraceMs: number;
     private readonly now: () => number;
     private timer: unknown = null;
     private calls = new Map<string, CallRecord>();
@@ -56,6 +67,7 @@ export class MeetingDetector {
         this.confirmMs = options.confirmMs ?? 4_000;
         this.messagingConfirmMs = options.messagingConfirmMs ?? 20_000;
         this.rearmMs = options.rearmMs ?? 60_000;
+        this.browserGoneGraceMs = options.browserGoneGraceMs ?? 20_000;
         this.now = deps.now ?? Date.now;
     }
 
@@ -90,10 +102,18 @@ export class MeetingDetector {
             console.warn('[MeetingDetector] reading the signals failed:', (err as Error)?.message);
         }
         if (detection) {
-            const call = this.calls.get(detection.id) ?? { firstSeen: now, lastSeen: now, announced: false };
+            const known = this.calls.get(detection.id);
+            // Missed at least one poll (or reported gone) and back: a withdrawn
+            // offer for it may come back (wireMeetingDetection).
+            const back = !!known && known.announced && (known.goneReported === true || known.lastSeen < this.lastTickAt);
+            const call = known ?? { firstSeen: now, lastSeen: now, announced: false };
             call.lastSeen = now;
             call.goneReported = false;
+            call.via = detection.via;
             this.calls.set(detection.id, call);
+            if (back) {
+                try { this.deps.onBack?.(detection.id); } catch (err) { console.warn('[MeetingDetector] onBack failed:', (err as Error)?.message); }
+            }
             if (this.deps.isMeetingActive()) {
                 call.announced = true;
             } else if (!call.announced && now - call.firstSeen >= (detection.messaging ? this.messagingConfirmMs : this.confirmMs)) {
@@ -109,7 +129,8 @@ export class MeetingDetector {
         for (const [id, call] of this.calls) {
             // An announced call missing from this poll: whoever waits on it
             // (the offer's automatic start) hears at once.
-            if (call.announced && call.lastSeen < now && !call.goneReported) {
+            const grace = call.via === 'browser' ? this.browserGoneGraceMs : 0;
+            if (call.announced && call.lastSeen < now && now - call.lastSeen >= grace && !call.goneReported) {
                 call.goneReported = true;
                 try { this.deps.onGone?.(id); } catch (err) { console.warn('[MeetingDetector] onGone failed:', (err as Error)?.message); }
             }

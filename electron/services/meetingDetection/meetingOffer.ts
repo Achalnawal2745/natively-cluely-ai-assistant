@@ -91,7 +91,10 @@ export function closeMeansNotNow(platform: string, reason: string | undefined): 
     return true;
 }
 
+type OfferInput = { app: string; title?: string | null; body: string; start: MeetingStartRequestLike; callId?: string };
+
 interface Current {
+    input: OfferInput;
     view: MeetingOfferView;
     /** The detector's id for the call this offer is about. */
     callId: string | null;
@@ -102,6 +105,8 @@ interface Current {
 
 export class MeetingOffers {
     private current: Current | null = null;
+    /** An offer withdrawn unanswered because its call went quiet: offered again if the call comes back. */
+    private withdrawn: { callId: string; input: OfferInput } | null = null;
     private seq = 0;
     private readonly now: () => number;
     private readonly setT: (fn: () => void, ms: number) => unknown;
@@ -126,8 +131,9 @@ export class MeetingOffers {
     }
 
     /** A new call: replaces any earlier offer. */
-    offer(input: { app: string; title?: string | null; body: string; start: MeetingStartRequestLike; callId?: string }): MeetingOfferView {
+    offer(input: OfferInput): MeetingOfferView {
         this.clear('replaced');
+        this.withdrawn = null;
         const auto = (() => { try { return this.deps.autoStart(); } catch { return false; } })();
         const id = `offer-${++this.seq}`;
         const view: MeetingOfferView = {
@@ -138,6 +144,7 @@ export class MeetingOffers {
             autoStartAt: auto ? this.now() + this.countdownMs : null,
         };
         const current: Current = {
+            input,
             view,
             callId: input.callId ?? null,
             start: input.start,
@@ -170,6 +177,7 @@ export class MeetingOffers {
 
     /** Start pressed on the panel. False when that offer is gone. */
     start(id: string): boolean {
+        this.withdrawn = null;
         const cur = this.current;
         if (!cur || cur.view.id !== id) return false;
         this.clear('started');
@@ -180,16 +188,41 @@ export class MeetingOffers {
 
     /** The detector no longer sees the call: an offer about it (and its countdown) goes. */
     callGone(callId: string): void {
-        if (this.current && this.current.callId === callId) this.clear('call ended');
+        if (this.current && this.current.callId === callId) this.withdraw();
+    }
+
+    /**
+     * The call is seen again: an offer it lost unanswered comes back, with a
+     * fresh countdown when Start automatically is on. Never over a meeting.
+     */
+    callBack(callId: string): void {
+        const w = this.withdrawn;
+        if (!w || w.callId !== callId || this.current) return;
+        if (this.deps.isMeetingActive()) { this.withdrawn = null; return; }
+        this.deps.log?.(`call ${callId} is back: offered again`);
+        this.offer(w.input);
+    }
+
+    /** The call went quiet before anyone answered: withdrawn, kept for callBack. */
+    private withdraw(): void {
+        const cur = this.current;
+        if (!cur) return;
+        this.clear('call ended');
+        if (cur.callId) this.withdrawn = { callId: cur.callId, input: cur.input };
     }
 
     /** Not now, on either surface. */
     dismiss(id: string): void {
-        if (this.current?.view.id === id) this.clear('dismissed');
+        if (this.current?.view.id === id) {
+            this.withdrawn = null;
+            this.clear('dismissed');
+        }
     }
 
     /** A meeting started some other way, or detection was switched off. */
     clear(reason = 'cleared'): void {
+        // Anything but the call going quiet answers it for good.
+        if (reason !== 'call ended' && reason !== 'replaced') this.withdrawn = null;
         const cur = this.current;
         if (!cur) return;
         this.current = null;
@@ -208,7 +241,7 @@ export class MeetingOffers {
         let stillOn = true;
         try { stillOn = cur.callId === null || !this.deps.callStillOn || this.deps.callStillOn(cur.callId); } catch { stillOn = false; }
         if (!stillOn) {
-            this.clear('call ended');
+            this.withdraw();
             return;
         }
         this.clear('auto-started');

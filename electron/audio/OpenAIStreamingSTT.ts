@@ -446,6 +446,15 @@ export class OpenAIStreamingSTT extends EventEmitter {
         this.speechSinceCommit = false;
     }
 
+    /**
+     * In REST mode (a custom endpoint, or the whisper-1 fallback), an upload
+     * is on its way or queued: a transcript may still come. Read by
+     * dictation's last-words wait only.
+     */
+    public hasPendingWork(): boolean {
+        return this.isActive && this.mode === 'rest' && (this.restIsUploading || this.restFlushPending);
+    }
+
     public finalize(): void {
         if (!this.isActive) return;
         if (this.mode === 'rest') {

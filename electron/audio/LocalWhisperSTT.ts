@@ -176,6 +176,8 @@ export class LocalWhisperSTT extends EventEmitter {
     private workerReady = false;
     private isDrainingFinals = false;
     private drainingFinalsInFlight = 0;
+    /** Final (non-streaming) transcribe tasks posted and not yet answered, whatever the answer. */
+    private finalTasksOutstanding = 0;
     // Pending audio waiting for the worker to become ready. Always finals —
     // streaming partials are never queued (they're best-effort and only fire
     // while a segment is open AND the worker is ready).
@@ -666,6 +668,15 @@ export class LocalWhisperSTT extends EventEmitter {
      * seconds a local model needs, instead of the short grace it gives a
      * channel with nothing pending.
      */
+    /**
+     * A final is queued for a loading worker or being transcribed: a result
+     * (possibly empty, which emits nothing) is still to come. Read by
+     * dictation's last-words wait only.
+     */
+    hasPendingWork(): boolean {
+        return this.isActive && (this.pendingAudio.length > 0 || this.finalTasksOutstanding > 0);
+    }
+
     finalize(): boolean {
         if (!this.isActive || !this.vad) return false;
         const segs = this.vad.flush();
@@ -1080,6 +1091,7 @@ export class LocalWhisperSTT extends EventEmitter {
     private sendTranscribe(audio: Float32Array, streaming: boolean, nemotronReset: boolean = false): void {
         if (!this.worker) return;
         const taskId = `${streaming ? 's' : 't'}${++this.taskCounter}`;
+        if (!streaming) this.finalTasksOutstanding++;
         const copy = audio.slice();
         this.worker.postMessage(
             { type: 'transcribe', taskId, audio: copy, language: this.language, streaming, nemotronReset, channelId: this.nemotronChannelId },
@@ -1512,6 +1524,7 @@ export class LocalWhisperSTT extends EventEmitter {
                 }
                 this.handleStreamingPartial(msg.text);
             } else if (msg.type === 'result') {
+                if (msg.taskId?.startsWith('t')) this.finalTasksOutstanding = Math.max(0, this.finalTasksOutstanding - 1);
                 const text = filterHallucination(msg.text);
                 if (this.isNemotronModel) {
                     // Distinguishes the three silent outcomes this path had no
@@ -1567,6 +1580,7 @@ export class LocalWhisperSTT extends EventEmitter {
                     this.repeatedWorkerErrorCount = 1;
                     console.error('[LocalWhisperSTT] Worker error:', msg.message);
                 }
+                if (msg.taskId?.startsWith('t')) this.finalTasksOutstanding = Math.max(0, this.finalTasksOutstanding - 1);
                 if (this.isDrainingFinals && msg.taskId?.startsWith('t')) {
                     this.drainingFinalsInFlight = Math.max(0, this.drainingFinalsInFlight - 1);
                     if (this.drainingFinalsInFlight === 0 && this.worker) {
@@ -1740,6 +1754,7 @@ export class LocalWhisperSTT extends EventEmitter {
         this.workerReady = false;
         this.isDrainingFinals = false;
         this.drainingFinalsInFlight = 0;
+        this.finalTasksOutstanding = 0;
         // Free the shared ONNX gate slot on clean shutdown — the session's
         // BFCArena is being torn down with the worker, so the slot can go.
         if (this.slotRelease) { this.slotRelease(); this.slotRelease = null; }

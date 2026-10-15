@@ -154,13 +154,23 @@ export class LiveDictationSession {
             try { if ((stt as { finalize?: () => unknown }).finalize?.() === true) this.finalPending = true; } catch { /* optional */ }
             const start = this.o.now();
             this.lastEventAt = Math.max(this.lastEventAt, start);
-            // Until the provider has gone quiet for its own idle time (a batch
-            // upload or a local inference answers late), and while a final it
-            // announced is still on the way; never past its hard limit.
+            // A provider that can say so reports work still on its way: an
+            // upload in flight or queued (Groq, Azure, IBM Watson, OpenAI in
+            // REST mode), a final being transcribed by a local model. Without
+            // that, a final it announced at finalize() counts.
+            const busy = (): boolean => {
+                const probe = (stt as { hasPendingWork?: () => boolean }).hasPendingWork;
+                if (typeof probe === 'function') {
+                    try { return probe.call(stt) === true; } catch { return false; }
+                }
+                return this.finalPending;
+            };
+            // Until the provider has nothing on its way and has gone quiet for
+            // its own idle time; never past its hard limit.
             while (
                 !this.error
                 && this.o.now() - start < this.o.timeoutMs
-                && (this.finalPending || this.o.now() - this.lastEventAt < this.o.idleMs)
+                && (busy() || this.o.now() - this.lastEventAt < this.o.idleMs)
             ) {
                 await this.o.sleep(Math.max(1, Math.min(200, this.o.idleMs)));
             }
