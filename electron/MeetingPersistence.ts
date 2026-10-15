@@ -415,6 +415,10 @@ export class MeetingPersistence {
 
     /** A meeting started (main: startMeetingTransition). */
     public beginLiveMeeting(startedAt: number = Date.now()): string {
+        // The meeting's clock starts here. It was left at the last reset (the
+        // previous Stop, or app launch), so a saved meeting's start and length
+        // included the idle time before it (2026-10-15).
+        this.session.markMeetingStart(startedAt);
         const id = crypto.randomUUID();
         this.liveJournal.begin(id, startedAt);
         return id;
@@ -710,18 +714,21 @@ export class MeetingPersistence {
         let memoryEligibleCount = 0;
         try {
             const { isMemoryEligibleSegment } = require('./intelligence/MeetingMemoryService');
-            memoryEligibleCount = this.session.getFullTranscript()
+            memoryEligibleCount = this.session.getPersistableTranscript()
                 .filter((seg: any) => isMemoryEligibleSegment(seg)).length;
         } catch (err) {
             // Fail OPEN to the legacy behavior (process everything): a broken
             // eligibility import must not silently discard real meetings.
             console.warn('[MeetingPersistence] eligibility check unavailable — processing normally:', err);
-            memoryEligibleCount = this.session.getFullTranscript().length;
+            memoryEligibleCount = this.session.getPersistableTranscript().length;
         }
 
         const snapshot = {
-            transcript: [...this.session.getFullTranscript()],
-            usage: [...this.session.getFullUsage()],
+            // The whole meeting (2026-10-15): getFullTranscript() was compacted
+            // past 1,800 lines and getFullUsage() kept the last 500 answers, so a
+            // 187-minute meeting was saved with only its last 73 minutes.
+            transcript: [...this.session.getPersistableTranscript()],
+            usage: [...this.session.getPersistableUsage()],
             startTime: this.session.getSessionStartTime(),
             durationMs: durationMs,
             context: this.session.getFullSessionContext(),
@@ -863,8 +870,9 @@ export class MeetingPersistence {
         const { startTime: _s, durationMs: _d, ...meta } = this.captureRecoveryMeta(metadata, this.captureModeSnapshot(), startedAt, Date.now() - startedAt);
         if (this.liveUserNotes.trim()) meta.userNotes = this.liveUserNotes;
         return {
-            transcript: [...this.session.getFullTranscript()],
-            usage: [...this.session.getFullUsage()],
+            // The whole meeting, as Stop saves it (not the assistant's view).
+            transcript: [...this.session.getPersistableTranscript()],
+            usage: [...this.session.getPersistableUsage()],
             meta,
         };
     }

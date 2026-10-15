@@ -441,9 +441,10 @@ export class DatabaseManager {
             // Must run OUTSIDE any transaction (SQLite no-ops `foreign_keys` if set
             // mid-transaction) and BEFORE migrations — both hold here.
             this.db.pragma('foreign_keys = ON');
-            // Leave synchronous = FULL (the WAL default). NORMAL trades crash
-            // durability for throughput — a power loss between commit and
-            // fsync loses the transaction. The emergency-close path added in
+            // synchronous is left at better-sqlite3's build default, which in
+            // WAL mode is NORMAL (SQLITE_DEFAULT_WAL_SYNCHRONOUS=1), not FULL:
+            // commits are synced at checkpoints, so a power loss can drop the
+            // latest ones (checked 2026-10-15). The emergency-close path added in
             // electron/main.ts (uncaughtException / SIGTERM / process-gone)
             // checkpoint+closes the DB so the next launch never sees a stale
             // WAL holding a kernel lock from a dead writer.
@@ -3561,6 +3562,13 @@ export class DatabaseManager {
         return this.resolvedExtPath;
     }
 
+    /** type, timestamp, question and answer of an AI interaction, as SQLite can bind them (unusable values become NULL). */
+    private static usageColumns(usage: any): [string | null, number | null, string | null, string | null] {
+        const text = (v: unknown): string | null => (typeof v === 'string' ? v || null : typeof v === 'number' ? String(v) : null);
+        const timestamp = typeof usage?.timestamp === 'number' && Number.isFinite(usage.timestamp) ? usage.timestamp : null;
+        return [text(usage?.type), timestamp, text(usage?.question), Array.isArray(usage?.answer) ? null : text(usage?.answer)];
+    }
+
     public saveMeeting(meeting: Meeting, startTimeMs: number, durationMs: number) {
         if (!this.db) {
             console.error('[DatabaseManager] DB not initialized');
@@ -3684,18 +3692,10 @@ export class DatabaseManager {
                     // previews — see usageMetadata.ts for the stored shapes.
                     const metadata = encodeUsageMetadata(usage);
 
-                    // Normalization
-                    const answerText = Array.isArray(usage.answer) ? null : usage.answer || null;
-                    const queryText = usage.question || null;
-
-                    insertInteraction.run(
-                        meeting.id,
-                        usage.type,
-                        usage.timestamp,
-                        queryText,
-                        answerText,
-                        metadata
-                    );
+                    // Only values SQLite can bind (2026-10-15): one answer holding
+                    // an object, a non-finite timestamp or a boolean threw inside
+                    // this transaction and lost the WHOLE meeting's save.
+                    insertInteraction.run(meeting.id, ...DatabaseManager.usageColumns(usage), metadata);
                 }
             }
         });

@@ -1029,6 +1029,8 @@ export class WindowHelper {
    *                            screen with no other trace).
    */
   private attachRendererDiagnostics(win: BrowserWindow, tag: string): void {
+    // A page that loaded without its preload bridge is dead until reloaded.
+    require('./preloadBridgeGuard').attachPreloadBridgeGuard(win, tag);
     try {
       const wc = win.webContents;
 

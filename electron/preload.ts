@@ -3647,6 +3647,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 } as ElectronAPI);
 
+// Tell the main process this page has its bridge (preloadBridgeGuard.ts): a
+// page that loads without it gets reloaded, which it cannot ask for itself.
+try { ipcRenderer.send('natively:preload-ready'); } catch { /* the guard reloads us */ }
+
 // Renderer-side console forwarding to main-process log file.
 // When verbose logging is on, patch console.log/warn/error so that renderer
 // output appears in ~/Documents/natively_debug.log alongside main-process logs.

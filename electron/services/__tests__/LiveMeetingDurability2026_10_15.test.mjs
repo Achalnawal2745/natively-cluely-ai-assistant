@@ -227,12 +227,15 @@ describe('a meeting left behind, recovered', () => {
     const fakeSession = (startedAt, transcript, metadata) => {
         let lines = [...transcript];
         let meta = metadata;
+        let start = startedAt;
         return {
             flushInterimTranscript() {},
-            getSessionStartTime: () => startedAt,
+            getSessionStartTime: () => start,
+            markMeetingStart: (at) => { start = at; },
             getMeetingMetadata: () => meta,
-            getFullTranscript: () => lines,
-            getFullUsage: () => [],
+            // Stop and the live copy save the whole meeting (2026-10-15).
+            getPersistableTranscript: () => lines,
+            getPersistableUsage: () => [],
             getFullSessionContext: () => '',
             reset() { lines = []; meta = null; },
         };
@@ -335,6 +338,61 @@ describe('a meeting left behind, recovered', () => {
         await new Promise((r) => setTimeout(r, 400));
         assert.equal(calls.length, 1, 'one run of the notes');
         assert.equal(readDb((db) => db.prepare('SELECT is_processed FROM meetings WHERE id = ?').get(id).is_processed), 1);
+    });
+
+    // A 187-minute meeting was saved with only its last 73 minutes: Stop (and
+    // this journal's snapshot) read SessionTracker.getFullTranscript(), which
+    // compaction cut past 1,800 lines, and getFullUsage(), the last 500 answers.
+    test('a long meeting is saved and journaled whole, with its own start time (real SessionTracker)', async () => {
+        const { SessionTracker } = require(dist('SessionTracker.js'));
+        const session = new SessionTracker();
+        const mp = new MeetingPersistence(session, llmRecording([]));
+        const startedAt = Date.now() - 3 * 3600_000;
+        const id = mp.beginLiveMeeting(startedAt);
+        assert.equal(session.getSessionStartTime(), startedAt, 'the meeting clock starts at the meeting, not at the last reset');
+        for (let i = 0; i < 2100; i++) {
+            session.addTranscript({ speaker: i % 2 ? 'user' : 'interviewer', text: `line ${i}`, timestamp: startedAt + i * 5000, final: true, confidence: 0.9, origin: 'stt' });
+        }
+        for (let i = 0; i < 520; i++) session.logUsage('chat', `q${i}`, `a${i}`);
+        assert.equal(mp.flushLiveMeeting('quit'), true);
+        const row = readDb((db) => db.prepare('SELECT transcript_json, usage_json FROM live_meeting_journal WHERE id = ?').get(id));
+        const liveLines = JSON.parse(row.transcript_json);
+        const liveAnswers = JSON.parse(row.usage_json);
+        assert.equal(liveLines.length, 2100, 'the live copy holds every line');
+        assert.equal(liveLines[0].text, 'line 0');
+        assert.equal(liveAnswers.length, 520, 'and every answer');
+        assert.equal(liveAnswers[0].question, 'q0');
+
+        const result = await mp.stopMeeting();
+        assert.equal(result.meetingId, id);
+        const saved = readDb((db) => ({
+            lines: db.prepare('SELECT COUNT(*) AS n FROM transcripts WHERE meeting_id = ?').get(id).n,
+            first: db.prepare('SELECT content FROM transcripts WHERE meeting_id = ? ORDER BY id ASC LIMIT 1').get(id).content,
+            answers: db.prepare('SELECT COUNT(*) AS n FROM ai_interactions WHERE meeting_id = ?').get(id).n,
+            start: db.prepare('SELECT start_time FROM meetings WHERE id = ?').get(id)?.start_time,
+        }));
+        assert.equal(saved.lines, 2100 + 0, 'every line, not the last 1,300');
+        assert.equal(saved.first, 'line 0');
+        assert.equal(saved.answers, 520, 'every answer, not the last 500');
+        assert.equal(Number(saved.start), startedAt);
+        // Leave no meeting behind for the recovery tests that count runs.
+        for (let i = 0; i < 100 && readDb((db) => db.prepare('SELECT is_processed FROM meetings WHERE id = ?').get(id)?.is_processed) !== 1; i++) await new Promise((r) => setTimeout(r, 50));
+        DatabaseManager.getInstance().deleteMeeting(id);
+    });
+
+    test('an AI interaction holding a value SQLite cannot bind no longer loses the whole save', () => {
+        const db = DatabaseManager.getInstance();
+        const id = 'bind-safe-1';
+        db.saveMeeting({ id, title: 't', date: new Date().toISOString(), duration: '1:00', summary: '', detailedSummary: { actionItems: [], keyPoints: [] },
+            transcript: [{ speaker: 'user', text: 'hello', timestamp: Date.now() }],
+            usage: [{ type: 'chat', timestamp: NaN, question: { odd: true }, answer: 'fine' }, { type: 'chat', timestamp: Date.now(), question: 'q', answer: true }] }, Date.now(), 60_000);
+        const rows = readDb((d) => d.prepare('SELECT * FROM ai_interactions WHERE meeting_id = ? ORDER BY id').all(id));
+        assert.equal(rows.length, 2);
+        assert.equal(rows[0].timestamp, null);
+        assert.equal(rows[0].user_query, null);
+        assert.equal(rows[0].ai_response, 'fine');
+        assert.equal(rows[1].ai_response, null);
+        db.deleteMeeting(id);
     });
 
     test('two recovery calls at once share one pass', async () => {

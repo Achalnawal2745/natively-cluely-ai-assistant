@@ -15589,6 +15589,37 @@ let isMultimodal = !!(imagePaths?.length);
    * 3. Gemini Flash (Retry 2x)
    * 4. Gemini Pro (Retry 5x)
    */
+  /**
+   * The selected model's own provider, for plain text generation without the
+   * live-answer machinery (mode and profile injection, answer plans) that
+   * chatWithGemini and streamChat add. Same provider order as chatWithGemini.
+   * null when the selected model is not one of these: Gemini, Natively, Groq,
+   * Ollama and custom providers have their own rungs where this is used.
+   */
+  private selectedModelTextCall(): { name: string; run: (user: string, system: string) => Promise<string> } | null {
+    const m = this.currentModelId;
+    if (!m || this.useOllama || this.customProvider || this.activeCurlProvider) return null;
+    if (this.isOpenAiModel(m) && this.openaiClient) return { name: 'OpenAI', run: (u, sys) => this.generateWithOpenai(u, sys) };
+    if (this.isClaudeModel(m) && this.claudeClient) return { name: 'Claude', run: (u, sys) => this.generateWithClaude(u, sys) };
+    if (this.isDeepseekModel(m) && this.deepseekClient) return { name: 'DeepSeek', run: (u, sys) => this.generateWithDeepseek(u, sys) };
+    if (this.isLiteLLMModel(m) && this.litellmClient) return { name: 'LiteLLM', run: (u, sys) => this.generateWithLiteLLM(u, sys) };
+    if (this.isNvidiaNimModel(m) && this.nvidiaNimClient) return { name: 'NVIDIA NIM', run: (u, sys) => this.generateWithNvidiaNim(u, sys) };
+    if (this.isNinerouterModel(m) && this.ninerouterClient) return { name: '9Router', run: (u, sys) => this.generateWithNinerouter(u, sys) };
+    if (this.isOpenRouterModel(m) && this.openrouterClient) return { name: 'OpenRouter', run: (u, sys) => this.generateWithOpenRouter(u, sys) };
+    if (this.isFluxionModel(m) && this.hasFluxionCredential()) return { name: 'Fluxion', run: (u, sys) => this.generateWithFluxion(u, sys) };
+    if (this.isAgentRouterModel(m) && this.hasAgentRouterCredential()) return { name: 'AgentRouter', run: (u, sys) => this.generateWithAgentRouter(u, sys) };
+    return null;
+  }
+
+  /** Direct-key providers usable as a last cloud fallback, each on its default model. */
+  private keyTextCalls(): Array<{ name: string; run: (user: string, system: string) => Promise<string> }> {
+    const calls: Array<{ name: string; run: (user: string, system: string) => Promise<string> }> = [];
+    if (this.deepseekClient) calls.push({ name: 'DeepSeek', run: (u, sys) => this.generateWithDeepseek(u, sys) });
+    if (this.openaiClient) calls.push({ name: 'OpenAI', run: (u, sys) => this.generateWithOpenai(u, sys) });
+    if (this.claudeClient) calls.push({ name: 'Claude', run: (u, sys) => this.generateWithClaude(u, sys) });
+    return calls;
+  }
+
   public async generateMeetingSummary(systemPrompt: string, context: string, groqSystemPrompt?: string, opts?: MeetingSummaryCallOpts): Promise<string> {
     console.log(`[LLMHelper] generateMeetingSummary called. Context length: ${context.length}`);
     // Short-circuit on empty/whitespace context. With no transcript content to
@@ -15740,6 +15771,37 @@ let isMultimodal = !!(imagePaths?.length);
       }
     }
 
+    // The user's own key (2026-10-15). The chain had rungs only for Natively,
+    // Codex, Antigravity, Groq, Gemini and Ollama, so a user whose only key was
+    // DeepSeek (deepseek-flash is the app default), OpenAI, Claude, AgentRouter,
+    // OpenRouter... got every meeting saved with its summary marked failed,
+    // after Stop and after crash recovery alike (measured with DeepSeek). The
+    // SELECTED model's provider is tried here, ahead of Groq and Gemini, since
+    // the user chose it as they chose a custom provider above. After the Gemini
+    // rungs, any other key the user has (DeepSeek, OpenAI, Claude) is a fallback.
+    const tryKeySummary = async (call: { name: string; run: (user: string, system: string) => Promise<string> }): Promise<string | null> => {
+      console.log(`[LLMHelper] Attempting ${call.name} for summary...`);
+      try {
+        const text = await this.withTimeout(
+          call.run(`Context:\n${context}`, systemPrompt),
+          opts?.timeoutMs ? opts.timeoutMs + 5000 : 90000,
+          `${call.name} Summary`,
+        );
+        if (text.trim().length > 0) {
+          console.log(`[LLMHelper] ✅ ${call.name} summary generated successfully.`);
+          return this.processResponse(text);
+        }
+      } catch (e: any) {
+        console.warn(`[LLMHelper] ⚠️ ${call.name} summary failed: ${e.message}. Falling back...`);
+      }
+      return null;
+    };
+    const selectedCall = this.selectedModelTextCall();
+    if (selectedCall) {
+      const text = await tryKeySummary(selectedCall);
+      if (text !== null) return text;
+    }
+
     if (this.groqClient && tokenCount < 100000) {
       console.log(`[LLMHelper] Attempting Groq for summary...`);
       try {
@@ -15858,6 +15920,12 @@ let isMultimodal = !!(imagePaths?.length);
       }
     } else {
       console.log(`[LLMHelper] Gemini client not initialized — skipping Gemini Pro.`);
+    }
+
+    for (const call of this.keyTextCalls()) {
+      if (call.name === selectedCall?.name) continue;
+      const text = await tryKeySummary(call);
+      if (text !== null) return text;
     }
 
     // ATTEMPT 6: Ollama (last-resort local fallback — gives users without ANY

@@ -197,12 +197,29 @@ export class IntelligenceManager extends EventEmitter {
         return this.session.getLastInterviewerTurn();
     }
 
-    /** Current meeting's full finalized transcript (for in-meeting search, Phase 10). */
-    getCurrentMeetingTranscript(): Array<{ speaker: string; text: string; timestamp: number; origin?: string }> {
+    /** Date.now() of the last mid-meeting reset, else 0 (SessionTracker.getAssistantViewStartedAt). */
+    getAssistantViewStartedAt(): number {
+        return this.session.getAssistantViewStartedAt();
+    }
+
+    /** The rolling recap of the meeting so far (SessionTracker.getMeetingRecaps). */
+    getMeetingRecaps(): ReadonlyArray<{ fromTs: number; toTs: number; lines: number; text: string }> {
+        return this.session.getMeetingRecaps();
+    }
+
+    /** Current meeting's finalized transcript as the assistant reads it (retrieval). */
+    // `tailLines`: only the newest that many (a caller that reads the last few seconds).
+    getCurrentMeetingTranscript(tailLines?: number): Array<{ speaker: string; text: string; timestamp: number; origin?: string }> {
         // `origin` rides along so the live-transcript evidence can tell a line
         // the user SAID from one they TYPED into the overlay (typed chat is
         // echoed into the transcript as speaker 'user', origin 'manual_chat').
-        return this.session.getFullTranscript().map(s => ({ speaker: s.speaker, text: s.text, timestamp: s.timestamp, ...(s.origin ? { origin: s.origin } : {}) }));
+        const lines = this.session.getRetrievalTranscript();
+        return (tailLines !== undefined && lines.length > tailLines ? lines.slice(-tailLines) : lines).map(s => ({ speaker: s.speaker, text: s.text, timestamp: s.timestamp, ...(s.origin ? { origin: s.origin } : {}) }));
+    }
+
+    /** The running meeting's whole transcript (kept across the reset shortcut), for in-meeting search. */
+    getCurrentMeetingFullTranscript(): Array<{ speaker: string; text: string; timestamp: number }> {
+        return this.session.getPersistableTranscript().map(s => ({ speaker: s.speaker, text: s.text, timestamp: s.timestamp }));
     }
 
     /** `imagePaths`: the screenshots the answer used; the Usage tab shows previews of them. */
@@ -511,7 +528,7 @@ export class IntelligenceManager extends EventEmitter {
     }
 
     reset(): void {
-        this.session.reset();
+        this.session.reset({ keepMeetingRecord: this.persistence.liveMeetingId !== null });
         this.engine.reset();
         this.engine.clearWtaDiversityHistory();
         // V3 conversation state (referents, active topic, previous source ids)

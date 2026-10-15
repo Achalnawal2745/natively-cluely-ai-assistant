@@ -695,6 +695,7 @@ export class CropperWindowHelper {
         const windowSettings = buildCropperWindowSettings(combinedBounds, process.platform);
 
         const win = new BrowserWindow(windowSettings)
+        require('./preloadBridgeGuard').attachPreloadBridgeGuard(win, 'cropper')
         this.cropperWindow = win
         // main.ts does not reload this window when its renderer dies, and a
         // window with a dead renderer is not destroyed, so every later area

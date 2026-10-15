@@ -7341,12 +7341,15 @@ export class IntelligenceEngine extends EventEmitter {
                 const ports: unknown[] = [modePort, ...(profilePort ? [profilePort] : [])];
                 const meeting = resolveMeetingEvidence({
                     rag: this.meetingRagProvider?.() ?? null,
-                    segments: (this.session as any)?.getFullTranscript?.() ?? [],
+                    // Uncompacted (compaction drops a long meeting's oldest lines from getFullTranscript).
+                    segments: (this.session as any)?.getRetrievalTranscript?.() ?? [],
                     allowedSourceTypes: policy.allowedSourceTypes,
                     userId: 'local',
                     sessionId: this.conversationSessionId(),
                     tokenBudget: policy.contextBudget.evidenceTokens,
                     roleOf: (sp: string) => this.session.mapSpeakerToRole(sp),
+                    recaps: (this.session as any)?.getMeetingRecaps?.() ?? [],
+                    notBeforeMs: (this.session as any)?.getAssistantViewStartedAt?.() ?? 0,
                 });
                 ports.push(...meeting.ports);
                 scopeMeetingId = meeting.scopeMeetingId;

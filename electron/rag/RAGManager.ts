@@ -482,6 +482,13 @@ export class RAGManager {
         // Set before the readiness check: a meeting is live whether or not it
         // can be indexed as it goes (see isMeetingLive).
         this._meetingLive = true;
+        // The bundled local model counts as not ready until its first embed, so
+        // a user on it gets no live semantic index, keywords only. Starting it
+        // anyway was measured on 2026-10-15 (3-hour meeting, 15 questions, real
+        // app): it fixed one answer and broke three, because its weak matches
+        // outscore the 2nd and 3rd keyword windows in the packer and use up the
+        // evidence budget, for ~51 MB more memory. Not until the meeting ports
+        // are merged so that cannot happen.
         if (!this.embeddingPipeline.isReady()) {
             console.log('[RAGManager] Embedding pipeline not ready, skipping live indexing');
             return;

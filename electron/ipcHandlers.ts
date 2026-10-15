@@ -177,7 +177,7 @@ function resolveManualChatBasePrompt(
   return withDiagramContract(CHAT_MODE_PROMPT, diagramTurn, { tier, surface });
 }
 import { isAssistantIdentityQuestion, profileFactsReady } from './llm/manualProfileIntelligence';
-import { spokenLineAlreadyInTranscript } from './llm/spokenLineAlreadyInTranscript';
+import { spokenLineAlreadyInTranscript, SPOKEN_DEDUPE_TAIL_LINES } from './llm/spokenLineAlreadyInTranscript';
 import { buildManualProfileEvidenceRoute } from './llm/profileAnswerBackend';
 import { DOC_GROUNDED_TOKEN_BUDGET } from './services/ModeContextRetriever';
 import { isProfileIntelligenceAllowed } from './context-intelligence/policies/mode-policy-registry';
@@ -2117,6 +2117,8 @@ export function initializeIpcHandlers(appState: AppState): void {
               userId: V3_USER_ID,
               sessionId: v3ConversationKey,
               tokenBudget: policy.contextBudget.evidenceTokens,
+              recaps: appState.getIntelligenceManager?.()?.getMeetingRecaps?.() ?? [],
+              notBeforeMs: appState.getIntelligenceManager?.()?.getAssistantViewStartedAt?.() ?? 0,
             });
 
             // Profile Intelligence hydration (2026-07-31 source-routing fix).
@@ -2963,7 +2965,7 @@ export function initializeIpcHandlers(appState: AppState): void {
             // Same rule as the main record site below: a spoken question the
             // mic already stored is not stored again as typed chat.
             questionOnRecordAsSpeech = options?.liveQuestion === true
-              && spokenLineAlreadyInTranscript(intelligenceManager.getCurrentMeetingTranscript(), message, Date.now());
+              && spokenLineAlreadyInTranscript(intelligenceManager.getCurrentMeetingTranscript(SPOKEN_DEDUPE_TAIL_LINES), message, Date.now());
             if (!questionOnRecordAsSpeech) {
               intelligenceManager.addTranscript(
                 { text: message, speaker: 'user', timestamp: Date.now(), final: true, origin: 'manual_chat' },
@@ -3047,7 +3049,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         // duplicate. Checked against the transcript rather than assumed from
         // the flag, so a question whose STT final never landed is still kept.
         questionOnRecordAsSpeech = options?.liveQuestion === true
-          && spokenLineAlreadyInTranscript(intelligenceManager.getCurrentMeetingTranscript(), message, Date.now());
+          && spokenLineAlreadyInTranscript(intelligenceManager.getCurrentMeetingTranscript(SPOKEN_DEDUPE_TAIL_LINES), message, Date.now());
         if (!questionOnRecordAsSpeech) {
           intelligenceManager.addTranscript(
             {
@@ -15296,7 +15298,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       if (!isIntelligenceFlagEnabled('inMeetingSearchV2')) return { enabled: false, results: [] };
       if (typeof query !== 'string') return { enabled: true, results: [] };
-      const transcript = appState.getIntelligenceManager().getCurrentMeetingTranscript();
+      // The whole meeting: the transcript the assistant reads is compacted in a long meeting.
+      const transcript = appState.getIntelligenceManager().getCurrentMeetingFullTranscript();
       const chunks = transcript.map((t) => ({ text: t.text, timestampMs: t.timestamp, speaker: t.speaker }));
       const results = new SearchOrchestrator().inMeetingSearch(chunks, query || '');
       return { enabled: true, results };

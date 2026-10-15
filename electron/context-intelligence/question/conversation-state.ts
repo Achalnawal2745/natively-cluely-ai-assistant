@@ -586,6 +586,17 @@ const NONPERSON_PRONOUN_RE = /\b(it|its|that|this|those|these|they|them|the (?:s
 const NONREFERENTIAL_POSSESSIVE_RE = /\b(?:its|their)\s+own\b/gi;
 
 /**
+ * "this meeting", "this call", "this week": a demonstrative naming the CURRENT
+ * conversation or time, which never points at the previous topic (2026-10-15).
+ * Typed "Summarize the key decisions from this meeting so far" (9 words, so a
+ * short turn) matched NONPERSON_PRONOUN_RE on "this" and was rewritten to
+ * "... (referring to: SRE)", the last question heard, which steered retrieval
+ * and the answer to that one topic. Only `this` / `these`: "that project" and
+ * "that meeting" can name something said earlier, and still resolve.
+ */
+const CURRENT_CONTEXT_DEMONSTRATIVE_RE = /\b(?:this|these)\s+(?:meeting|call|conversation|discussion|session|transcript|interview|lecture|class|chat|thread|week|month|quarter|year|morning|afternoon)s?\b/gi;
+
+/**
  * A pronoun licenses state resolution only in a SHORT turn (2026-08-02).
  *
  * A genuine follow-up is short because its subject lives elsewhere — the same
@@ -606,7 +617,7 @@ const PRONOUN_RESOLUTION_MAX_WORDS = 12;
  *  rephrase/refinement request, a continuation fragment. */
 function isReferentialTurn(question: string): boolean {
   const q = String(question ?? '').trim();
-  const qForPronouns = q.replace(NONREFERENTIAL_POSSESSIVE_RE, ' ');
+  const qForPronouns = q.replace(NONREFERENTIAL_POSSESSIVE_RE, ' ').replace(CURRENT_CONTEXT_DEMONSTRATIVE_RE, ' ');
   const shortTurn = q.split(/\s+/).filter(Boolean).length <= PRONOUN_RESOLUTION_MAX_WORDS;
   return (shortTurn && (PERSONAL_PRONOUN_RE.test(qForPronouns) || NONPERSON_PRONOUN_RE.test(qForPronouns)))
     || isBareFollowUp(q) || isResponseRequest(q) || isRefinementFollowUp(q) || isContinuationFragment(q);
@@ -832,7 +843,7 @@ export function resolveReference(
   // never refer outside the sentence (see NONREFERENTIAL_POSSESSIVE_RE). `q`
   // itself is untouched — this must not alter the question that gets resolved,
   // word-counted, or handed to retrieval.
-  const qForPronouns = q.replace(NONREFERENTIAL_POSSESSIVE_RE, ' ');
+  const qForPronouns = q.replace(NONREFERENTIAL_POSSESSIVE_RE, ' ').replace(CURRENT_CONTEXT_DEMONSTRATIVE_RE, ' ');
 
   const pronounAnywhere = PERSONAL_PRONOUN_RE.test(qForPronouns) || NONPERSON_PRONOUN_RE.test(qForPronouns);
   const shortTurn = q.split(/\s+/).filter(Boolean).length <= PRONOUN_RESOLUTION_MAX_WORDS;
