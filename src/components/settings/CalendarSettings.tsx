@@ -319,16 +319,14 @@ export const CalendarSettings: React.FC = () => {
       .catch(() => { if (live) setSnapshots(false); });
     return () => { live = false; };
   }, []);
-  const snapshotsRef = useRef(snapshots);
-  snapshotsRef.current = snapshots;
   const toggleSnapshots = useCallback(() => {
-    const was = snapshotsRef.current;
+    const was = snapshots;
     if (was === null) return;
     setSnapshots(!was);
     window.electronAPI?.setScreenShareSnapshots?.(!was)
       .then((r) => { if (!r?.success) setSnapshots(was); })
       .catch(() => setSnapshots(was));
-  }, []);
+  }, [snapshots]);
 
   // Stealth-gated calendar polling: no calendar egress while undetectable
   const [isDetectable, setIsDetectable] = useState(true);

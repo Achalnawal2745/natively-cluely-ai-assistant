@@ -97,6 +97,38 @@ for (const os of PLATFORMS) {
         assert.equal(meetingKeyFromTree('zoom', info), null);
     });
 
+    test(`facts (${os}): a Meeting ID pasted in the chat, a chat window or a sentence is never this call`, () => {
+        const inChatPane = tree([win('Zoom Meeting', [
+            node(0, r.window, 'Zoom Meeting'),
+            node(1, r.group, 'Meeting chat'),
+            node(2, r.text, 'Meeting ID: 999 8888 7777'),
+            node(2, r.text, 'Meeting ID'),
+            node(2, r.text, '999 8888 7777'),
+            node(1, r.button, 'Participants (3)'),
+        ])]);
+        assert.equal(meetingKeyFromTree('zoom', inChatPane), null, 'an invite pasted in the chat pane');
+        const chatWindow = tree([win('Chat', [
+            node(0, r.window, 'Chat'),
+            node(1, r.text, 'Meeting ID: 999 8888 7777'),
+        ])]);
+        assert.equal(meetingKeyFromTree('zoom', chatWindow), null, 'the separate chat window');
+        const sentence = tree([win('Zoom Meeting', [
+            node(0, r.window, 'Zoom Meeting'),
+            node(1, r.text, 'Priya: after this, hop on the other call, Meeting ID: 999 8888 7777, passcode 1234'),
+        ])]);
+        assert.equal(meetingKeyFromTree('zoom', sentence), null, 'an ID mid-sentence');
+        // The call's own information after a chat pane still counts.
+        const after = tree([win('Zoom Meeting', [
+            node(0, r.window, 'Zoom Meeting'),
+            node(1, r.group, 'Meeting chat'),
+            node(2, r.text, 'Meeting ID: 999 8888 7777'),
+            node(1, r.group, 'Meeting information'),
+            node(2, r.text, 'Meeting ID'),
+            node(2, r.text, '812 3456 7890'),
+        ])]);
+        assert.equal(meetingKeyFromTree('zoom', after), 'zoom:81234567890');
+    });
+
     test(`facts (${os}): a Teams "Meeting ID" line, spaced as Teams shows it, and capped or missing counts`, () => {
         const t = tree([win('Microsoft Teams', [
             node(0, r.window, 'Microsoft Teams'),
@@ -210,6 +242,14 @@ test('nameCallLines: a desktop call whose head count never passed two names ever
     const restored = new CallRoster();
     restored.restore('zoom-app:9', { participants: ['Ana'], spans: [], count: 2 }, 0, 10_000);
     assert.equal(restored.snapshot('zoom-app:9', 0, 10_000).count, 2, 'a recovered meeting keeps the count');
+    // Same Zoom process: a 1:1 first, then a group call whose count can't be read.
+    const sameApp = new CallRoster();
+    for (let t = 0; t <= 60_000; t += 500) sameApp.noteCount('zoom-app:10', 2, t);
+    sameApp.report('zoom-app:10', [{ name: 'Priya Nair', speaking: false }], 200_000);
+    assert.equal(sameApp.snapshot('zoom-app:10', 0, 60_000).count, 2, 'the 1:1 keeps its count');
+    assert.equal(sameApp.snapshot('zoom-app:10', 120_000, 300_000).count, undefined, 'the later call never inherits it');
+    const later = [{ speaker: 'interviewer', text: 'hello all', timestamp: 210_000 }];
+    assert.equal(Object.keys(nameCallLines(later, 'zoom-app:10', 120_000, 300_000, sameApp).labels).length, 0, 'so its lines are not named by elimination');
 });
 
 // ── Calendar matching: the window's meeting picks one of overlapping events ──
@@ -270,6 +310,22 @@ for (const os of PLATFORMS) {
         assert.equal(selfMuteFromTree('teams', { trusted: false, truncated: false, windows: [] }).muted, null);
     });
 }
+
+test('mute sync: two Meet calls report apart; a muted background call never silences the one the user speaks in', () => {
+    let clock = 0;
+    const sync = new MeetingMuteSync(() => clock);
+    sync.setMeetingActive(true);
+    sync.report('meet', true, 'meet:aaa-bbbb-ccc');
+    assert.equal(sync.isMuted(), true);
+    sync.report('meet', false, 'meet:ddd-eeee-fff');
+    sync.report('meet', true, 'meet:aaa-bbbb-ccc'); // the muted tab's next heartbeat
+    assert.equal(sync.isMuted(), false, 'the calls disagree: live');
+    clock += STALE_MS + 1;
+    sync.report('meet', true, 'meet:aaa-bbbb-ccc');
+    assert.equal(sync.isMuted(), true, 'the other tab went quiet (closed): only the muted call is left');
+    sync.clear('meet', 'meet:aaa-bbbb-ccc');
+    assert.equal(sync.isMuted(), false);
+});
 
 test('mute sync: unknown, stale, off or outside a meeting is never muted; muted gives silence of the same length', () => {
     let clock = 0;
@@ -404,6 +460,65 @@ test('snapshots: someone else shares: changed or 30 s pictures are described, th
     assert.equal(entries[0].app, 'Zoom');
     assert.equal(h.removed.length, 2, 'every described picture is deleted');
     assert.deepEqual(h.published.at(-1), entries);
+});
+
+test('snapshots: a picture that cannot be saved or described counts as a failure, never rejects, and pauses after three', async () => {
+    let clock = 1_000_000;
+    let saves = 0;
+    const timers = [];
+    const ctx = new ScreenShareContext({
+        enabled: () => true,
+        capture: async () => ({ fingerprint: fp((i) => (i * 13 + saves * 41) % 255), save: async () => { saves++; throw new Error('ENOSPC'); } }),
+        describe: async () => 'never',
+        remove: () => {},
+        onEntries: () => {},
+        now: () => clock,
+        setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+        clearTimeout: () => {},
+        log: () => {},
+    });
+    const update = () => ctx.update({ app: 'teams', share: { state: 'other', windowTitle: 'Meeting | Microsoft Teams', sharerName: 'Ana' }, at: clock });
+    for (let i = 0; i < 5; i++) {
+        update();
+        await ctx.tick(); // must resolve, not reject
+        clock += KEEP_EVERY_MS;
+    }
+    assert.equal(saves, MAX_FAILURES, 'paused after three failed saves');
+    // The timer path swallows anything that still escapes.
+    const fired = timers.at(-1);
+    if (fired) await new Promise((resolve) => { fired.fn(); setImmediate(resolve); });
+
+    let calls = 0;
+    const describeFails = new ScreenShareContext({
+        enabled: () => true,
+        capture: async () => ({ fingerprint: fp((i) => (i * 7 + calls * 53) % 255), save: async () => '/f.jpg' }),
+        describe: async () => { calls++; throw new Error('model down'); },
+        remove: () => {},
+        onEntries: () => {},
+        now: () => clock,
+        setTimeout: () => 1,
+        clearTimeout: () => {},
+        log: () => {},
+    });
+    for (let i = 0; i < 5; i++) {
+        describeFails.update({ app: 'zoom', share: { state: 'other', windowTitle: 'Zoom Meeting', sharerName: 'Ana' }, at: clock });
+        await describeFails.tick();
+        clock += KEEP_EVERY_MS;
+    }
+    assert.equal(calls, MAX_FAILURES, 'a failing model is not called every 10 s all meeting');
+});
+
+test('snapshots: the same slide shared next by someone else is a new entry with the new sharer', async () => {
+    const slide = fp((i) => (i % 5) * 40);
+    const h = shareHarness({ frames: () => slide });
+    h.ctx.update(h.share('other'));
+    await h.ctx.tick();
+    h.advance(KEEP_EVERY_MS);
+    h.ctx.update(h.share('other', { sharerName: 'Ana Lima' }));
+    await h.ctx.tick();
+    const entries = h.ctx.entries();
+    assert.deepEqual(entries.map((e) => e.sharer), ['Priya Nair', 'Ana Lima']);
+    assert.equal(entries[0].until, entries[0].at, 'the first sharer\'s entry is not stretched over the second');
 });
 
 test('snapshots: never while the user presents, never stale, never with the setting off; failures pause until the share changes', async () => {

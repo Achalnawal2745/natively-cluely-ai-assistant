@@ -63,19 +63,44 @@ function linkKey(app: DesktopCallApp, url: string): string | null {
 const fields = (n: CallTreeNode) => [n.name, n.description, n.value].map((f) => (f ?? '').trim()).filter(Boolean);
 const URL_IN_TEXT = /\bhttps?:\/\/[^\s<>"']+/gi;
 
+// Chat is never the meeting: a pasted invite names another call. A chat
+// window, or a chat pane / message list inside the call window, is skipped
+// whole (its subtree, by depth), and an ID counts only on a short line of its
+// own, the way the app's meeting information shows it, never mid-sentence.
+const CHAT_WINDOW = /\b(?:chat|conversation|messages?)\b/i;
+const CHAT_CONTAINER = /\b(?:chat|in-meeting chat|meeting chat|message list|messages|conversation|chat history|comments?)\b/i;
+const CONTAINER_ROLE = /list|group|pane|table|scroll|document|region|section|feed|log|outline|tree|custom/i;
+const MAX_ID_LINE = 60;
+
+function isChatContainer(node: CallTreeNode): boolean {
+    if (!CONTAINER_ROLE.test(node.role)) return false;
+    return CHAT_CONTAINER.test(node.name) || CHAT_CONTAINER.test(node.id) || CHAT_CONTAINER.test(node.description);
+}
+
 /** The meeting the window shows, or null. Labelled IDs first, then labelled links. */
 export function meetingKeyFromTree(app: DesktopCallApp, tree: CallTree | null | undefined): string | null {
     if (!tree || !tree.trusted) return null;
     let fromLink: string | null = null;
     for (const window of tree.windows) {
+        if (CHAT_WINDOW.test(window.title) && !ID_INLINE.test(window.title)) continue;
         const inTitle = ID_INLINE.exec(window.title);
         const titleKey = inTitle ? idKey(app, inTitle[1]) : null;
         if (titleKey) return titleKey;
         const nodes = window.nodes;
+        let chatDepth = -1;
         for (let i = 0; i < nodes.length; i++) {
             const node = nodes[i];
+            if (chatDepth >= 0) {
+                if (node.depth > chatDepth) continue;
+                chatDepth = -1;
+            }
+            if (isChatContainer(node)) {
+                chatDepth = node.depth;
+                continue;
+            }
             const texts = fields(node);
             for (const t of texts) {
+                if (t.length > MAX_ID_LINE) continue;
                 const m = ID_INLINE.exec(t);
                 const key = m ? idKey(app, m[1]) : null;
                 if (key) return key;
@@ -83,6 +108,7 @@ export function meetingKeyFromTree(app: DesktopCallApp, tree: CallTree | null | 
             // "Meeting ID" in one node, the number in the next one or two.
             if (texts.some((t) => ID_LABEL_ONLY.test(t))) {
                 for (let j = i + 1; j < Math.min(nodes.length, i + 4); j++) {
+                    if (isChatContainer(nodes[j])) break;
                     const number = fields(nodes[j]).find((t) => DIGITS_ONLY.test(t));
                     const key = number ? idKey(app, number) : null;
                     if (key) return key;
@@ -94,6 +120,7 @@ export function meetingKeyFromTree(app: DesktopCallApp, tree: CallTree | null | 
             const candidates = [node.url ?? '', ...texts.flatMap((t) => t.match(URL_IN_TEXT) ?? [])];
             // The address is often the next node ("Invite link" then the URL).
             for (let j = i + 1; j < Math.min(nodes.length, i + 3); j++) {
+                if (isChatContainer(nodes[j])) break;
                 candidates.push(nodes[j].url ?? '', ...fields(nodes[j]).flatMap((t) => t.match(URL_IN_TEXT) ?? []));
             }
             for (const url of candidates) {

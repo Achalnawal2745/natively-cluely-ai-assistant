@@ -117,7 +117,8 @@ export function wireExtensionMeetingTabs(
     channel.setMeetingTabsWanted(wanted);
 }
 
-function defaultSelfMute(_key: string, muted: boolean | null): void {
+function defaultSelfMute(key: string, muted: boolean | null): void {
     const { meetingMuteSync } = require('../meeting/MeetingMuteSync') as typeof import('../meeting/MeetingMuteSync');
-    meetingMuteSync.report('meet', muted);
+    // Per call: two Meet tabs never overwrite each other's state.
+    meetingMuteSync.report('meet', muted, key);
 }

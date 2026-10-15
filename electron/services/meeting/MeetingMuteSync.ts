@@ -15,6 +15,9 @@
  *
  * A Zoom / Teams window's reading wins over a Meet tab's while both are fresh:
  * the desktop app holding the microphone is the call the session is in.
+ * Each call reports under its own key (two Meet tabs, two app windows): when
+ * several fresh calls of the winning kind disagree, the user counts as live,
+ * so a muted background call never silences the call they are speaking in.
  *
  * Fail open, always: unknown counts as not muted, a report older than
  * STALE_MS counts as unknown, the setting off or no meeting running counts as
@@ -43,7 +46,7 @@ export const muteSourceName = (s: MuteSource | null): string | null => (s ? APP_
 export class MeetingMuteSync {
     private enabled = true;
     private active = false;
-    private reports = new Map<MuteSource, { muted: boolean | null; at: number }>();
+    private reports = new Map<string, { source: MuteSource; muted: boolean | null; at: number }>();
     private current: MuteState = { muted: false, app: null };
     private listeners = new Set<(state: MuteState) => void>();
 
@@ -66,16 +69,23 @@ export class MeetingMuteSync {
         this.evaluate();
     }
 
-    /** What a source read just now: true muted, false live, null unknown. */
-    report(source: MuteSource, muted: boolean | null): void {
-        this.reports.set(source, { muted: typeof muted === 'boolean' ? muted : null, at: this.now() });
+    /**
+     * What a source read just now for one call: true muted, false live, null
+     * unknown. `call` tells calls of the same source apart (a Meet tab's
+     * meeting key, an app window's pid); omitted, the source has one call.
+     */
+    report(source: MuteSource, muted: boolean | null, call = ''): void {
+        this.reports.set(`${source}|${call}`, { source, muted: typeof muted === 'boolean' ? muted : null, at: this.now() });
         this.evaluate();
     }
 
-    /** That source has nothing to read any more (the call ended, the tab closed). */
-    clear(source: MuteSource): void {
-        if (!this.reports.delete(source)) return;
-        this.evaluate();
+    /** That source (or one of its calls) has nothing to read any more. */
+    clear(source: MuteSource, call?: string): void {
+        let removed = false;
+        for (const key of [...this.reports.keys()]) {
+            if (call === undefined ? key.startsWith(`${source}|`) : key === `${source}|${call}`) removed = this.reports.delete(key) || removed;
+        }
+        if (removed) this.evaluate();
     }
 
     /** The state now, staleness applied. */
@@ -104,15 +114,15 @@ export class MeetingMuteSync {
 
     private evaluate(): void {
         const now = this.now();
-        let chosen: { source: MuteSource; muted: boolean | null; at: number } | null = null;
-        for (const [source, r] of this.reports) {
-            if (now - r.at > STALE_MS) continue;
-            const app = source !== 'meet';
-            const chosenApp = chosen ? chosen.source !== 'meet' : false;
-            if (!chosen || (app && !chosenApp) || (app === chosenApp && r.at > chosen.at)) chosen = { source, ...r };
-        }
-        const muted = this.enabled && this.active && chosen?.muted === true;
-        const next: MuteState = { muted, app: muted ? chosen!.source : null };
+        const fresh = [...this.reports.values()].filter((r) => now - r.at <= STALE_MS);
+        // Desktop-app calls first; Meet tabs only when no app call is fresh.
+        const apps = fresh.filter((r) => r.source !== 'meet');
+        const group = apps.length > 0 ? apps : fresh;
+        // Muted only when every fresh call of that kind says muted.
+        const allMuted = group.length > 0 && group.every((r) => r.muted === true);
+        const latest = group.reduce<(typeof group)[number] | null>((a, r) => (!a || r.at > a.at ? r : a), null);
+        const muted = this.enabled && this.active && allMuted;
+        const next: MuteState = { muted, app: muted && latest ? latest.source : null };
         if (next.muted === this.current.muted && next.app === this.current.app) return;
         this.current = next;
         for (const listener of this.listeners) {

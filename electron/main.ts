@@ -7109,6 +7109,17 @@ export class AppState {
     meetingMuteSync.setMeetingActive(true);
     if (this._ambientChatEnabled) return;
     const current = () => generation === this._meetingGeneration && this.isMeetingActive;
+    // The session's metadata, made on first use: a meeting started without any
+    // (the "Start Natively?" notification passes none) still keeps what the
+    // window shows and the shared screens in its saved notes.
+    const liveMeta = (): any => {
+      if (metadata && typeof metadata === 'object') return metadata;
+      const existing = this.intelligenceManager.liveMeetingMetadata();
+      if (existing && typeof existing === 'object') return (metadata = existing);
+      metadata = {};
+      this.intelligenceManager.setMeetingMetadata(metadata);
+      return metadata;
+    };
     try {
       const userData = app.getPath('userData');
       clearScreenShareFrames(userData);
@@ -7124,7 +7135,7 @@ export class AppState {
         },
         remove: (file) => fs.rm(file, { force: true }, () => {}),
         onEntries: (entries) => {
-          if (current() && metadata && typeof metadata === 'object') metadata.sharedScreens = entries;
+          if (current()) liveMeta().sharedScreens = entries;
         },
       });
     } catch (e: any) {
@@ -7133,10 +7144,11 @@ export class AppState {
     let muteSource: MuteSource | null = null;
     const onFacts = (report: DesktopCallReport | null) => {
       if (!current()) return;
-      if (report && metadata && typeof metadata === 'object') {
-        if (report.selfName) metadata.callSelfName = report.selfName;
-        if (report.meetingKey) metadata.callMeetingKey = report.meetingKey;
-        if (report.participantCount !== null) metadata.callParticipantCount = report.participantCount;
+      if (report && (report.selfName || report.meetingKey || report.participantCount !== null)) {
+        const meta = liveMeta();
+        if (report.selfName) meta.callSelfName = report.selfName;
+        if (report.meetingKey) meta.callMeetingKey = report.meetingKey;
+        if (report.participantCount !== null) meta.callParticipantCount = report.participantCount;
       }
       // The meeting the window names, as a live meeting: SessionCalendarLinker
       // links the event whose link is this one, whatever else overlaps it.
@@ -7172,7 +7184,8 @@ export class AppState {
         },
         onCall: (key) => {
           if (!current()) return;
-          if (metadata && typeof metadata === 'object' && !metadata.callKey) metadata.callKey = key;
+          const meta = liveMeta();
+          if (!meta.callKey) meta.callKey = key;
         },
         onFacts,
         // Development only: records the trees a real call produces, to pin as

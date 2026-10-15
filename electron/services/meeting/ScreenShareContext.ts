@@ -85,6 +85,8 @@ export class ScreenShareContext {
     private lastSeen: FrameFingerprint | null = null;
     private lastKeptAt = -Infinity;
     private lastDescribed: FrameFingerprint | null = null;
+    /** Whose share the last entry is: a new sharer's identical slide is a new entry. */
+    private lastDescribedShare: string | null = null;
     private list: SharedScreenEntry[] = [];
     private stopped = false;
     private capReached = false;
@@ -137,23 +139,23 @@ export class ScreenShareContext {
                 this.log(`the picture failed (${(err as Error)?.message ?? err})`);
             }
             if (!frame) {
-                if (++this.failures >= MAX_FAILURES) {
-                    this.pausedFor = id;
-                    this.log(`no picture of the shared screen ${MAX_FAILURES} times in a row; waiting for the share to change`);
-                }
+                this.failed(id);
                 return;
             }
-            this.failures = 0;
             // The user started presenting, or the share moved, while the picture was taken.
             if (this.shareId(this.latest) !== id || !this.wanted()) return;
             const now = this.now();
             const keep = changedVisibly(this.lastSeen, frame.fingerprint) || now - this.lastKeptAt >= KEEP_EVERY_MS;
             this.lastSeen = frame.fingerprint;
-            if (!keep) return;
+            if (!keep) {
+                this.failures = 0;
+                return;
+            }
             this.lastKeptAt = now;
             const last = this.list[this.list.length - 1];
-            if (last && nearDuplicate(this.lastDescribed, frame.fingerprint)) {
+            if (last && this.lastDescribedShare === id && nearDuplicate(this.lastDescribed, frame.fingerprint)) {
                 last.until = now;
+                this.failures = 0;
                 this.publish();
                 return;
             }
@@ -162,25 +164,49 @@ export class ScreenShareContext {
                 this.capReached = true;
                 return;
             }
-            const path = await frame.save();
-            if (!path) return;
+            // Saving (disk full, folder unwritable) and describing (the model
+            // failing) count as failures like a missed picture: three in a row
+            // pause this share. Nothing here may reject out of the timer.
+            let path: string | null = null;
+            try {
+                path = await frame.save();
+            } catch (err) {
+                this.log(`the picture could not be saved (${(err as Error)?.message ?? err})`);
+            }
+            if (!path) {
+                this.failed(id);
+                return;
+            }
             let text = '';
             try {
                 if (this.shareId(this.latest) !== id || !this.wanted()) return;
                 const hint = `A screen ${share.share.sharerName ?? 'someone'} shared in a ${APP_NAME[share.app]} call.`;
-                text = (await this.deps.describe(path, hint)).trim();
+                text = String((await this.deps.describe(path, hint)) ?? '').trim();
+            } catch (err) {
+                this.log(`the picture could not be described (${(err as Error)?.message ?? err})`);
+                this.failed(id);
+                return;
             } finally {
                 try {
                     this.deps.remove(path);
                 } catch { /* the folder is cleared at the next meeting */ }
             }
+            this.failures = 0;
             if (!text) return;
             if (text.length > MAX_TEXT_CHARS) text = `${text.slice(0, MAX_TEXT_CHARS)}…`;
             this.lastDescribed = frame.fingerprint;
+            this.lastDescribedShare = id;
             this.list.push({ at: now, until: now, app: APP_NAME[share.app], ...(share.share.sharerName ? { sharer: share.share.sharerName } : {}), text });
             this.publish();
         } finally {
             this.busy = false;
+        }
+    }
+
+    private failed(id: string): void {
+        if (++this.failures >= MAX_FAILURES) {
+            this.pausedFor = id;
+            this.log(`no picture of the shared screen ${MAX_FAILURES} times in a row; waiting for the share to change`);
         }
     }
 
@@ -213,9 +239,11 @@ export class ScreenShareContext {
         const set = this.deps.setTimeout ?? ((fn, ms) => setTimeout(fn, ms));
         this.timer = set(() => {
             this.timer = null;
-            void this.tick().finally(() => {
-                if (this.wanted()) this.arm(CAPTURE_EVERY_MS);
-            });
+            void this.tick()
+                .catch((err) => this.log(`a picture round failed (${(err as Error)?.message ?? err})`))
+                .finally(() => {
+                    if (this.wanted()) this.arm(CAPTURE_EVERY_MS);
+                });
         }, delay);
     }
 
