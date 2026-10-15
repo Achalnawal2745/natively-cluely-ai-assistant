@@ -39,3 +39,26 @@ export function localStartOfDay(ms, addDays) {
   const d = new Date(ms);
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() + addDays).getTime();
 }
+
+/**
+ * Ticks the server has not caught up with are kept; a tick made BEFORE a read
+ * whose answer still lists the item open is dropped: that item was raised
+ * again in a later meeting (owedItems: a tick hides it only until then), so it
+ * must show open again, not crossed out. Returns the same object when nothing
+ * changes.
+ * @param {Record<string, number>} ticked  key -> when it was ticked here
+ * @param {Array<{ key: string }>} openItems  what the read returned as open
+ * @param {number} requestedAt  when that read was asked for
+ * @returns {Record<string, number>}
+ */
+export function clearReopenedTicks(ticked, openItems, requestedAt) {
+  let out = ticked;
+  for (const item of Array.isArray(openItems) ? openItems : []) {
+    const at = ticked[item?.key];
+    if (typeof at === 'number' && at < requestedAt) {
+      if (out === ticked) out = { ...ticked };
+      delete out[item.key];
+    }
+  }
+  return out;
+}

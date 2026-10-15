@@ -9,6 +9,7 @@
 // Pure, no I/O, no platform branches.
 
 import type { CalendarEventSnapshot } from '../calendar/calendarSessionMatch';
+import { seriesIdOf } from '../meeting/recurringMeetings';
 
 /** One saved meeting as the assist features need it (DatabaseManager.getMeetingsWithNotesSince). */
 export interface AssistMeeting {
@@ -118,6 +119,13 @@ export function clip(text: string, max: number): string {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The longest any assist list looks back (Brief me: 180 days). Ticks in "You
+ * owe" are kept at least this long, so one an older lookup can still read is
+ * never forgotten (owedItems.pruneDone).
+ */
+export const ASSIST_LONGEST_LOOKBACK_DAYS = 180;
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
@@ -227,8 +235,14 @@ export function parseDeadline(deadline: string | undefined | null, meetingStartM
  * One task's newest state across meetings. A task is its normalised text and
  * its owner, so the same words owned by two people are two tasks. Meetings are
  * read oldest first, so a later "done" closes an earlier open copy (and a
- * later open copy reopens one). A done copy with no owner closes every owner's
- * copy of that text: the notes did not say whose, only that it is done.
+ * later open copy reopens one). A done copy with no owner closes the copies of
+ * that text raised in a RELATED meeting only (the same meeting, the same
+ * calendar series, or one sharing an attendee): the notes did not say whose,
+ * so a same-worded task from an unrelated meeting is left alone.
+ *
+ * A repeat that gives no deadline keeps the earlier deadline AND the meeting
+ * that set it (`deadlineFromMs`), so "Friday" is still read against the week
+ * it was said in.
  */
 export interface TaskState {
   /** Normalised text + "|" + normalised owner. */
@@ -240,7 +254,21 @@ export interface TaskState {
   /** Every meeting that mentions it, oldest first. */
   meetings: AssistMeeting[];
   firstSeenMs: number;
+  /** When the meeting that set the current deadline started (what the deadline is read against). */
+  deadlineFromMs: number;
   done: boolean;
+}
+
+/** Two meetings are related when they are the same one, of the same calendar series, or share an attendee. */
+export function meetingsRelated(a: AssistMeeting, b: AssistMeeting): boolean {
+  if (a.id === b.id) return true;
+  const sa = seriesIdOf(a.calendarEvent?.id ?? a.calendarEventId, a.calendarEvent?.recurringEventId);
+  const sb = seriesIdOf(b.calendarEvent?.id ?? b.calendarEventId, b.calendarEvent?.recurringEventId);
+  if (sa && sa === sb) return true;
+  const ea = meetingEmails(a);
+  if (ea.size === 0) return false;
+  for (const e of meetingEmails(b)) if (ea.has(e)) return true;
+  return false;
 }
 
 const ownerKeyOf = (owner?: string) => clean(owner).toLowerCase().replace(/[^\p{L}\p{N}@.\s]/gu, ' ').replace(/\s+/g, ' ').trim();
@@ -254,7 +282,7 @@ export function latestTaskStates(meetings: AssistMeeting[], ownerKey: (action: N
       if (!textKey) continue;
       if (action.done && !clean(action.owner)) {
         for (const st of states.values()) {
-          if (st.textKey === textKey) { st.done = true; st.meeting = m; st.meetings.push(m); }
+          if (st.textKey === textKey && st.meetings.some((x) => meetingsRelated(x, m))) { st.done = true; st.meeting = m; st.meetings.push(m); }
         }
         continue;
       }
@@ -266,6 +294,7 @@ export function latestTaskStates(meetings: AssistMeeting[], ownerKey: (action: N
         key,
         textKey,
         action: { ...action, ...(!action.deadline && prev?.action.deadline ? { deadline: prev.action.deadline } : {}) },
+        deadlineFromMs: !action.deadline && prev?.action.deadline ? prev.deadlineFromMs : m.startMs,
         meeting: m,
         meetings: [...(prev?.meetings ?? []), m],
         firstSeenMs: prev && !prev.done ? prev.firstSeenMs : m.startMs,

@@ -13,7 +13,7 @@
 // Pure, no I/O, no platform branches.
 
 import { ownerIsUser, type UserIdentity } from './assistPeople';
-import { clip, meetingTitle, notesReady, readActions, readDecisions, type AssistMeeting } from './assistNotes';
+import { clip, latestTaskStates, meetingTitle, notesReady, readDecisions, type AssistMeeting } from './assistNotes';
 
 export const DEFAULT_CATCH_UP_GAP_MINUTES = 15;
 export const CATCH_UP_LOOKBACK_MS = 12 * 60 * 60 * 1000;
@@ -73,10 +73,14 @@ export function buildCatchUp(block: CatchUpBlock, identity: UserIdentity): Catch
     for (const d of readDecisions(m.detailedSummary).slice(0, 4)) {
       decisions.push({ text: clip(d, 160), meetingId: m.id, meetingTitle: title });
     }
-    for (const a of readActions(m.detailedSummary)) {
-      if (a.done || !ownerIsUser(a.owner, identity)) continue;
-      yourActions.push({ text: clip(a.text, 160), meetingId: m.id, meetingTitle: title, ...(a.deadline ? { deadline: a.deadline } : {}) });
-    }
+  }
+  // The user's tasks at their newest state across the whole block
+  // (assistNotes.latestTaskStates): one raised in the first meeting and closed
+  // in the third is not listed, and one repeated is listed once, from the
+  // meeting that last mentions it.
+  for (const st of latestTaskStates(block.meetings, (a) => (ownerIsUser(a.owner, identity) ? 'user' : null)).values()) {
+    if (st.done) continue;
+    yourActions.push({ text: clip(st.action.text, 160), meetingId: st.meeting.id, meetingTitle: meetingTitle(st.meeting), ...(st.action.deadline ? { deadline: st.action.deadline } : {}) });
   }
   if (decisions.length === 0 && yourActions.length === 0) return null;
   return {

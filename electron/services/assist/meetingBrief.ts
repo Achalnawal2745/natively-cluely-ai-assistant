@@ -17,7 +17,7 @@
 
 import { buildLastTimeRecap, findPreviousSeriesMeeting, type LastTimeRecap } from '../meeting/recurringMeetings';
 import { displayName, ownerIsPerson, type UserIdentity } from './assistPeople';
-import { clip, latestTaskStates, meetingEmails, meetingTitle, readOpenQuestions, type AssistMeeting } from './assistNotes';
+import { ASSIST_LONGEST_LOOKBACK_DAYS, clip, latestTaskStates, meetingEmails, meetingTitle, readOpenQuestions, type AssistMeeting } from './assistNotes';
 import { collectOwedItems, type DoneMap, type OwedItem } from './owedItems';
 
 /** The upcoming event, as the calendar list gives it. */
@@ -56,7 +56,7 @@ export interface MeetingBrief {
   generatedAt: number;
 }
 
-export const BRIEF_LOOKBACK_DAYS = 180;
+export const BRIEF_LOOKBACK_DAYS = ASSIST_LONGEST_LOOKBACK_DAYS;
 export const BRIEF_MAX_PEOPLE = 8;
 const DAY_MS = 24 * 60 * 60 * 1000;
 

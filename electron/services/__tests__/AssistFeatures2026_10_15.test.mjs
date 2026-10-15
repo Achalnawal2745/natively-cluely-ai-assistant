@@ -606,3 +606,51 @@ describe('the reminder\'s Running late reaches the launcher, also during a meeti
     assert.match(main.slice(at, at + 600), /showLauncherForReminderDraft\(/);
   });
 });
+
+describe('third review (2026-10-15)', () => {
+  const sam = { email: 'sam@else.com', name: 'Sam Reed' };
+
+  test('catch-up reads the user\'s tasks at their newest state across the block', () => {
+    const blk = [
+      meeting('x1', NOW - 150 * MIN, { title: 'Standup', durationMs: 30 * MIN, actions: [{ text: 'Fix the login bug', owner: 'Me' }, { text: 'Write the release note', owner: 'Me' }] }),
+      meeting('x2', NOW - 110 * MIN, { title: 'Review', durationMs: 40 * MIN, actions: [{ text: 'Fix the login bug', owner: 'Evin', status: 'done' }, { text: 'Write the release note', owner: 'Me', deadline: 'today' }] }),
+    ];
+    const found = b2b.findCatchUpBlock(blk, { nowMs: NOW, gapMs: b2b.catchUpGapMs(15), meetingActive: false });
+    const cu = b2b.buildCatchUp(found, ME);
+    assert.deepEqual(cu.yourActions.map((a) => [a.text, a.meetingId, a.deadline]), [['Write the release note', 'x2', 'today']]);
+  });
+
+  test('an ownerless "done" closes same-worded tasks only from related meetings', () => {
+    const unrelated = [
+      meeting('u1', NOW - 6 * DAY, { attendees: [priya], actions: [{ text: 'Send the deck', owner: 'Me' }] }),
+      meeting('u2', NOW - 3 * DAY, { attendees: [sam], actions: [{ text: 'Send the deck', status: 'done' }] }),
+    ];
+    assert.equal(owed.collectOwedItems(unrelated, ME, { nowMs: NOW, timeZone: 'UTC' }).length, 1, 'another meeting\'s deck');
+    const sharedAttendee = [unrelated[0], meeting('u3', NOW - 3 * DAY, { attendees: [sam, priya], actions: [{ text: 'Send the deck', status: 'done' }] })];
+    assert.equal(owed.collectOwedItems(sharedAttendee, ME, { nowMs: NOW, timeZone: 'UTC' }).length, 0);
+    const sameSeries = [
+      meeting('s1', NOW - 6 * DAY, { attendees: [], eventId: 'wk_20261009T100000Z', recurringEventId: 'wk', actions: [{ text: 'Send the deck', owner: 'Me' }] }),
+      meeting('s2', NOW - 3 * DAY, { attendees: [], eventId: 'wk_20261012T100000Z', actions: [{ text: 'Send the deck', status: 'done' }] }),
+    ];
+    assert.equal(owed.collectOwedItems(sameSeries, ME, { nowMs: NOW, timeZone: 'UTC' }).length, 0, 'series read from the instance id');
+    assert.equal(notes.meetingsRelated(unrelated[0], unrelated[1]), false);
+  });
+
+  test('ticks are kept as long as the longest lookup (Brief me), from one shared constant', () => {
+    assert.equal(briefMod.BRIEF_LOOKBACK_DAYS, notes.ASSIST_LONGEST_LOOKBACK_DAYS);
+    const kept = owed.pruneDone({ a: NOW - 170 * DAY, b: NOW - 200 * DAY }, NOW);
+    assert.deepEqual(Object.keys(kept), ['a']);
+  });
+
+  test('a repeat without a deadline keeps the deadline and the meeting that set it', () => {
+    const ms = [
+      meeting('d1', Date.parse('2026-10-05T10:00:00Z'), { actions: [{ text: 'Send the quote', owner: 'Me', deadline: 'Friday' }] }), // Mon 5 Oct -> Fri 9 Oct
+      meeting('d2', Date.parse('2026-10-12T10:00:00Z'), { actions: [{ text: 'Send the quote', owner: 'Me' }] }), // Mon 12 Oct, no deadline
+    ];
+    const [item] = owed.collectOwedItems(ms, ME, { nowMs: NOW, timeZone: 'UTC' });
+    assert.equal(item.deadline, 'Friday');
+    assert.equal(item.dueMs, Date.parse('2026-10-09T23:59:59.999Z'), 'not Fri 16 Oct');
+    assert.equal(item.overdue, true);
+    assert.equal(item.meetingId, 'd2', 'still opened from the newest mention');
+  });
+});

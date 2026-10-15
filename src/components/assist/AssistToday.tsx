@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Check, ChevronDown, Copy, Mail, RefreshCw, X } from 'lucide-react';
 import { useT } from '../../i18n';
 import { buildReminderDraft, clipboardText, mailtoUrl, reminderGmailUrl, type ReminderDraft, type ReminderKind } from '../../lib/reminderDrafts.mjs';
-import { ASSIST_REFRESH_MS, msUntilNextLocalMidnight } from '../../lib/assistRefresh.mjs';
+import { ASSIST_REFRESH_MS, clearReopenedTicks, msUntilNextLocalMidnight } from '../../lib/assistRefresh.mjs';
 import type { AssistCatchUp, AssistDailyBrief, AssistEvent, AssistMeetingBrief, AssistOwedItem, AssistSender } from '../../types/assist';
 
 /**
@@ -52,7 +52,8 @@ export const AssistToday: React.FC<AssistTodayProps> = ({ events, isLight, isMee
   const [brief, setBrief] = useState<AssistDailyBrief | null>(null);
   const [catchUp, setCatchUp] = useState<AssistCatchUp | null>(null);
   const [owedAll, setOwedAll] = useState<AssistOwedItem[] | null>(null);
-  const [ticked, setTicked] = useState<Record<string, boolean>>({});
+  // Ticked here: key -> when (cleared when a later read lists the item open again).
+  const [ticked, setTicked] = useState<Record<string, number>>({});
   const [openBrief, setOpenBrief] = useState<string | null>(null);
   const [draftFor, setDraftFor] = useState<{ eventId: string; kind: ReminderKind; event?: AssistEvent } | null>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -65,10 +66,19 @@ export const AssistToday: React.FC<AssistTodayProps> = ({ events, isLight, isMee
   const owedExpandedRef = useRef(false);
   owedExpandedRef.current = owedAll !== null;
   const refresh = useCallback(() => {
-    api?.assistGetDailyBrief?.(eventsRef.current ?? []).then((b) => setBrief(b ?? null)).catch(() => {});
+    const requestedAt = Date.now();
+    api?.assistGetDailyBrief?.(eventsRef.current ?? []).then((b) => {
+      setBrief(b ?? null);
+      if (b?.owed) setTicked((prev) => clearReopenedTicks(prev, b.owed, requestedAt));
+    }).catch(() => {});
     api?.assistGetCatchUp?.().then((c) => setCatchUp(c ?? null)).catch(() => {});
     if (owedExpandedRef.current) {
-      api?.assistGetOwed?.().then((all) => { if (owedExpandedRef.current) setOwedAll(Array.isArray(all) ? all : []); }).catch(() => {});
+      api?.assistGetOwed?.().then((all) => {
+        if (!owedExpandedRef.current) return;
+        const list = Array.isArray(all) ? all : [];
+        setOwedAll(list);
+        setTicked((prev) => clearReopenedTicks(prev, list, requestedAt));
+      }).catch(() => {});
     }
   }, [api]);
 
@@ -116,12 +126,18 @@ export const AssistToday: React.FC<AssistTodayProps> = ({ events, isLight, isMee
 
   const eventById = useCallback((id: string) => (events ?? []).find((e) => e.id === id), [events]);
 
+  const setTick = (key: string, on: boolean) => setTicked((prev) => {
+    const next = { ...prev };
+    if (on) next[key] = Date.now();
+    else delete next[key];
+    return next;
+  });
   const toggleOwed = (item: AssistOwedItem) => {
-    const next = !ticked[item.key];
-    setTicked((prev) => ({ ...prev, [item.key]: next }));
+    const next = !(item.key in ticked);
+    setTick(item.key, next);
     api?.assistSetOwedDone?.(item.key, next)
-      .then((r) => { if (!r?.ok) setTicked((prev) => ({ ...prev, [item.key]: !next })); })
-      .catch(() => setTicked((prev) => ({ ...prev, [item.key]: !next })));
+      .then((r) => { if (!r?.ok) setTick(item.key, !next); })
+      .catch(() => setTick(item.key, !next));
   };
 
   const owed = owedAll ?? brief?.owed ?? [];
@@ -285,7 +301,7 @@ export const AssistToday: React.FC<AssistTodayProps> = ({ events, isLight, isMee
           <h3 className={HEADING}>{t('You owe')}</h3>
           <div className="space-y-1">
             {owed.map((item) => {
-              const done = !!ticked[item.key];
+              const done = item.key in ticked;
               return (
                 <div key={item.key} className={ROW}>
                   <div className="flex items-start gap-2.5 min-w-0 flex-1">

@@ -17,7 +17,7 @@
 // Pure, no I/O, no platform branches.
 
 import { ownerIsUser, type UserIdentity } from './assistPeople';
-import { DAY_MS, latestTaskStates, meetingTitle, normalizeItemText, parseDeadline, type AssistMeeting } from './assistNotes';
+import { ASSIST_LONGEST_LOOKBACK_DAYS, DAY_MS, latestTaskStates, meetingTitle, normalizeItemText, parseDeadline, type AssistMeeting } from './assistNotes';
 
 export interface OwedItem {
   /** Stable across meetings: the item's text, normalised. What "done" is stored under. */
@@ -91,7 +91,8 @@ export function collectOwedItems(meetings: AssistMeeting[], identity: UserIdenti
     const tickedAt = done[key];
     // Ticked here: hidden, unless a meeting after the tick raised it again.
     if (typeof tickedAt === 'number' && st.meeting.startMs <= tickedAt) continue;
-    const dueMs = parseDeadline(st.action.deadline, st.meeting.startMs, opts.timeZone);
+    // Read against the meeting that SET the deadline, not a later repeat without one.
+    const dueMs = parseDeadline(st.action.deadline, st.deadlineFromMs, opts.timeZone);
     out.push({
       key,
       text: st.action.text,
@@ -108,8 +109,8 @@ export function collectOwedItems(meetings: AssistMeeting[], identity: UserIdenti
   return out.sort(compareOwed).slice(0, opts.limit ?? OWED_MAX_ITEMS);
 }
 
-/** Drops ticks older than the lookback (nothing they could hide is still read). */
-export function pruneDone(done: DoneMap, nowMs: number, lookbackDays: number = OWED_LOOKBACK_DAYS * 2): DoneMap {
+/** Drops ticks older than the longest assist lookback (nothing they could hide is still read). */
+export function pruneDone(done: DoneMap, nowMs: number, lookbackDays: number = ASSIST_LONGEST_LOOKBACK_DAYS): DoneMap {
   const out: DoneMap = {};
   for (const [k, v] of Object.entries(done || {})) {
     if (typeof v === 'number' && nowMs - v <= lookbackDays * DAY_MS) out[k] = v;

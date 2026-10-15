@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ASSIST_REFRESH_MS, msUntilNextLocalMidnight, localStartOfDay } from '../assistRefresh.mjs';
+import { ASSIST_REFRESH_MS, clearReopenedTicks, msUntilNextLocalMidnight, localStartOfDay } from '../assistRefresh.mjs';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.resolve(dirname, '../..');
@@ -60,4 +60,18 @@ test('the Running late request is received where it is always mounted (App) and 
   assert.match(launcher, /request\.kind === 'reminder-draft'[\s\S]{0,200}setSelectedMeeting\(null\)/);
   assert.match(launcher, /draftRequest=\{reminderDraftRequest\}/);
   assert.doesNotMatch(read('components/assist/AssistToday.tsx'), /onAssistReminderDraft/);
+});
+
+test('a tick older than a read that lists the item open again is cleared; newer ticks and others stay', () => {
+  const ticked = { 'owed:a': 100, 'owed:b': 300, 'owed:c': 100 };
+  const out = clearReopenedTicks(ticked, [{ key: 'owed:a' }, { key: 'owed:b' }], 200);
+  assert.deepEqual(out, { 'owed:b': 300, 'owed:c': 100 });
+  assert.equal(clearReopenedTicks(ticked, [{ key: 'owed:z' }], 200), ticked, 'unchanged: same object');
+  assert.equal(clearReopenedTicks(ticked, null, 200), ticked);
+});
+
+test('AssistToday clears reopened ticks on both reads', () => {
+  const src = read('components/assist/AssistToday.tsx');
+  assert.equal(src.split('clearReopenedTicks(prev,').length - 1, 2);
+  assert.match(src, /const requestedAt = Date\.now\(\);/);
 });
