@@ -21,7 +21,7 @@
 
 import { getLastTimeRecap, type LastTimeRecap } from '../meeting/recurringMeetings';
 import type { UserIdentity } from './assistPeople';
-import type { AssistMeeting } from './assistNotes';
+import { ASSIST_LONGEST_LOOKBACK_DAYS, type AssistMeeting } from './assistNotes';
 import { buildCatchUp, catchUpGapMs, findCatchUpBlock, type CatchUp } from './backToBack';
 import { buildDailyBrief, type DailyBrief } from './dailyBrief';
 import {
@@ -120,7 +120,8 @@ export class AssistService {
   }
 
   getOwed(): OwedItem[] {
-    return collectOwedItems(this.meetings(31), this.deps.identity(), { nowMs: this.now(), done: this.done() });
+    // The longest lookback is read so task keys match Brief me's (owedItems.collectOwedItems).
+    return collectOwedItems(this.meetings(ASSIST_LONGEST_LOOKBACK_DAYS + 1), this.deps.identity(), { nowMs: this.now(), done: this.done() });
   }
 
   /** Ticks (or unticks) an item here. The meeting's own notes are not changed. */

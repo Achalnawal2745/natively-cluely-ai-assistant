@@ -50,6 +50,11 @@ export function owedItemKey(text: string, originMeetingId: string): string {
   return `owed:${originMeetingId}:${normalizeItemText(text).slice(0, 200)}`;
 }
 
+/** The text-only key ticks had before 2026-10-15's review; still read, never written. */
+export function legacyOwedItemKey(text: string): string {
+  return `owed:${normalizeItemText(text).slice(0, 200)}`;
+}
+
 export interface CollectOwedOptions {
   nowMs: number;
   done?: DoneMap;
@@ -74,15 +79,22 @@ export function compareOwed(a: OwedItem, b: OwedItem): number {
 export function collectOwedItems(meetings: AssistMeeting[], identity: UserIdentity, opts: CollectOwedOptions): OwedItem[] {
   const lookbackMs = (opts.lookbackDays ?? OWED_LOOKBACK_DAYS) * DAY_MS;
   const done = opts.done ?? {};
-  const inWindow = meetings.filter((m) => m && Number.isFinite(m.startMs) && m.startMs <= opts.nowMs && opts.nowMs - m.startMs <= lookbackMs);
+  // Chains are ALWAYS built over the longest assist lookback, whatever this
+  // view shows, so a task's key (the meeting that first raised it) is the
+  // same in the launcher (30 days) and in Brief me (180), and does not move
+  // as the view's window slides past that meeting. The view's own window
+  // only decides what is shown: tasks last mentioned inside it.
+  const chainMs = Math.max(lookbackMs, ASSIST_LONGEST_LOOKBACK_DAYS * DAY_MS);
+  const inChainWindow = meetings.filter((m) => m && Number.isFinite(m.startMs) && m.startMs <= opts.nowMs && opts.nowMs - m.startMs <= chainMs);
   // Each task's newest state first (assistNotes.latestTaskStates): the user's
   // tasks share one owner key, so "Me" and "Evin" are the same task, and a
   // later RELATED meeting that marks it done closes it; an unrelated one
   // with the same words does not.
-  const states = latestTaskStates(inWindow, (a) => (ownerIsUser(a.owner, identity) ? 'user' : null), { selfEmails: identity.emails });
+  const states = latestTaskStates(inChainWindow, (a) => (ownerIsUser(a.owner, identity) ? 'user' : null), { selfEmails: identity.emails });
   const out: OwedItem[] = [];
   for (const st of states.values()) {
     if (st.done) continue;
+    if (opts.nowMs - st.meeting.startMs > lookbackMs) continue;
     if (opts.withEmails && opts.withEmails.size > 0) {
       const withThem = st.meetings.some((m) => {
         const emails = new Set((m.calendarEvent?.attendees ?? []).map((a) => String(a?.email ?? '').toLowerCase()));
@@ -93,7 +105,8 @@ export function collectOwedItems(meetings: AssistMeeting[], identity: UserIdenti
       if (!withThem) continue;
     }
     const key = owedItemKey(st.action.text, st.meetings[0].id);
-    const tickedAt = done[key];
+    // Ticks saved before keys named the raising meeting were stored by text alone.
+    const tickedAt = done[key] ?? done[legacyOwedItemKey(st.action.text)];
     // Ticked here: hidden, unless a meeting after the tick raised it again.
     if (typeof tickedAt === 'number' && st.meeting.startMs <= tickedAt) continue;
     // Read against the meeting that SET the deadline, not a later repeat without one.

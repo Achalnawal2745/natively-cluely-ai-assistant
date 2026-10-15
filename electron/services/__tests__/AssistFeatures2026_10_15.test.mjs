@@ -702,3 +702,49 @@ describe('fourth review: a "done" closes a task only in its own chain of related
     assert.deepEqual(briefMod.assembleMeetingBrief({ event: ev, meetings: ms, identity: ME, nowMs: NOW }).people[0].theirOpenItems.map((i) => i.meetingId), ['ba']);
   });
 });
+
+describe('fifth review: a task\'s tick key is the same in every view and over time', () => {
+  // Raised 25 days ago with Priya, repeated 3 days ago: the launcher (30 days)
+  // and Brief me (180) see different oldest meetings in their windows.
+  const ms = [
+    meeting('k0', NOW - 60 * DAY, { attendees: [priya], actions: [{ text: 'Unrelated older task', owner: 'Priya' }] }),
+    meeting('k1', NOW - 25 * DAY, { attendees: [priya], actions: [{ text: 'Send the pilot plan', owner: 'Me' }] }),
+    meeting('k2', NOW - 3 * DAY, { attendees: [priya], actions: [{ text: 'Send the pilot plan', owner: 'Evin' }] }),
+  ];
+  const event = { id: 'next', title: 'Priya sync', startTime: new Date(NOW + 60 * MIN).toISOString(), attendees: [priya] };
+
+  test('ticked in the launcher: closed in Brief me too', async () => {
+    const { deps } = fakeDeps({ meetings: ms, modelAllowed: false });
+    const svc = new svcMod.AssistService(deps);
+    const [item] = svc.getOwed();
+    assert.equal(item.text, 'Send the pilot plan');
+    const before = await svc.getMeetingBrief(event);
+    assert.deepEqual(before.yourOpenItems.map((i) => i.key), [item.key], 'the same key in both views');
+    svc.setOwedDone(item.key, true);
+    assert.equal(svc.getOwed().length, 0);
+    assert.equal((await svc.getMeetingBrief(event)).yourOpenItems.length, 0);
+  });
+
+  test('the key does not change as the launcher\'s window slides past the raising meeting (35 days on)', () => {
+    const now = owed.collectOwedItems(ms, ME, { nowMs: NOW, timeZone: 'UTC' });
+    const later = [...ms, meeting('k3', NOW + 34 * DAY, { attendees: [priya], actions: [{ text: 'Send the pilot plan', owner: 'Me' }] })];
+    const after = owed.collectOwedItems(later, ME, { nowMs: NOW + 35 * DAY, timeZone: 'UTC' });
+    assert.equal(now[0].key, owed.owedItemKey('Send the pilot plan', 'k1'));
+    assert.equal(after[0].key, now[0].key, 'k1 is past 30 days but still names the task');
+    // A tick made now still hides it 35 days later unless a meeting after the tick raised it.
+    const tickedAt = NOW;
+    const hidden = owed.collectOwedItems(ms, ME, { nowMs: NOW + 35 * DAY, timeZone: 'UTC', lookbackDays: 40, done: { [now[0].key]: tickedAt } });
+    assert.equal(hidden.length, 0);
+  });
+
+  test('a task last mentioned outside the view\'s window is not shown there', () => {
+    const old = [meeting('z1', NOW - 40 * DAY, { attendees: [priya], actions: [{ text: 'Old promise', owner: 'Me' }] })];
+    assert.equal(owed.collectOwedItems(old, ME, { nowMs: NOW, timeZone: 'UTC' }).length, 0);
+    assert.equal(owed.collectOwedItems(old, ME, { nowMs: NOW, timeZone: 'UTC', lookbackDays: 180 }).length, 1);
+  });
+
+  test('ticks saved under the old text-only key still hide the task', () => {
+    const list = owed.collectOwedItems(ms, ME, { nowMs: NOW, timeZone: 'UTC', done: { [owed.legacyOwedItemKey('Send the pilot plan')]: NOW } });
+    assert.equal(list.length, 0);
+  });
+});
