@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { SkillUploadPayload } from './services/skills/SkillValidator';
 import type { NativelyUsageResponse, NativelyPlansResponse } from '../src/types/nativelyUsage';
+import type { MeetingOutputsApi } from '../src/types/meetingOutputs';
 import { PAGE_CAPTURE_FALLBACK_CHANNEL, PAGE_CAPTURE_STARTED_CHANNEL, type PageCaptureFallbackNotice } from './services/pageCaptureFallback';
 import type { CalendarSourceId as CalendarSourceIdInfo, CalendarSourceStatus as CalendarSourceStatusInfo } from './services/calendar/providers/types';
 
@@ -575,6 +576,8 @@ interface ElectronAPI {
   acceptDiagramRepair: (payload: { originalSource: string; repairedSource: string }) => Promise<boolean>;
   /** Save a diagram the renderer produced (svg text, base64 png, or Mermaid source). */
   exportDiagram: (payload: { format: 'svg' | 'png' | 'mmd' | 'json' | 'csv'; data: string; name?: string }) => Promise<{ saved: boolean; canceled?: boolean; fileName?: string; silent?: boolean; error?: string }>;
+  /** Meeting outputs: export, Slack, Notion, CRM notes, the local MCP server, follow-up style (services/outputs). */
+  meetingOutputs: MeetingOutputsApi;
   /** The main process asks this window to draw a diagram for the phone. */
   onDiagramRenderRequest: (callback: (request: { requestId: string; key: string; source: string }) => void) => () => void;
   sendDiagramRenderResult: (result: { requestId: string; key: string; ok: boolean; svg?: string }) => void;
@@ -949,7 +952,10 @@ interface ElectronAPI {
   ) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>;
   ragQueryGlobal: (
     query: string,
+    scope?: { folderId?: string },
   ) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>;
+  /** Folders, tags, People and Companies (electron/services/organise/organiseIpc.ts). */
+  organise: Record<string, (...args: any[]) => any>;
   ragCancelQuery: (options: {
     meetingId?: string;
     global?: boolean;
@@ -2213,6 +2219,36 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cancelDiagramRepair: (requestId: string) => ipcRenderer.invoke('diagram:repair-cancel', requestId),
   acceptDiagramRepair: (payload: { originalSource: string; repairedSource: string }) => ipcRenderer.invoke('diagram:repair-accepted', payload),
   exportDiagram: (payload: { format: 'svg' | 'png' | 'mmd' | 'json' | 'csv'; data: string; name?: string }) => ipcRenderer.invoke('diagram:export', payload),
+  meetingOutputs: {
+    exportPdf: (meetingId) => ipcRenderer.invoke('outputs:export-pdf', meetingId),
+    exportHtml: (meetingId, opts) => ipcRenderer.invoke('outputs:export-html', meetingId, opts),
+    getConnections: () => ipcRenderer.invoke('outputs:get-connections'),
+    addSlackWebhook: (label, url) => ipcRenderer.invoke('outputs:slack-add', label, url),
+    removeSlackWebhook: (id) => ipcRenderer.invoke('outputs:slack-remove', id),
+    testSlackWebhook: (id) => ipcRenderer.invoke('outputs:slack-test', id),
+    saveToken: (service, token) => ipcRenderer.invoke('outputs:save-token', service, token),
+    testConnection: (service) => ipcRenderer.invoke('outputs:test', service),
+    disconnect: (service) => ipcRenderer.invoke('outputs:disconnect', service),
+    searchNotion: (query) => ipcRenderer.invoke('outputs:notion-search', query),
+    setNotionParent: (parent) => ipcRenderer.invoke('outputs:notion-set-parent', parent),
+    composeSlack: (meetingId, opts) => ipcRenderer.invoke('outputs:slack-compose', meetingId, opts),
+    sendSlack: (payload) => ipcRenderer.invoke('outputs:slack-send', payload),
+    sendNotion: (meetingId, opts) => ipcRenderer.invoke('outputs:notion-send', meetingId, opts),
+    resumeNotion: (meetingId) => ipcRenderer.invoke('outputs:notion-resume', meetingId),
+    previewCrm: (meetingId, service) => ipcRenderer.invoke('outputs:crm-preview', meetingId, service),
+    sendCrm: (meetingId, service, emails) => ipcRenderer.invoke('outputs:crm-send', meetingId, service, emails),
+    setMcpEnabled: (enabled) => ipcRenderer.invoke('outputs:mcp-set-enabled', enabled),
+    resetMcpToken: () => ipcRenderer.invoke('outputs:mcp-reset-token'),
+    getWritingStyle: () => ipcRenderer.invoke('outputs:style-get'),
+    setWritingStyleEnabled: (enabled) => ipcRenderer.invoke('outputs:style-set-enabled', enabled),
+    listWritingSamples: () => ipcRenderer.invoke('outputs:style-list'),
+    addWritingSample: (text) => ipcRenderer.invoke('outputs:style-add', text),
+    removeWritingSample: (id) => ipcRenderer.invoke('outputs:style-remove', id),
+    recordFollowUpSent: (payload) => ipcRenderer.invoke('outputs:style-record-followup', payload),
+    refreshWritingStyle: () => ipcRenderer.invoke('outputs:style-refresh'),
+    saveFollowUpEdit: (payload) => ipcRenderer.invoke('outputs:followup-save', payload),
+    openNotionPage: (url) => ipcRenderer.invoke('outputs:open-notion-page', url),
+  } satisfies MeetingOutputsApi,
   onDiagramRenderRequest: (callback: (request: { requestId: string; key: string; source: string }) => void) => {
     const subscription = (_e: any, request: any) => callback(request);
     ipcRenderer.on('diagram:render-request', subscription);
@@ -2922,7 +2958,35 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ragQueryMeeting: (meetingId: string, query: string) =>
     ipcRenderer.invoke('rag:query-meeting', { meetingId, query }),
   ragQueryLive: (query: string) => ipcRenderer.invoke('rag:query-live', { query }),
-  ragQueryGlobal: (query: string) => ipcRenderer.invoke('rag:query-global', { query }),
+  ragQueryGlobal: (query: string, scope?: { folderId?: string }) => ipcRenderer.invoke('rag:query-global', { query, ...(scope?.folderId ? { folderId: scope.folderId } : {}) }),
+  organise: {
+    listFolders: () => ipcRenderer.invoke('organise:folders:list'),
+    createFolder: (name: string) => ipcRenderer.invoke('organise:folders:create', { name }),
+    renameFolder: (id: string, name: string) => ipcRenderer.invoke('organise:folders:rename', { id, name }),
+    deleteFolder: (id: string) => ipcRenderer.invoke('organise:folders:delete', { id }),
+    setFolderRules: (id: string, rules: Array<{ kind: string; value: string }>) => ipcRenderer.invoke('organise:folders:set-rules', { id, rules }),
+    applyFolderRulesToPast: (id: string) => ipcRenderer.invoke('organise:folders:apply-past', { id }),
+    dismissPastOffer: (id: string) => ipcRenderer.invoke('organise:folders:dismiss-past', { id }),
+    getMeeting: (meetingId: string) => ipcRenderer.invoke('organise:meeting:get', { meetingId }),
+    setMeetingFolder: (meetingId: string, folderId: string, inFolder: boolean) => ipcRenderer.invoke('organise:meeting:set-folder', { meetingId, folderId, inFolder }),
+    setMeetingTags: (meetingId: string, tags: string[]) => ipcRenderer.invoke('organise:meeting:set-tags', { meetingId, tags }),
+    listMeetings: (filter: { folderId?: string; tag?: string }) => ipcRenderer.invoke('organise:meetings:list', filter || {}),
+    listTags: () => ipcRenderer.invoke('organise:tags:list'),
+    listPeople: (query?: string) => ipcRenderer.invoke('organise:people:list', { query }),
+    getPerson: (id: string) => ipcRenderer.invoke('organise:people:get', { id }),
+    updatePerson: (id: string, patch: Record<string, string>) => ipcRenderer.invoke('organise:people:update', { id, patch }),
+    resolveFact: (factId: number, accept: boolean) => ipcRenderer.invoke('organise:people:resolve-fact', { factId, accept }),
+    listCompanies: (query?: string) => ipcRenderer.invoke('organise:companies:list', { query }),
+    getCompany: (domain: string) => ipcRenderer.invoke('organise:companies:get', { domain }),
+    updateCompany: (domain: string, patch: Record<string, string>) => ipcRenderer.invoke('organise:companies:update', { domain, patch }),
+    draftCompanyDescription: (domain: string) => ipcRenderer.invoke('organise:companies:draft-description', { domain }),
+    /** Older meetings were indexed in the background: People and Companies refresh. */
+    onPeopleIndexed: (callback: () => void) => {
+      const subscription = () => callback();
+      ipcRenderer.on('organise:people-indexed', subscription);
+      return () => { ipcRenderer.removeListener('organise:people-indexed', subscription); };
+    },
+  },
   ragCancelQuery: (options: { meetingId?: string; global?: boolean }) =>
     ipcRenderer.invoke('rag:cancel-query', options),
   ragIsMeetingProcessed: (meetingId: string) =>

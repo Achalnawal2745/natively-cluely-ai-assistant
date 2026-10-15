@@ -118,6 +118,8 @@ export interface FollowUpDraft {
   tone: FollowUpTone;
   basedOnActionItemIds?: string[];
   basedOnDecisionIds?: string[];
+  /** Written in the user's own voice, from their saved writing (outputs/writingStyle.ts). */
+  styled?: boolean;
 }
 
 export type TimelineItemType = 'topic_shift' | 'decision' | 'action_item' | 'risk' | 'question';

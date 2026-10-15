@@ -521,6 +521,8 @@ export interface ElectronAPI {
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
   getMeetingDetails: (id: string) => Promise<any>
   searchGlobalMeetings: (query: string, filters?: any) => Promise<{ enabled: boolean; results: any[] }>
+  /** Folders, tags, People and Companies. */
+  organise: OrganiseApi
   searchMemories?: (query: string) => Promise<{ enabled: boolean; results: Array<{ text: string; meetingId?: string; meetingTitle?: string; date?: string }> }>
   searchInMeeting: (query: string) => Promise<{ enabled: boolean; results: any[] }>
   generateLectureNotes: (opts?: { title?: string; course?: string }) => Promise<{ enabled: boolean; notes: any }>
@@ -536,6 +538,8 @@ export interface ElectronAPI {
   acceptDiagramRepair?: (payload: { originalSource: string; repairedSource: string }) => Promise<boolean>
   /** Save a diagram the renderer produced (svg text, base64 png, or Mermaid source). */
   exportDiagram?: (payload: { format: 'svg' | 'png' | 'mmd' | 'json' | 'csv'; data: string; name?: string }) => Promise<{ saved: boolean; canceled?: boolean; fileName?: string; silent?: boolean; error?: string }>
+  /** Meeting outputs: export, Slack, Notion, CRM notes, the local MCP server, follow-up style. */
+  meetingOutputs?: import('./meetingOutputs').MeetingOutputsApi
   /** The main process asks this window to draw a diagram for the phone. */
   onDiagramRenderRequest?: (callback: (request: { requestId: string; key: string; source: string }) => void) => () => void
   sendDiagramRenderResult?: (result: { requestId: string; key: string; ok: boolean; svg?: string }) => void
@@ -1040,7 +1044,7 @@ export interface ElectronAPI {
   // RAG (Retrieval-Augmented Generation) API
   ragQueryMeeting: (meetingId: string, query: string) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>
   ragQueryLive: (query: string) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>
-  ragQueryGlobal: (query: string) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>
+  ragQueryGlobal: (query: string, scope?: { folderId?: string }) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>
   ragCancelQuery: (options: { meetingId?: string; global?: boolean }) => Promise<{ success: boolean }>
   ragIsMeetingProcessed: (meetingId: string) => Promise<boolean>
   ragGetQueueStatus: () => Promise<{ pending: number; processing: number; completed: number; failed: number }>
@@ -1511,6 +1515,83 @@ export interface PhoneMirrorInfo {
   extPairedAt?: number;
   /** Resolved bind host — '127.0.0.1' for loopback-only, '0.0.0.0' when LAN-exposed. */
   bindAddress: string;
+}
+
+// ── Folders, tags, People, Companies (electron/services/organise) ──────────
+export type OrganiseRuleKind = 'title' | 'attendee' | 'mode'
+export interface OrganiseFolder {
+  id: string
+  name: string
+  position: number
+  meetingCount: number
+  rules: Array<{ kind: OrganiseRuleKind; value: string }>
+  /** When "Apply to past meetings" was offered for the current rules; null while still open. */
+  pastOfferedAt: number | null
+}
+export interface OrganiseTag { id: number; name: string; meetingCount: number }
+export interface OrganiseMeetingRow { id: string; title: string; date: string; duration: string; summary: string; summaryStatus?: string }
+export interface OrganisePerson {
+  id: string
+  name: string
+  email: string | null
+  title: string | null
+  company: string | null
+  companyDomain: string | null
+  meetingCount: number
+  lastMetAt: string | null
+}
+export interface OrganiseMeetingRef { id: string; title: string; date: string; startMs: number }
+export interface OrganiseActionItem { text: string; owner?: string; deadline?: string; meetingId: string; meetingTitle: string; date: string }
+export interface OrganiseFact {
+  id: number
+  kind: 'title' | 'company'
+  value: string
+  quote: string
+  status: 'suggested' | 'accepted' | 'dismissed'
+  meetingId: string
+  meetingTitle: string
+}
+export interface OrganisePersonDetail extends OrganisePerson {
+  notes: string | null
+  titleSource: string | null
+  companySource: string | null
+  meetings: OrganiseMeetingRef[]
+  openActionItems: OrganiseActionItem[]
+  lastMet: { meetingId: string; title: string; date: string; recap: string } | null
+  suggestions: OrganiseFact[]
+}
+export interface OrganiseCompany { domain: string; name: string; peopleCount: number; meetingCount: number; lastMetAt: string | null }
+export interface OrganiseCompanyDetail extends OrganiseCompany {
+  description: string | null
+  descriptionSource: string | null
+  notes: string | null
+  people: OrganisePerson[]
+  meetings: OrganiseMeetingRef[]
+  openActionItems: OrganiseActionItem[]
+}
+export interface OrganiseApi {
+  /** Older meetings were indexed in the background; refresh People / Companies. Returns the unsubscribe. */
+  onPeopleIndexed?: (callback: () => void) => () => void
+  listFolders: () => Promise<OrganiseFolder[]>
+  createFolder: (name: string) => Promise<OrganiseFolder | null>
+  renameFolder: (id: string, name: string) => Promise<boolean>
+  deleteFolder: (id: string) => Promise<boolean>
+  setFolderRules: (id: string, rules: Array<{ kind: OrganiseRuleKind; value: string }>) => Promise<{ saved: Array<{ kind: OrganiseRuleKind; value: string }>; offerPast: boolean } | null>
+  applyFolderRulesToPast: (id: string) => Promise<{ added: number }>
+  dismissPastOffer: (id: string) => Promise<boolean>
+  getMeeting: (meetingId: string) => Promise<{ folderIds: string[]; tags: string[] }>
+  setMeetingFolder: (meetingId: string, folderId: string, inFolder: boolean) => Promise<boolean>
+  setMeetingTags: (meetingId: string, tags: string[]) => Promise<string[] | null>
+  listMeetings: (filter: { folderId?: string; tag?: string }) => Promise<OrganiseMeetingRow[]>
+  listTags: () => Promise<OrganiseTag[]>
+  listPeople: (query?: string) => Promise<OrganisePerson[]>
+  getPerson: (id: string) => Promise<OrganisePersonDetail | null>
+  updatePerson: (id: string, patch: { name?: string; title?: string; company?: string; notes?: string }) => Promise<boolean>
+  resolveFact: (factId: number, accept: boolean) => Promise<boolean>
+  listCompanies: (query?: string) => Promise<OrganiseCompany[]>
+  getCompany: (domain: string) => Promise<OrganiseCompanyDetail | null>
+  updateCompany: (domain: string, patch: { name?: string; description?: string; descriptionSource?: 'user' | 'drafted'; notes?: string }) => Promise<boolean>
+  draftCompanyDescription: (domain: string) => Promise<{ text: string | null; reason?: 'no-notes' | 'not-enough' | 'failed' | 'not-allowed' }>
 }
 
 declare global {

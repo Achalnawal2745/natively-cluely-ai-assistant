@@ -201,11 +201,14 @@ describe('a meeting left behind, recovered', () => {
     });
 
     // Counts runs of the NOTES. The post-save speaker-name suggestion
-    // (speakerNameSuggestions.ts) goes through the same model call; it is a
-    // separate feature and not a second run of the notes, so it is not counted.
+    // (speakerNameSuggestions.ts) and the People page's title/company
+    // suggestions (organise/personFacts.ts) go through the same model call;
+    // they are separate features and not a second run of the notes, so they
+    // are not counted.
     const llmRecording = (calls, { delay = 0 } = {}) => new Proxy({
         generateMeetingSummary: async (p, context) => {
             if (String(p).startsWith('You match unnamed voices in a meeting transcript')) return '{"mappings":[]}';
+            if (String(p).startsWith('You read a meeting transcript and find where a person')) return '{"facts":[]}';
             calls.push(String(context));
             if (delay) await new Promise((r) => setTimeout(r, delay));
             return JSON.stringify({ overview: 'Pricing deck by Friday.', keyPoints: ['Deck by Friday'], actionItems: ['Send the deck'] });
