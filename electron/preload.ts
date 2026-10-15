@@ -946,7 +946,7 @@ interface ElectronAPI {
     scope?: { folderId?: string },
   ) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>;
   /** Folders, tags, People and Companies (electron/services/organise/organiseIpc.ts). */
-  organise: Record<string, (...args: any[]) => Promise<any>>;
+  organise: Record<string, (...args: any[]) => any>;
   ragCancelQuery: (options: {
     meetingId?: string;
     global?: boolean;
@@ -2225,6 +2225,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     composeSlack: (meetingId, opts) => ipcRenderer.invoke('outputs:slack-compose', meetingId, opts),
     sendSlack: (payload) => ipcRenderer.invoke('outputs:slack-send', payload),
     sendNotion: (meetingId, opts) => ipcRenderer.invoke('outputs:notion-send', meetingId, opts),
+    resumeNotion: (meetingId) => ipcRenderer.invoke('outputs:notion-resume', meetingId),
     previewCrm: (meetingId, service) => ipcRenderer.invoke('outputs:crm-preview', meetingId, service),
     sendCrm: (meetingId, service, emails) => ipcRenderer.invoke('outputs:crm-send', meetingId, service, emails),
     setMcpEnabled: (enabled) => ipcRenderer.invoke('outputs:mcp-set-enabled', enabled),
@@ -2958,6 +2959,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getCompany: (domain: string) => ipcRenderer.invoke('organise:companies:get', { domain }),
     updateCompany: (domain: string, patch: Record<string, string>) => ipcRenderer.invoke('organise:companies:update', { domain, patch }),
     draftCompanyDescription: (domain: string) => ipcRenderer.invoke('organise:companies:draft-description', { domain }),
+    /** Older meetings were indexed in the background: People and Companies refresh. */
+    onPeopleIndexed: (callback: () => void) => {
+      const subscription = () => callback();
+      ipcRenderer.on('organise:people-indexed', subscription);
+      return () => { ipcRenderer.removeListener('organise:people-indexed', subscription); };
+    },
   },
   ragCancelQuery: (options: { meetingId?: string; global?: boolean }) =>
     ipcRenderer.invoke('rag:cancel-query', options),

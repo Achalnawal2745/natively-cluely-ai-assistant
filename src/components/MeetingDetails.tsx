@@ -33,6 +33,7 @@ import { CalendarLinkChip, type CalendarEventSnapshot } from './meeting/Calendar
 // Your notes, earlier versions, Source and rating (2026-10-15).
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { ShareMenu } from './meeting/ShareMenu';
+import { followUpChanges, settleFollowUpSave, type FollowUpText } from './meeting/outputsView';
 import { NotesVersionTabs } from './meeting/NotesVersionTabs';
 import { NoteSource } from './meeting/NoteSource';
 import { NotesRating } from './meeting/NotesRating';
@@ -2370,47 +2371,44 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     // Escape drops it. Copy and Open in Gmail use the text on screen, edited or
     // not, and tell main it was used: an edited body then becomes a writing sample
     // for "Follow-ups in your style" (one per meeting, outputs/followUpEdit.ts).
+    // An edit stays pending (on screen, and in Copy / Gmail) until main has saved
+    // it; a failed save keeps it and says so, with a retry (meeting/outputsView.ts).
     const [fuEditing, setFuEditing] = useState<'subject' | 'body' | null>(null);
-    const [fuText, setFuText] = useState<{ subject: string; body: string } | null>(null);
-    const fuTextRef = useRef(fuText);
-    fuTextRef.current = fuText;
-    // The text Copy and Gmail use: what is in the editor, else what is saved.
-    const followUpText = () => ({
-        subject: fuTextRef.current?.subject ?? followUpSubject ?? '',
-        body: fuTextRef.current?.body ?? followUpBody,
-    });
+    const [fuText, setFuText] = useState<FollowUpText | null>(null);
+    const [fuSaveError, setFuSaveError] = useState<string | null>(null);
+    // What the card shows and Copy / Gmail use: the pending edit, else what is saved.
+    const fuShownSubject = fuText?.subject ?? followUpSubject ?? '';
+    const fuShownBody = fuText?.body ?? followUpBody;
+    const followUpText = () => ({ subject: fuShownSubject, body: fuShownBody });
     const saveFollowUp = async (used: boolean) => {
-        const pending = fuTextRef.current;
+        const pending = fuText;
         setFuEditing(null);
-        setFuText(null);
         const api = window.electronAPI?.meetingOutputs;
         if (!api) return;
-        // Only what changed is sent; an emptied body is dropped, not saved.
-        const subjectChanged = !!pending && followUpSubject !== undefined && pending.subject.trim() !== followUpSubject.trim();
-        const bodyChanged = !!pending && pending.body.trim() !== '' && pending.body.trim() !== followUpBody.trim();
-        if (!subjectChanged && !bodyChanged && !used) return;
-        const subject = subjectChanged ? pending!.subject.replace(/\s+/g, ' ').trim() : undefined;
-        const body = bodyChanged ? pending!.body.trim() : undefined;
-        if (subjectChanged || bodyChanged) {
-            // On screen at once; main's answer replaces it with exactly what was saved.
-            setMeeting(prev => {
-                const cur = prev.detailedSummary?.followUpDraft;
-                const base: FollowUpDraftObj = typeof cur === 'object' && cur ? cur : { body: typeof cur === 'string' ? cur : '' };
-                return { ...prev, detailedSummary: { ...prev.detailedSummary!, followUpDraft: { ...base, ...(subject !== undefined ? { subject } : {}), ...(body !== undefined ? { body } : {}) } } };
-            });
+        const changes = followUpChanges(pending, { subject: followUpSubject, body: followUpBody });
+        const changed = changes.subject !== undefined || changes.body !== undefined;
+        if (!changed) {
+            // Nothing to save (or only an emptied body, which is not saved): show what is saved.
+            if (pending) setFuText(null);
+            setFuSaveError(null);
+            if (!used) return;
         }
+        let res: Awaited<ReturnType<typeof api.saveFollowUpEdit>> | null = null;
         try {
-            const res = await api.saveFollowUpEdit({ meetingId: meeting.id, ...(subject !== undefined ? { subject } : {}), ...(body !== undefined ? { body } : {}), used });
-            if (res?.ok && res.draft) {
-                const saved = res.draft;
-                setMeeting(prev => ({ ...prev, detailedSummary: { ...prev.detailedSummary!, followUpDraft: saved } }));
-            }
-        } catch { /* the edit stays on screen; it is saved with the next one */ }
+            res = await api.saveFollowUpEdit({ meetingId: meeting.id, ...changes, used });
+        } catch { res = null; }
+        if (res?.ok && res.draft) {
+            const saved = res.draft;
+            setMeeting(prev => ({ ...prev, detailedSummary: { ...prev.detailedSummary!, followUpDraft: saved } }));
+        }
+        if (!changed || !pending) return;
+        setFuText((cur) => settleFollowUpSave(cur, pending, res).pending);
+        setFuSaveError(settleFollowUpSave(null, pending, res).error);
     };
     const followUpEdit: FollowUpCardEdit | undefined = hasFollowUpDraft ? {
         editing: fuEditing,
-        subject: fuText?.subject ?? followUpSubject ?? '',
-        body: fuText?.body ?? followUpBody,
+        subject: fuShownSubject,
+        body: fuShownBody,
         onStart: (field) => {
             if (isRegeneratingFollowUp) return;
             setFuText((cur) => cur ?? { subject: followUpSubject ?? '', body: followUpBody });
@@ -2418,7 +2416,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         },
         onChange: (patch) => setFuText((cur) => ({ subject: cur?.subject ?? followUpSubject ?? '', body: cur?.body ?? followUpBody, ...patch })),
         onCommit: () => { void saveFollowUp(false); },
-        onCancel: () => { setFuEditing(null); setFuText(null); },
+        onCancel: () => { setFuEditing(null); setFuText(null); setFuSaveError(null); },
     } : undefined;
 
     const copyFollowUp = () => {
@@ -3421,9 +3419,9 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                                 <FollowUpDraftCard
                                                     reveal={followUpEntrance === 'reveal'}
                                                     subjectLabel={followUpSubject ? revealWords(t('Subject:')) : undefined}
-                                                    subject={followUpSubject ? revealWords(followUpSubject) : undefined}
-                                                    subjectText={followUpSubject}
-                                                    body={revealWords(followUpBody)}
+                                                    subject={followUpSubject ? (fuText ? fuShownSubject : revealWords(followUpSubject)) : undefined}
+                                                    subjectText={followUpSubject ? fuShownSubject : undefined}
+                                                    body={fuText ? fuShownBody : revealWords(followUpBody)}
                                                     bodyKey={followUpBodyKey}
                                                     busy={isRegeneratingFollowUp}
                                                     copied={followUpCopied}
@@ -3432,7 +3430,18 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                                     recipients={followUpTo}
                                                     onEmail={followUpTo.length > 0 ? emailFollowUp : undefined}
                                                     edit={followUpEdit}
-                                                    footnote={followUpStyled ? (
+                                                    footnote={fuSaveError ? (
+                                                        <>
+                                                            <span role="alert">{t(fuSaveError)}</span>{' '}
+                                                            <button
+                                                                type="button"
+                                                                className="font-medium text-text-secondary hover:text-text-primary transition-colors"
+                                                                onClick={() => { void saveFollowUp(false); }}
+                                                            >
+                                                                {t('Try again')}
+                                                            </button>
+                                                        </>
+                                                    ) : followUpStyled ? (
                                                         <>
                                                             {t('Written in your style')}{' · '}
                                                             <button

@@ -138,17 +138,19 @@ describe('Slack', () => {
         assert.equal(p.blocks[2].text.text, 'Hi &lt;!channel&gt; &amp; &lt;https://evil|x&gt;');
         assert.ok(!JSON.stringify(p).includes('<!channel>'));
     });
-    test('long drafts split under 3000 per section and stop at 50 blocks with a note', () => {
+    test('long drafts: packed into sections under 3000, nothing dropped, many short paragraphs still fit one message', () => {
         // One paragraph over the section cap splits on its lines.
         const long = Array.from({ length: 80 }, (_, i) => `line ${i} ${'x'.repeat(60)}`).join('\n');
         const split = slack.splitForSlack(long);
         assert.ok(split.length >= 2 && split.every((s) => s.length <= slack.SLACK_SECTION_MAX));
         assert.equal(split.join('\n'), long);
-        // Sixty short paragraphs: more sections than one message holds.
-        const p = slack.slackPayloadFromDraft('T', 'D', Array.from({ length: 60 }, (_, i) => `para ${i} ${'y'.repeat(500)}`).join('\n\n'));
-        assert.equal(p.blocks.length, slack.SLACK_MAX_BLOCKS);
+        // Sixty short paragraphs (more than 50 blocks one per paragraph): packed, all there.
+        const paras = Array.from({ length: 60 }, (_, i) => `para ${i} ${'y'.repeat(500)}`);
+        const p = slack.slackPayloadFromDraft('T', 'D', paras.join('\n\n'));
+        assert.ok(p.blocks.length <= slack.SLACK_MAX_BLOCKS);
+        const sent = p.blocks.slice(2).map((b) => b.text.text).join('\n\n');
+        assert.equal(sent, paras.join('\n\n'));
         for (const b of p.blocks.slice(2)) assert.ok(b.text.text.length <= slack.SLACK_SECTION_MAX);
-        assert.match(p.blocks.at(-1).text.text, /Shortened to fit one Slack message/);
         const header = slack.slackPayloadFromDraft('y'.repeat(400), '', 'a').blocks[0].text.text;
         assert.equal(header.length, slack.SLACK_HEADER_MAX);
     });
@@ -199,7 +201,7 @@ describe('Notion', () => {
             { parent: { type: 'database', id: '11111111222233334444555555555555', title: 'Meetings' }, title: 'Sync, Oct 14, 2026', blocks },
             { token: 'ntn_x', fetchImpl },
         );
-        assert.deepEqual(res, { url: 'https://www.notion.so/page-1', partial: false });
+        assert.deepEqual(res, { url: 'https://www.notion.so/page-1', partial: false, pageId: 'page-1' });
         assert.equal(calls.length, 4);
         const create = calls[1];
         assert.equal(create.body.parent.database_id, '11111111-2222-3333-4444-555555555555');

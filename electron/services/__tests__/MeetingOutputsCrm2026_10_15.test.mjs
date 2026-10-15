@@ -89,7 +89,7 @@ describe('writing the note', () => {
     test('HubSpot: one note, HTML body, associated with every matched contact (type 202)', async () => {
         const { calls, fetchImpl } = recorder(() => json(201, { id: 'n1' }));
         const n = await crm.sendCrmNote('hubspot', doc, [{ id: '501' }, { id: '502' }], { token: 't', fetchImpl });
-        assert.equal(n, 1);
+        assert.deepEqual(n, { sentIds: ['501', '502'], notesCreated: 1 });
         const b = calls[0].body;
         assert.equal(calls[0].url, 'https://api.hubapi.com/crm/v3/objects/notes');
         assert.equal(b.properties.hs_timestamp, '2026-10-14T15:00:00.000Z');
@@ -99,7 +99,7 @@ describe('writing the note', () => {
     test('Attio: one Markdown note per person', async () => {
         const { calls, fetchImpl } = recorder(() => json(200, { data: {} }));
         const n = await crm.sendCrmNote('attio', doc, [{ id: 'r1' }, { id: 'r2' }], { token: 't', fetchImpl });
-        assert.equal(n, 2);
+        assert.deepEqual(n, { sentIds: ['r1', 'r2'], notesCreated: 2 });
         assert.deepEqual(calls.map((c) => c.body.data.parent_record_id), ['r1', 'r2']);
         assert.equal(calls[0].body.data.format, 'markdown');
         assert.match(calls[0].body.data.content, /## Action items\n\n- \[ \] Dana: Send contract/);
@@ -118,7 +118,7 @@ describe('writing the note', () => {
     });
     test('no matched records: nothing is sent', async () => {
         let called = false;
-        assert.equal(await crm.sendCrmNote('hubspot', doc, [], { token: 't', fetchImpl: async () => { called = true; } }), 0);
+        assert.deepEqual(await crm.sendCrmNote('hubspot', doc, [], { token: 't', fetchImpl: async () => { called = true; } }), { sentIds: [], notesCreated: 0 });
         assert.equal(called, false);
     });
 });

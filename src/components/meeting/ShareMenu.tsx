@@ -14,6 +14,7 @@ import { useT } from '../../i18n';
 import { useResolvedTheme } from '../../hooks/useResolvedTheme';
 import { SettingsSwitch } from '../settings/SettingsRow';
 import type { ConnectionsStatus, CrmMatchPreview, CrmService, MeetingOutputsApi } from '../../types/meetingOutputs';
+import { crmSendable, notionResultView, slackDraftStatus } from './outputsView';
 
 const api = (): MeetingOutputsApi | undefined => window.electronAPI?.meetingOutputs;
 const MENU_CLOSE_MS = 150;
@@ -262,6 +263,8 @@ const OutputDialog: React.FC<{
     const [preview, setPreview] = useState(false);
     // Notion
     const [pageUrl, setPageUrl] = useState<string | undefined>();
+    // A page Notion made but did not fill: shown with its link, until the user adds the rest or starts over.
+    const [partialPage, setPartialPage] = useState<{ url?: string; message: string } | null>(null);
     // CRM
     const [crm, setCrm] = useState<CrmService | null>(null);
     const [matches, setMatches] = useState<CrmMatchPreview | null>(null);
@@ -272,7 +275,7 @@ const OutputDialog: React.FC<{
     // Reset on every open.
     useEffect(() => {
         if (!kind) return;
-        setBusy(false); setError(null); setDone(null); setPreview(false); setPageUrl(undefined); setMatches(null);
+        setBusy(false); setError(null); setDone(null); setPreview(false); setPageUrl(undefined); setPartialPage(null); setMatches(null); setChosen(new Set());
         setIncludeTranscript(false); setIncludeActions(true);
         if (kind === 'slack') setWebhookId(conn?.slack.webhooks[0]?.id || '');
         if (kind === 'crm') setCrm(crmConnected[0] || null);
@@ -304,7 +307,8 @@ const OutputDialog: React.FC<{
     useEffect(() => {
         if (kind !== 'crm' || !crm) return;
         let live = true;
-        setMatches(null); setError(null); setBusy(true);
+        // A new target starts from nothing: no people carried over from the last CRM's preview.
+        setMatches(null); setChosen(new Set()); setError(null); setBusy(true);
         void api()?.previewCrm(meetingId, crm).then((res) => {
             if (!live) return;
             setBusy(false);
@@ -315,6 +319,14 @@ const OutputDialog: React.FC<{
         return () => { live = false; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [kind, crm]);
+
+    // A Notion answer: done, a half-made page (kept with its link), or a plain failure.
+    const applyNotion = (res: Parameters<typeof notionResultView>[0]) => {
+        const view = notionResultView(res);
+        if (view.state === 'done') { setPartialPage(null); setPageUrl(view.url); setDone(t('The page is in Notion.')); return; }
+        if (view.state === 'partial') { setPartialPage({ url: view.url, message: view.message }); return; }
+        setError(view.message);
+    };
 
     const run = async (fn: () => Promise<void>) => {
         setBusy(true); setError(null); setDone(null);
@@ -365,6 +377,8 @@ const OutputDialog: React.FC<{
     if (kind === 'slack') {
         const hooks = conn?.slack.webhooks || [];
         const target = hooks.find((w) => w.id === webhookId);
+        // The same limit main enforces: over it, Send is off and the notice says by how much. Never cut.
+        const limit = slackDraftStatus(draft);
         return (
             <DialogShell
                 open
@@ -375,7 +389,7 @@ const OutputDialog: React.FC<{
                 footer={done ? closeBtn(t('Done')) : hooks.length ? <>{closeBtn()}{primary(target ? `${t('Send to')} ${target.label}` : t('Send'), () => void run(async () => {
                     const res = await api()?.sendSlack({ webhookId, meetingId, text: draft });
                     if (res?.ok) setDone(`${t('Sent to')} ${target?.label || 'Slack'}.`); else setError(res?.message || t('The message was not sent.'));
-                }), !!draft.trim() && !!target)}</> : closeBtn(t('Close'))}
+                }), !limit.empty && limit.over === 0 && !!target)}</> : closeBtn(t('Close'))}
             >
                 {!hooks.length ? <NotConnected service="Slack" onClose={onClose} /> : (
                     <div className="space-y-3">
@@ -413,7 +427,15 @@ const OutputDialog: React.FC<{
                                     spellCheck
                                 />
                             )}
-                            <p className="mt-1 text-[11px] text-text-tertiary">{t('Slack formatting: *bold*, _italic_. The meeting title goes on top.')}</p>
+                            <div className="mt-1 flex items-start justify-between gap-3 text-[11px] text-text-tertiary">
+                                <span>{t('Slack formatting: *bold*, _italic_. The meeting title goes on top.')}</span>
+                                <span className={`shrink-0 tabular-nums ${limit.over ? 'text-red-500' : ''}`}>{`${limit.length.toLocaleString()} / ${limit.max.toLocaleString()}`}</span>
+                            </div>
+                            {limit.over > 0 && (
+                                <p role="alert" className="mt-1 text-xs leading-relaxed text-red-500">
+                                    {`${t('This is')} ${limit.over.toLocaleString()} ${t('characters longer than one Slack message can be. Shorten it, or leave out the action items.')}`}
+                                </p>
+                            )}
                         </div>
                         <ErrorLine text={error} />
                         <DoneLine text={done} />
@@ -433,11 +455,15 @@ const OutputDialog: React.FC<{
                 busy={busy}
                 footer={done
                     ? <>{pageUrl && <button type="button" className={BTN} onClick={() => void api()?.openNotionPage(pageUrl)}><ExternalLink size={12} />{t('Open in Notion')}</button>}{closeBtn(t('Done'))}</>
-                    : n?.connected && n.parent ? <>{closeBtn()}{primary(t('Create page'), () => void run(async () => {
-                        const res = await api()?.sendNotion(meetingId, { includeTranscript });
-                        setPageUrl(res?.url);
-                        if (res?.ok) setDone(t('The page is in Notion.')); else { setError(res?.message || t('The page was not made.')); if (res?.url) setDone(null); }
-                    }))}</> : closeBtn(t('Close'))}
+                    : partialPage
+                        // A half-made page: open it, add the rest to it, or start over with a new
+                        // page. Create page is gone, so a second page is never made by accident.
+                        ? <>
+                            {partialPage.url && <button type="button" className={BTN} onClick={() => void api()?.openNotionPage(partialPage.url!)}><ExternalLink size={12} />{t('Open the partial page')}</button>}
+                            {primary(t('Start over with a new page'), () => void run(async () => applyNotion(await api()?.sendNotion(meetingId, { includeTranscript, startOver: true }))))}
+                            {primary(t('Add the rest'), () => void run(async () => applyNotion(await api()?.resumeNotion(meetingId))))}
+                        </>
+                        : n?.connected && n.parent ? <>{closeBtn()}{primary(t('Create page'), () => void run(async () => applyNotion(await api()?.sendNotion(meetingId, { includeTranscript }))))}</> : closeBtn(t('Close'))}
             >
                 {!n?.connected ? <NotConnected service="Notion" onClose={onClose} /> : !n.parent ? (
                     <div className="space-y-3">
@@ -454,6 +480,7 @@ const OutputDialog: React.FC<{
                                 <SettingsSwitch checked={includeTranscript} onChange={() => setIncludeTranscript((v) => !v)} label={t('Include the transcript')} disabled={busy || !!done} />
                             </Row>
                         )}
+                        {partialPage && <p role="alert" className="mt-3 text-xs leading-relaxed text-text-secondary">{partialPage.message}</p>}
                         <ErrorLine text={error} />
                         <DoneLine text={done} />
                     </div>
@@ -465,6 +492,8 @@ const OutputDialog: React.FC<{
     if (kind === 'crm') {
         const matched = matches?.attendees.filter((a) => a.matched) || [];
         const name = crm ? CRM_NAMES[crm] : 'CRM';
+        // Only people a working preview of THIS CRM matched; nothing before that preview.
+        const sendable = crmSendable(crm, matches, chosen);
         return (
             <DialogShell
                 open
@@ -472,13 +501,13 @@ const OutputDialog: React.FC<{
                 onClose={onClose}
                 busy={busy}
                 footer={done ? closeBtn(t('Done')) : crmConnected.length ? <>{closeBtn()}{primary(
-                    chosen.size === 1 ? t('Add note to 1 person') : `${t('Add note to')} ${chosen.size} ${t('people')}`,
+                    sendable.length === 1 ? t('Add note to 1 person') : `${t('Add note to')} ${sendable.length} ${t('people')}`,
                     () => void run(async () => {
-                        if (!crm) return;
-                        const res = await api()?.sendCrm(meetingId, crm, [...chosen]);
-                        if (res?.ok) setDone(`${t('The note is in')} ${name}.`); else setError(res?.message || t('The note was not added.'));
+                        if (!crm || !sendable.length) return;
+                        const res = await api()?.sendCrm(meetingId, crm, sendable);
+                        if (res?.ok) setDone(res.message || `${t('The note is in')} ${name}.`); else setError(res?.message || t('The note was not added.'));
                     }),
-                    chosen.size > 0,
+                    sendable.length > 0,
                 )}</> : closeBtn(t('Close'))}
             >
                 {!crmConnected.length ? <NotConnected service="HubSpot, Attio or Affinity" onClose={onClose} /> : (
@@ -489,7 +518,7 @@ const OutputDialog: React.FC<{
                                 <select
                                     className="mt-1 w-full rounded-lg border border-border-subtle bg-bg-input px-3 py-2 text-xs text-text-primary focus:outline-none"
                                     value={crm || ''}
-                                    onChange={(e) => setCrm(e.target.value as CrmService)}
+                                    onChange={(e) => { setMatches(null); setChosen(new Set()); setCrm(e.target.value as CrmService); }}
                                     disabled={busy || !!done}
                                 >
                                     {crmConnected.map((s) => <option key={s} value={s}>{CRM_NAMES[s]}</option>)}

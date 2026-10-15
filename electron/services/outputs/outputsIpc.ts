@@ -19,9 +19,9 @@ import { buildNotesDocument, type NotesDocument } from './notesDocument';
 import { buildNotesHtml } from './htmlExport';
 import { NOTES_EXPORT_FILTERS, defaultExportPath, notesFileStem, withExportExtension, type NotesExportFormat } from './exportFiles';
 import { describeConnectionError, errorKindOf } from './httpRequest';
-import { composeSlackDraft, isSlackWebhookUrl, postSlackWebhook, slackPayloadFromDraft, testSlackWebhook } from './slack';
-import { buildNotionBlocks, createNotionPage, looksLikeNotionToken, normaliseNotionId, notionPageTitle, searchNotion, testNotion } from './notion';
-import { CRM_LABELS, crmCandidates, matchAttendees, normaliseEmail, sendCrmNote, testCrm } from './crm';
+import { checkSlackDraft, composeSlackDraft, isSlackWebhookUrl, postSlackWebhook, slackDraftMessage, testSlackWebhook } from './slack';
+import { NotionPartialPages, appendNotionBatches, buildNotionBlocks, createNotionPage, looksLikeNotionToken, normaliseNotionId, notionPageTitle, searchNotion, testNotion } from './notion';
+import { CRM_LABELS, CrmSendSession, crmCandidates, crmSendSummary, matchAttendees, normaliseEmail, remainingRecords, sendCrmNote, testCrm, uniqueRecords, type CrmRecord } from './crm';
 import { mcpClientSnippets, newMcpToken, randomMcpPort, startMcpServer, type MeetingSource, type RunningMcpServer } from './mcpServer';
 import { WritingStyleService, type StyleModelCall } from './writingStyle';
 import { applyFollowUpEdit, currentDraft, followUpSample } from './followUpEdit';
@@ -39,6 +39,10 @@ const isCrm = (v: unknown): v is CrmService => v === 'hubspot' || v === 'attio' 
 // ── Singletons ───────────────────────────────────────────────────────────
 
 let store: ConnectionsStore | null = null;
+/** CRM notes written this session, so a retry after a partial failure skips them. */
+const crmSession = new CrmSendSession();
+/** Notion pages made this session that are missing part of their notes. */
+const notionPartials = new NotionPartialPages();
 let style: WritingStyleService | null = null;
 
 export function getConnectionsStore(): ConnectionsStore {
@@ -382,10 +386,14 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
         if (!url) return fail('not_connected', 'Slack');
         const doc = loadDoc(payload?.meetingId);
         if (!doc) return NO_MEETING;
-        const text = typeof payload?.text === 'string' ? payload.text.trim() : '';
-        if (!text) return { ok: false, kind: 'invalid_input', message: 'The message is empty.' };
+        const text = typeof payload?.text === 'string' ? payload.text : '';
+        // Refused, never shortened: the composer shows the same limit as a counter.
+        const checked = checkSlackDraft(doc.title, doc.dateLabel, text);
+        if (!checked.ok) {
+            return { ok: false, kind: checked.reason === 'empty' ? 'invalid_input' : 'too_large', message: slackDraftMessage(checked) };
+        }
         try {
-            await postSlackWebhook(url, slackPayloadFromDraft(doc.title, doc.dateLabel, text));
+            await postSlackWebhook(url, checked.payload);
             return { ok: true };
         } catch (err) {
             const kind = errorKindOf(err);
@@ -396,6 +404,7 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
     }));
 
     // Notion send
+    const PARTIAL_PAGE = 'The page was made in Notion, but only part of the notes reached it. Add the rest to that page, or start over with a new page.';
     safeHandle('outputs:notion-send', guard(FORBIDDEN, async (_e, meetingId: unknown, opts: any) => {
         const n = getConnectionsStore().read().notion;
         if (!n?.token) return fail('not_connected', 'Notion');
@@ -403,16 +412,41 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
         const doc = loadDoc(meetingId);
         if (!doc) return NO_MEETING;
         if (!hasNotes(doc)) return NO_NOTES;
+        const mid = meetingId as string;
+        // Never a second page by accident: a half-made page waits for the user's pick.
+        const pending = notionPartials.get(mid);
+        if (pending && opts?.startOver !== true) {
+            return { ok: false, kind: 'unknown', partial: true, url: pending.url, message: PARTIAL_PAGE };
+        }
+        notionPartials.clear(mid);
         try {
             const res = await createNotionPage(
                 { parent: n.parent, title: notionPageTitle(doc), blocks: buildNotionBlocks(doc, { includeTranscript: opts?.includeTranscript === true }) },
                 { token: n.token },
             );
-            if (res.partial) return { ok: false, kind: 'unknown', url: res.url, message: 'The page was made in Notion, but only part of the notes reached it.' };
+            if (res.partial && res.pageId) {
+                notionPartials.set(mid, { pageId: res.pageId, url: res.url, remaining: res.remaining || [] });
+                return { ok: false, kind: 'unknown', partial: true, url: res.url, message: PARTIAL_PAGE };
+            }
             return { ok: true, url: res.url };
         } catch (err) {
             return fail(errorKindOf(err), 'Notion');
         }
+    }));
+    // The rest of a half-made page, appended to that same page.
+    safeHandle('outputs:notion-resume', guard(FORBIDDEN, async (_e, meetingId: unknown) => {
+        const n = getConnectionsStore().read().notion;
+        if (!n?.token) return fail('not_connected', 'Notion');
+        const mid = typeof meetingId === 'string' ? meetingId : '';
+        const pending = notionPartials.get(mid);
+        if (!pending) return { ok: false, kind: 'not_found', message: 'There is nothing left to add to that page. Send the notes again to make a new one.' };
+        const remaining = await appendNotionBatches(pending.pageId, pending.remaining, { token: n.token });
+        if (remaining.length) {
+            notionPartials.set(mid, { ...pending, remaining });
+            return { ok: false, kind: 'unknown', partial: true, url: pending.url, message: 'Notion still did not take the rest of the notes. Try again in a minute, or start over with a new page.' };
+        }
+        notionPartials.clear(mid);
+        return { ok: true, url: pending.url };
     }));
 
     // CRM
@@ -445,15 +479,23 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
         const chosen = new Set((Array.isArray(emails) ? emails : []).map(normaliseEmail).filter(Boolean) as string[]);
         const candidates = crmCandidatesFor(doc).filter((c) => chosen.has(c.email));
         if (!candidates.length) return { ok: false, kind: 'invalid_input', message: 'Pick at least one matched attendee.' };
+        const mid = meetingId as string;
+        let records: CrmRecord[];
         try {
             const matches = await matchAttendees(service, candidates, { token });
-            const records = matches.map((m) => m.record).filter((r): r is NonNullable<typeof r> => !!r);
-            if (!records.length) return { ok: false, kind: 'not_found', message: `${CRM_LABELS[service]} no longer has a record for these attendees.` };
-            const notesCreated = await sendCrmNote(service, doc, records, { token });
-            return { ok: true, notesCreated };
+            // One person, one note: two emails of the same person collapse to one record.
+            records = uniqueRecords(matches.map((m) => m.record).filter((r): r is CrmRecord => !!r));
         } catch (err) {
             return fail(errorKindOf(err), CRM_LABELS[service]);
         }
+        if (!records.length) return { ok: false, kind: 'not_found', message: `${CRM_LABELS[service]} no longer has a record for these attendees.` };
+        // A retry after a partial failure writes only the notes not yet written.
+        const todo = remainingRecords(records, crmSession.sentFor(mid, service));
+        if (!todo.length) return { ok: true, notesCreated: 0, message: `The note is already on everyone you picked in ${CRM_LABELS[service]}.` };
+        const outcome = await sendCrmNote(service, doc, todo, { token });
+        crmSession.markSent(mid, service, outcome.sentIds);
+        const summary = crmSendSummary(service, outcome, todo.length, describeConnectionError);
+        return { ok: summary.ok, ...(summary.kind ? { kind: summary.kind } : {}), ...(summary.message ? { message: summary.message } : {}), notesCreated: summary.notesCreated, remaining: summary.remaining };
     }));
 
     // MCP

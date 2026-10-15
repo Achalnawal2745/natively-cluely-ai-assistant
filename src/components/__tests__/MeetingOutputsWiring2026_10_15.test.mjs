@@ -39,7 +39,12 @@ test('opening the Share menu reads connection status only; sends happen from a S
     const src = read('src/components/meeting/ShareMenu.tsx');
     const openMenu = src.match(/const openMenu = \(\) => \{([\s\S]*?)\n    \};/)[1];
     assert.ok(!/send(Slack|Notion|Crm)|export(Pdf|Html)/.test(openMenu));
-    for (const fn of ['sendSlack', 'sendNotion', 'sendCrm']) assert.equal((src.match(new RegExp(`api\\(\\)\\?\\.${fn}\\(`, 'g')) || []).length, 1, fn);
+    // One Send each; Notion's second call is the explicit "Start over with a new page".
+    const count = (fn) => (src.match(new RegExp(`api\\(\\)\\?\\.${fn}\\(`, 'g')) || []).length;
+    assert.equal(count('sendSlack'), 1);
+    assert.equal(count('sendCrm'), 1);
+    assert.equal(count('sendNotion'), 2);
+    assert.equal((src.match(/sendNotion\(meetingId, \{ includeTranscript, startOver: true \}\)/g) || []).length, 1);
 });
 
 test('Salesforce is left as a clear TODO, not half-built', () => {

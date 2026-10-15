@@ -345,3 +345,17 @@ export class WritingStyleService {
         return profile ? renderStyleGuide(profile) : null;
     }
 }
+
+/**
+ * The style guide for one follow-up draft. With the LLM draft switched off
+ * (NATIVELY_FOLLOWUP_DRAFT_V2=0, the template draft) there is no model call at
+ * all: not for the draft, and not for deriving the style profile either.
+ */
+export async function styleGuideForDraft(
+    svc: Pick<WritingStyleService, 'guideForFollowUp'>,
+    llmDraftEnabled: boolean,
+    call: StyleModelCall | null,
+): Promise<string | undefined> {
+    if (!llmDraftEnabled) return undefined;
+    return (await svc.guideForFollowUp(call)) || undefined;
+}

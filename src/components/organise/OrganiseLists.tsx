@@ -22,11 +22,18 @@ const SearchField: React.FC<{ value: string; onChange: (v: string) => void; plac
     </div>
 );
 
-/** Re-run `load` whenever a meeting is saved or changed. */
+/**
+ * Re-run `load` whenever a meeting is saved or changed, and as older meetings
+ * are indexed in the background (a batch at a time, after an upgrade).
+ */
 function useMeetingsUpdated(load: () => void): void {
     useEffect(() => {
         const off = window.electronAPI?.onMeetingsUpdated?.(() => load());
-        return () => { try { off?.(); } catch { /* already gone */ } };
+        const offIndexed = window.electronAPI?.organise?.onPeopleIndexed?.(() => load());
+        return () => {
+            try { off?.(); } catch { /* already gone */ }
+            try { offIndexed?.(); } catch { /* already gone */ }
+        };
     }, [load]);
 }
 

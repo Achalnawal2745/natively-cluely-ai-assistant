@@ -14,7 +14,7 @@
 
 import { BrowserWindow } from 'electron';
 import type { AppState } from '../../main';
-import { organiseStore, indexMeetingPeople, syncPeopleIndex, ruleFactsFor, currentUser } from './organiseService';
+import { organiseStore, indexMeetingPeople, syncPeopleIndex, indexRemainingPeopleInBackground, ruleFactsFor, currentUser, PEOPLE_INDEX_BATCH } from './organiseService';
 import { companyDomainForEmail, isFreeMailDomain } from './people';
 import { draftCompanyDescription } from './companyDescription';
 import { emailDomain } from '../meeting/meetingNotesContext';
@@ -22,6 +22,23 @@ import { emailDomain } from '../meeting/meetingNotesContext';
 type SafeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => void;
 
 const isId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 200;
+
+/** People / Companies listen for this to refresh while older meetings are indexed. */
+export const PEOPLE_INDEXED_CHANNEL = 'organise:people-indexed';
+
+function broadcastPeopleIndexed(): void {
+  try {
+    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send(PEOPLE_INDEXED_CHANNEL);
+  } catch { /* a closing window */ }
+}
+
+/**
+ * One batch now, so the list that is opening is not empty, and the rest in the
+ * background, a batch at a time, refreshing the lists as each lands.
+ */
+function syncPeopleThenContinue(store: NonNullable<ReturnType<typeof organiseStore>>): void {
+  if (syncPeopleIndex(store) >= PEOPLE_INDEX_BATCH) void indexRemainingPeopleInBackground(store, broadcastPeopleIndexed);
+}
 
 function broadcastMeetingsUpdated(): void {
   try {
@@ -130,7 +147,7 @@ export function registerOrganiseIpc(appState: AppState, safeHandle: SafeHandle):
   safeHandle('organise:people:list', async (_e, args: { query?: unknown }) => {
     const store = organiseStore();
     if (!store) return [];
-    syncPeopleIndex(store);
+    syncPeopleThenContinue(store);
     return store.listPeople(typeof args?.query === 'string' ? args.query.slice(0, 120) : undefined);
   });
 
@@ -149,7 +166,7 @@ export function registerOrganiseIpc(appState: AppState, safeHandle: SafeHandle):
   safeHandle('organise:companies:list', async (_e, args: { query?: unknown }) => {
     const store = organiseStore();
     if (!store) return [];
-    syncPeopleIndex(store);
+    syncPeopleThenContinue(store);
     return store.listCompanies({ excludeDomain: userCompanyDomain(), query: typeof args?.query === 'string' ? args.query.slice(0, 120) : undefined });
   });
 

@@ -171,6 +171,31 @@ export interface NotionPageResult {
     url?: string;
     /** True when the page exists but not every batch of blocks reached it. */
     partial: boolean;
+    pageId?: string;
+    /** The batches still to append to that page, in order, when partial. */
+    remaining?: NotionBlock[][];
+}
+
+/**
+ * Appends batches to a page in order, stopping at the first refusal. Returns
+ * the batches not yet appended (empty when all landed), so a retry continues
+ * the same page instead of making a second one.
+ */
+export async function appendNotionBatches(pageId: string, batches: NotionBlock[][], o: NotionCallOpts): Promise<NotionBlock[][]> {
+    for (let i = 0; i < batches.length; i += 1) {
+        try {
+            await httpRequest(`${NOTION_API}/blocks/${encodeURIComponent(pageId)}/children`, {
+                method: 'PATCH',
+                headers: notionHeaders(o.token),
+                json: { children: batches[i] },
+                fetchImpl: o.fetchImpl,
+                signal: o.signal,
+            });
+        } catch {
+            return batches.slice(i);
+        }
+    }
+    return [];
 }
 
 export async function createNotionPage(
@@ -198,18 +223,18 @@ export async function createNotionPage(
     const pageId = created.data?.id;
     const url = typeof created.data?.url === 'string' ? created.data.url : undefined;
     if (typeof pageId !== 'string') throw new ConnectionError('unknown', 'no page id');
-    for (const batch of batches.slice(1)) {
-        try {
-            await httpRequest(`${NOTION_API}/blocks/${encodeURIComponent(pageId)}/children`, {
-                method: 'PATCH',
-                headers: notionHeaders(o.token),
-                json: { children: batch },
-                fetchImpl: o.fetchImpl,
-                signal: o.signal,
-            });
-        } catch {
-            return { url, partial: true };
-        }
-    }
-    return { url, partial: false };
+    const remaining = await appendNotionBatches(pageId, batches.slice(1), o);
+    return remaining.length ? { url, partial: true, pageId, remaining } : { url, partial: false, pageId };
+}
+
+/**
+ * Pages made this session that did not get all their notes, per meeting. A
+ * new send for that meeting is refused until the user picks: add the rest to
+ * the same page, or start over with a new one. In memory only.
+ */
+export class NotionPartialPages {
+    private readonly pages = new Map<string, { pageId: string; url?: string; remaining: NotionBlock[][] }>();
+    get(meetingId: string) { return this.pages.get(meetingId) ?? null; }
+    set(meetingId: string, entry: { pageId: string; url?: string; remaining: NotionBlock[][] }): void { this.pages.set(meetingId, entry); }
+    clear(meetingId: string): void { this.pages.delete(meetingId); }
 }

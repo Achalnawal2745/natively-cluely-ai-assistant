@@ -8,12 +8,14 @@
 
 import { actionItemLine, inlineSpans, type NotesDocument } from './notesDocument';
 import { ConnectionError, httpRequest, type FetchLike } from './httpRequest';
+import { SLACK_DRAFT_MAX_CHARS } from '../../../src/types/meetingOutputs';
 
 /** Slack's limits: a section's text, the header, and the blocks in one message. */
 export const SLACK_SECTION_MAX = 3000;
 export const SLACK_HEADER_MAX = 150;
 export const SLACK_MAX_BLOCKS = 50;
-export const SLACK_DRAFT_MAX = 40_000;
+/** The longest draft the composer accepts (shown as a counter there); longer drafts are refused, never cut. */
+export const SLACK_DRAFT_MAX = SLACK_DRAFT_MAX_CHARS;
 
 const WEBHOOK_RE = /^https:\/\/hooks\.slack(?:-gov)?\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9_\-/]+$/;
 
@@ -47,13 +49,34 @@ export function composeSlackDraft(doc: NotesDocument, opts: { includeActionItems
     return out.join('\n\n');
 }
 
-/** Pieces of at most `max` characters, split on line breaks where possible. */
+/** Never cut inside an escape (&amp; &lt; &gt;): the text is already escaped, so every & starts one. */
+function safeCut(text: string, max: number): number {
+    const a = text.lastIndexOf('&', max - 1);
+    if (a > 0 && a > max - 5 && text.indexOf(';', a) >= max) return a;
+    return max;
+}
+
+/**
+ * Sections of at most `max` characters: paragraphs packed together (so a long
+ * message of short paragraphs still fits Slack's 50 blocks), a paragraph over
+ * the cap split on its lines, a line over it split without breaking an escape.
+ * Nothing is dropped: joining the pieces gives back the text.
+ */
 export function splitForSlack(text: string, max: number = SLACK_SECTION_MAX): string[] {
     const pieces: string[] = [];
+    let packed = '';
+    const flush = () => { if (packed) { pieces.push(packed); packed = ''; } };
     for (const para of text.split(/\n{2,}/)) {
         const p = para.trim();
         if (!p) continue;
-        if (p.length <= max) { pieces.push(p); continue; }
+        if (p.length <= max) {
+            const candidate = packed ? `${packed}\n\n${p}` : p;
+            if (candidate.length <= max) { packed = candidate; continue; }
+            flush();
+            packed = p;
+            continue;
+        }
+        flush();
         let current = '';
         for (const line of p.split('\n')) {
             const candidate = current ? `${current}\n${line}` : line;
@@ -61,13 +84,15 @@ export function splitForSlack(text: string, max: number = SLACK_SECTION_MAX): st
             if (current) pieces.push(current);
             let rest = line;
             while (rest.length > max) {
-                pieces.push(rest.slice(0, max));
-                rest = rest.slice(max);
+                const cut = safeCut(rest, max);
+                pieces.push(rest.slice(0, cut));
+                rest = rest.slice(cut);
             }
             current = rest;
         }
-        if (current) pieces.push(current);
+        if (current) packed = current;
     }
+    flush();
     return pieces;
 }
 
@@ -76,26 +101,46 @@ export interface SlackPayload {
     blocks: Array<Record<string, unknown>>;
 }
 
-/** The message Slack receives: a header, the date line, the draft as sections. */
-export function slackPayloadFromDraft(title: string, dateLabel: string, draft: string): SlackPayload {
-    const safeDraft = escapeSlackText(draft.slice(0, SLACK_DRAFT_MAX));
+export type SlackDraftCheck =
+    | { ok: true; payload: SlackPayload }
+    | { ok: false; reason: 'empty' | 'too_long'; length: number; max: number };
+
+/**
+ * The message Slack receives (a header, the date line, the draft as sections),
+ * or why the draft cannot be sent as it is. A draft over the limit, or one that
+ * would need more blocks than one message holds, is refused, never shortened.
+ */
+export function checkSlackDraft(title: string, dateLabel: string, draft: string): SlackDraftCheck {
+    const text = draft.trim();
+    if (!text) return { ok: false, reason: 'empty', length: 0, max: SLACK_DRAFT_MAX };
+    if (text.length > SLACK_DRAFT_MAX) return { ok: false, reason: 'too_long', length: text.length, max: SLACK_DRAFT_MAX };
     const header = title.length > SLACK_HEADER_MAX ? `${title.slice(0, SLACK_HEADER_MAX - 1)}…` : title;
     const blocks: Array<Record<string, unknown>> = [
         { type: 'header', text: { type: 'plain_text', text: header || 'Meeting notes', emoji: false } },
     ];
     if (dateLabel) blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: escapeSlackText(dateLabel) }] });
-    const room = SLACK_MAX_BLOCKS - blocks.length;
-    const pieces = splitForSlack(safeDraft);
-    const kept = pieces.slice(0, room);
-    if (pieces.length > room && kept.length) {
-        const last = kept[kept.length - 1];
-        const note = '\n_(Shortened to fit one Slack message.)_';
-        kept[kept.length - 1] = `${last.slice(0, SLACK_SECTION_MAX - note.length)}${note}`;
-    }
-    for (const piece of kept) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: piece } });
+    const pieces = splitForSlack(escapeSlackText(text));
+    if (pieces.length > SLACK_MAX_BLOCKS - blocks.length) return { ok: false, reason: 'too_long', length: text.length, max: SLACK_DRAFT_MAX };
+    for (const piece of pieces) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: piece } });
     // `text` is the notification and the fallback where blocks do not render.
     const fallback = `${escapeSlackText(title)}${dateLabel ? ` · ${escapeSlackText(dateLabel)}` : ''}`;
-    return { text: fallback, blocks };
+    return { ok: true, payload: { text: fallback, blocks } };
+}
+
+/** The plain sentence for a draft that cannot be sent as it is. */
+export function slackDraftMessage(check: { reason: 'empty' | 'too_long'; length: number; max: number }): string {
+    if (check.reason === 'empty') return 'The message is empty.';
+    const over = check.length - check.max;
+    return over > 0
+        ? `The message is ${over.toLocaleString('en-US')} characters longer than one Slack message can be. Shorten it, or leave out the action items.`
+        : 'The message has too many separate paragraphs for one Slack message. Join some of them, or shorten it.';
+}
+
+/** The payload for a draft already checked; throws (never cuts) when it does not fit. */
+export function slackPayloadFromDraft(title: string, dateLabel: string, draft: string): SlackPayload {
+    const res = checkSlackDraft(title, dateLabel, draft);
+    if (!res.ok) throw new ConnectionError(res.reason === 'empty' ? 'invalid_input' : 'too_large', `draft ${res.reason}`);
+    return res.payload;
 }
 
 export async function postSlackWebhook(url: string, payload: SlackPayload, fetchImpl?: FetchLike, signal?: AbortSignal): Promise<void> {

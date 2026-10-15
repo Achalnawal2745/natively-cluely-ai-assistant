@@ -1997,10 +1997,13 @@ export class MeetingPersistence {
             const { FollowUpDraftGenerator } = require('./services/meeting/FollowUpDraftGenerator');
             // The user's own voice, when they kept samples and left it on. Derived (one
             // model call) only when the samples changed since the cached profile.
+            // Off with the template draft (NATIVELY_FOLLOWUP_DRAFT_V2=0): no model call at all.
+            const llmDraft = isIntelligenceFlagEnabled('followUpDraftV2');
             let styleGuide: string | undefined;
             try {
                 const { getWritingStyleService, styleModelCall } = require('./services/outputs/outputsIpc');
-                styleGuide = (await getWritingStyleService().guideForFollowUp(styleModelCall(this.llmHelper))) || undefined;
+                const { styleGuideForDraft } = require('./services/outputs/writingStyle');
+                styleGuide = await styleGuideForDraft(getWritingStyleService(), llmDraft, styleModelCall(this.llmHelper));
             } catch { styleGuide = undefined; }
             const draft = await new FollowUpDraftGenerator(this.llmHelper).generate({
                 summary: {
@@ -2023,7 +2026,7 @@ export class MeetingPersistence {
                 senderName: followUpSenderFirstName(),
                 styleGuide,
                 // NATIVELY_FOLLOWUP_DRAFT_V2=0 kill switch: the template draft, no LLM call.
-                deterministicOnly: !isIntelligenceFlagEnabled('followUpDraftV2'),
+                deterministicOnly: !llmDraft,
             });
             const ok = db.replaceDetailedSummary(meetingId, { ...detailed, followUpDraft: draft });
             try {

@@ -63,13 +63,67 @@ export function indexMeetingPeople(meetingId: string, store: OrganiseStore | nul
   return store.indexMeetingPeople(meetingId, refs);
 }
 
-/** Index the meetings saved before this existed (or imported since), a batch at a time. */
-export function syncPeopleIndex(store: OrganiseStore | null = organiseStore(), limit = 300): number {
+/** Index one batch of the meetings saved before this existed (or imported since). */
+export function syncPeopleIndex(store: OrganiseStore | null = organiseStore(), limit = PEOPLE_INDEX_BATCH): number {
   if (!store) return 0;
   const user = currentUser();
   const ids = store.unindexedMeetingIds(limit);
   for (const id of ids) indexMeetingPeople(id, store, user);
   return ids.length;
+}
+
+/** Meetings indexed per batch: small enough that one batch never holds up the app. */
+export const PEOPLE_INDEX_BATCH = 100;
+/** A ceiling on batches in one run (5,000 meetings at a time), so a run always ends. */
+const PEOPLE_INDEX_MAX_BATCHES = 50;
+
+/** Hands control back to the event loop between batches, so IPC and windows stay responsive. */
+const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+/**
+ * Index every meeting not yet indexed, in batches, yielding between them.
+ * `onBatch` is called after each batch that indexed something (People and
+ * Companies refresh then). A meeting that cannot be indexed (no longer
+ * readable) is not retried in the same run, so the loop always finishes.
+ */
+export async function syncPeopleIndexInBatches(
+  store: OrganiseStore | null = organiseStore(),
+  opts: { batchSize?: number; maxBatches?: number; onBatch?: (indexedSoFar: number) => void; pause?: () => Promise<void>; user?: { email?: string; name?: string } | null } = {},
+): Promise<number> {
+  if (!store) return 0;
+  const batchSize = Math.max(1, opts.batchSize ?? PEOPLE_INDEX_BATCH);
+  const maxBatches = Math.max(1, opts.maxBatches ?? PEOPLE_INDEX_MAX_BATCHES);
+  const pause = opts.pause ?? yieldToEventLoop;
+  const user = opts.user === undefined ? currentUser() : opts.user;
+  const tried = new Set<string>();
+  let total = 0;
+  for (let batch = 0; batch < maxBatches; batch += 1) {
+    // Ask for more than one batch so ids that failed earlier do not hide new ones.
+    const ids = store.unindexedMeetingIds(batchSize + tried.size).filter((id) => !tried.has(id)).slice(0, batchSize);
+    if (ids.length === 0) break;
+    for (const id of ids) {
+      tried.add(id);
+      try { indexMeetingPeople(id, store, user); } catch { /* skipped this run */ }
+    }
+    total += ids.length;
+    try { opts.onBatch?.(total); } catch { /* a closing window */ }
+    await pause();
+  }
+  return total;
+}
+
+let backgroundIndex: Promise<number> | null = null;
+
+/**
+ * The rest of the index after the first batch, in the background, one run at a
+ * time: a second call while one runs joins it.
+ */
+export function indexRemainingPeopleInBackground(store: OrganiseStore | null, onBatch: () => void): Promise<number> {
+  if (backgroundIndex) return backgroundIndex;
+  backgroundIndex = syncPeopleIndexInBatches(store, { onBatch: () => onBatch() })
+    .catch(() => 0)
+    .finally(() => { backgroundIndex = null; });
+  return backgroundIndex;
 }
 
 /** A saved meeting's facts for the folder rules. */

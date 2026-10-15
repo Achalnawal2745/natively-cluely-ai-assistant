@@ -1564,6 +1564,8 @@ export interface OrganiseCompanyDetail extends OrganiseCompany {
   openActionItems: OrganiseActionItem[]
 }
 export interface OrganiseApi {
+  /** Older meetings were indexed in the background; refresh People / Companies. Returns the unsubscribe. */
+  onPeopleIndexed?: (callback: () => void) => () => void
   listFolders: () => Promise<OrganiseFolder[]>
   createFolder: (name: string) => Promise<OrganiseFolder | null>
   renameFolder: (id: string, name: string) => Promise<boolean>

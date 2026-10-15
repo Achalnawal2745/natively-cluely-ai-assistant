@@ -5,6 +5,9 @@
 // Secrets never cross this boundary: the renderer sends a token or webhook URL
 // once, to save it, and only ever reads back whether one is saved.
 
+/** The longest Slack draft Natively sends (the composer shows a counter against it). */
+export const SLACK_DRAFT_MAX_CHARS = 40_000;
+
 export type ConnectionService = 'slack' | 'notion' | 'hubspot' | 'attio' | 'affinity';
 export type CrmService = 'hubspot' | 'attio' | 'affinity';
 
@@ -114,9 +117,15 @@ export interface MeetingOutputsApi {
     /** The editable Slack draft for a meeting (mrkdwn). Nothing is sent. */
     composeSlack: (meetingId: string, opts: { includeActionItems: boolean }) => Promise<OutputResult & { text?: string; title?: string }>;
     sendSlack: (payload: { webhookId: string; meetingId: string; text: string }) => Promise<OutputResult>;
-    sendNotion: (meetingId: string, opts: { includeTranscript: boolean }) => Promise<OutputResult & { url?: string }>;
+    /**
+     * Makes a Notion page. When an earlier page for this meeting is missing part of
+     * its notes, it is refused (`partial`) unless `startOver` asks for a new page.
+     */
+    sendNotion: (meetingId: string, opts: { includeTranscript: boolean; startOver?: boolean }) => Promise<OutputResult & { url?: string; partial?: boolean }>;
+    /** Appends the rest of the notes to that half-made page. */
+    resumeNotion: (meetingId: string) => Promise<OutputResult & { url?: string; partial?: boolean }>;
     previewCrm: (meetingId: string, service: CrmService) => Promise<CrmMatchPreview>;
-    sendCrm: (meetingId: string, service: CrmService, emails: string[]) => Promise<OutputResult & { notesCreated?: number }>;
+    sendCrm: (meetingId: string, service: CrmService, emails: string[]) => Promise<OutputResult & { notesCreated?: number; /** People still without the note after a partial failure. */ remaining?: number }>;
 
     setMcpEnabled: (enabled: boolean) => Promise<McpServerStatus>;
     resetMcpToken: () => Promise<McpServerStatus>;
