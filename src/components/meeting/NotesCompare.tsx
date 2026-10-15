@@ -8,8 +8,13 @@ const texts = (v: unknown): string[] => (Array.isArray(v) ? v : [])
     .map((x: any) => (typeof x === 'string' ? x : String(x?.text ?? x?.item?.text ?? '')).trim())
     .filter(Boolean);
 
-/** One version's notes, plainly: the summary, the template's sections, the action items. */
+/**
+ * One version's notes, plainly: the overview, the summary, the template's
+ * sections, the action items. Everything that can differ between two versions
+ * is shown, so two that differ only in their overview do not look the same.
+ */
 const NotesColumn: React.FC<{ notes: any; t: (s: string) => string }> = ({ notes, t }) => {
+    const overview = typeof notes?.overview === 'string' ? notes.overview.trim() : '';
     const tldr = texts(notes?.tldr);
     const sections = (Array.isArray(notes?.sectionsV3) ? notes.sectionsV3 : Array.isArray(notes?.sections) ? notes.sections : [])
         .map((s: any) => ({ title: String(s?.title ?? '').trim(), bullets: texts(s?.bullets) }))
@@ -28,14 +33,12 @@ const NotesColumn: React.FC<{ notes: any; t: (s: string) => string }> = ({ notes
     const heading = (s: string) => <p className="text-[12.5px] font-semibold text-text-primary mt-4 mb-2 first:mt-0">{s}</p>;
     return (
         <div className="min-w-0">
+            {overview && <p className="text-[12.5px] text-text-secondary leading-relaxed mb-4 last:mb-0">{overview}</p>}
             {tldr.length > 0 && <>{heading(t('Summary'))}{list(tldr)}</>}
             {sections.map((s: { title: string; bullets: string[] }, i: number) => (
                 <React.Fragment key={i}>{heading(s.title || t('Notes'))}{list(s.bullets)}</React.Fragment>
             ))}
             {actions.length > 0 && <>{heading(t('Action items'))}{list(actions)}</>}
-            {tldr.length === 0 && sections.length === 0 && actions.length === 0 && typeof notes?.overview === 'string' && (
-                <p className="text-[12.5px] text-text-secondary leading-relaxed">{notes.overview}</p>
-            )}
         </div>
     );
 };

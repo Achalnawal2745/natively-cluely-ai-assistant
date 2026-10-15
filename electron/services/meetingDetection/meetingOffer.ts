@@ -101,6 +101,8 @@ interface Current {
     start: MeetingStartRequestLike;
     countdown: unknown;
     expiry: unknown;
+    /** Whether its OS notification was shown (it says whether Natively starts by itself). */
+    notified: boolean;
 }
 
 export class MeetingOffers {
@@ -150,29 +152,57 @@ export class MeetingOffers {
             start: input.start,
             countdown: auto ? this.setT(() => this.fire(id), this.countdownMs) : null,
             expiry: this.setT(() => { if (this.current?.view.id === id) this.clear('expired'); }, this.options.expireMs ?? OFFER_EXPIRE_MS),
+            notified: false,
         };
         this.current = current;
         try { this.deps.showPanel(view); } catch { /* the notification still shows */ }
         let focused = false;
         try { focused = this.deps.launcherFocused(); } catch { /* not focused */ }
         if (!focused) {
-            const text = offerNotificationText(input.body, auto, this.countdownMs);
-            const startReq = input.start;
-            const shown = this.deps.notify({
-                ...text,
-                // A notification's Start acts on its own call even after the
-                // panel moved on; a meeting already running wins.
-                onStart: () => {
-                    if (this.current?.view.id === id) this.clear('started');
-                    if (!this.deps.isMeetingActive()) this.deps.requestStart(startReq);
-                },
-                onDismiss: () => this.dismiss(id),
-            });
-            this.deps.log?.(`offer ${id}: notification ${shown ? 'shown' : 'not supported'}${auto ? ', starts automatically' : ''}`);
+            current.notified = this.notifyFor(id, input, auto);
+            this.deps.log?.(`offer ${id}: notification ${current.notified ? 'shown' : 'not supported'}${auto ? ', starts automatically' : ''}`);
         } else {
             this.deps.log?.(`offer ${id}: launcher in front, panel only${auto ? ', starts automatically' : ''}`);
         }
         return view;
+    }
+
+    private notifyFor(id: string, input: OfferInput, auto: boolean): boolean {
+        const text = offerNotificationText(input.body, auto, this.countdownMs);
+        const startReq = input.start;
+        return this.deps.notify({
+            ...text,
+            // A notification's Start acts on its own call even after the
+            // panel moved on; a meeting already running wins.
+            onStart: () => {
+                if (this.current?.view.id === id) this.clear('started');
+                if (!this.deps.isMeetingActive()) this.deps.requestStart(startReq);
+            },
+            onDismiss: () => this.dismiss(id),
+        });
+    }
+
+    /**
+     * Start automatically was switched off: a countdown running now stops,
+     * and the offer stays as a plain Start / Not now (its notification, if
+     * one said Natively starts by itself, is replaced by the plain one).
+     */
+    autoStartOff(): void {
+        const cur = this.current;
+        if (!cur || cur.countdown === null) return;
+        this.clearT(cur.countdown);
+        cur.countdown = null;
+        this.showWithoutCountdown(cur);
+    }
+
+    private showWithoutCountdown(cur: Current): void {
+        cur.view = { ...cur.view, autoStartAt: null };
+        try { this.deps.showPanel(cur.view); } catch { /* window gone */ }
+        if (cur.notified) {
+            try { this.deps.closeNotification(); } catch { /* already gone */ }
+            cur.notified = this.notifyFor(cur.view.id, cur.input, false);
+        }
+        this.deps.log?.(`offer ${cur.view.id}: Start automatically turned off, countdown stopped`);
     }
 
     /** Start pressed on the panel. False when that offer is gone. */
@@ -237,6 +267,14 @@ export class MeetingOffers {
     private fire(id: string): void {
         const cur = this.current;
         if (!cur || cur.view.id !== id) return;
+        // The setting may have been turned off during the countdown.
+        let auto = false;
+        try { auto = this.deps.autoStart(); } catch { auto = false; }
+        if (!auto) {
+            cur.countdown = null;
+            this.showWithoutCountdown(cur);
+            return;
+        }
         // The call may have ended between the detector's polls.
         let stillOn = true;
         try { stillOn = cur.callId === null || !this.deps.callStillOn || this.deps.callStillOn(cur.callId); } catch { stillOn = false; }

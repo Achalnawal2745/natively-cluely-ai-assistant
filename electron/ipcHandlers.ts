@@ -16475,6 +16475,8 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle('set-meeting-auto-start-enabled', async (_, on: boolean) => {
     if (typeof on !== 'boolean') return { success: false };
     if (!SettingsManager.getInstance().set('meetingAutoStartEnabled', on)) return { success: false, error: 'settings_store_degraded' };
+    // Off stops a countdown running now; the offer stays as plain Start / Not now.
+    if (!on) require('./services/meetingDetection/wireMeetingDetection').getMeetingOffers()?.autoStartOff();
     return { success: true };
   });
   // The launcher's "meeting detected" panel: Start and Not now

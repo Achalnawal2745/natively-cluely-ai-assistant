@@ -11,6 +11,7 @@
  * Pure: the provider instance, clock and sleep are injected.
  */
 import type { ReplayableStt, SpeechClip } from '../../audio/sttGapRecovery';
+import { providerHasPendingWork, sttTailTimingFor } from '../../audio/sttTailTiming';
 
 export interface DictationAudio {
     frames: Array<{ pcm: Buffer; rate: number }>;
@@ -43,12 +44,8 @@ export const LIVE_SESSION_DEFAULTS: LiveSessionOptions = {
  * be running inference, or loading.
  */
 export function liveTimingFor(providerId: string, opts: { openAiCustomEndpoint?: boolean } = {}): Pick<LiveSessionOptions, 'idleMs' | 'timeoutMs'> {
-    if (providerId === 'groq' || providerId === 'azure' || providerId === 'ibmwatson' || (providerId === 'openai' && opts.openAiCustomEndpoint)) {
-        return { idleMs: 8_000, timeoutMs: 45_000 };
-    }
-    if (providerId === 'local-whisper') return { idleMs: 30_000, timeoutMs: 120_000 };
-    if (providerId === 'apple-speech') return { idleMs: 3_000, timeoutMs: 20_000 };
-    return { idleMs: LIVE_SESSION_DEFAULTS.idleMs, timeoutMs: LIVE_SESSION_DEFAULTS.timeoutMs };
+    // One table for dictation and the meeting-end drain of a stand-in (audio/sttTailTiming.ts).
+    return sttTailTimingFor(providerId, opts);
 }
 
 /** Frame RMS that counts as speech (the native VAD's start level, as gap recovery uses). */
@@ -158,13 +155,8 @@ export class LiveDictationSession {
             // upload in flight or queued (Groq, Azure, IBM Watson, OpenAI in
             // REST mode), a final being transcribed by a local model. Without
             // that, a final it announced at finalize() counts.
-            const busy = (): boolean => {
-                const probe = (stt as { hasPendingWork?: () => boolean }).hasPendingWork;
-                if (typeof probe === 'function') {
-                    try { return probe.call(stt) === true; } catch { return false; }
-                }
-                return this.finalPending;
-            };
+            const canSay = typeof (stt as { hasPendingWork?: unknown }).hasPendingWork === 'function';
+            const busy = (): boolean => (canSay ? providerHasPendingWork(stt) : this.finalPending);
             // Until the provider has nothing on its way and has gone quiet for
             // its own idle time; never past its hard limit.
             while (

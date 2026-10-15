@@ -35,6 +35,7 @@
  */
 
 import { isCoveredByLive, type SttSource } from './sttGapRecovery';
+import { providerHasPendingWork, sttTailTimingFor, type SttTailTiming } from './sttTailTiming';
 
 /** The provider surface used here (main's STTProvider shares it). */
 export interface LiveStt {
@@ -81,6 +82,9 @@ export interface SttFailoverDeps {
     onStatus: (status: FailoverStatus) => void;
     /** Reconnects the primary from scratch (stop, then start). */
     restartPrimary: () => void;
+    /** The last-words wait for a stand-in at the meeting's end (default sttTailTimingFor). */
+    tailTiming?: (id: string) => SttTailTiming;
+    sleep?: (ms: number) => Promise<void>;
     now?: () => number;
     setInterval?: (fn: () => void, ms: number) => unknown;
     clearInterval?: (handle: unknown) => void;
@@ -239,6 +243,45 @@ export class SttFailover {
     notifySpeechEnded(): void {
         if (this.fallback) {
             try { this.fallback.stt.notifySpeechEnded?.(); } catch { /* optional */ }
+        }
+    }
+
+    /**
+     * The meeting is ending while a stand-in leads: its audio is over, so it
+     * is told so and its last words are waited for (an upload in flight, a
+     * local final being transcribed, or until it has gone quiet for its own
+     * idle time; never past its hard limit), with its text still reaching the
+     * transcript. Resolves at once when no stand-in is running, so a normal
+     * meeting end is not delayed. stop() comes after.
+     */
+    async drain(): Promise<void> {
+        const fb = this.fallback;
+        if (!fb || this.phase !== 'fallback') return;
+        const timing = (this.deps.tailTiming ?? ((id: string) => sttTailTimingFor(id)))(fb.id);
+        const sleep = this.deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+        let lastEventAt = this.now();
+        let finalAnnounced = false;
+        let finalSeen = false;
+        const onSeg = (seg: LiveSegment) => {
+            lastEventAt = this.now();
+            if (seg?.isFinal) finalSeen = true;
+        };
+        fb.stt.on('transcript', onSeg);
+        try {
+            try { fb.stt.notifySpeechEnded?.(); } catch { /* optional */ }
+            try { finalAnnounced = (fb.stt as { finalize?: () => unknown }).finalize?.() === true; } catch { /* optional */ }
+            const start = this.now();
+            const canSay = typeof (fb.stt as { hasPendingWork?: unknown }).hasPendingWork === 'function';
+            const busy = () => (canSay ? providerHasPendingWork(fb.stt) : finalAnnounced && !finalSeen);
+            while (
+                this.fallback === fb
+                && this.now() - start < timing.timeoutMs
+                && (busy() || this.now() - lastEventAt < timing.idleMs)
+            ) {
+                await sleep(Math.max(1, Math.min(200, timing.idleMs)));
+            }
+        } finally {
+            try { (fb.stt as { removeListener?: (e: string, f: unknown) => unknown }).removeListener?.('transcript', onSeg); } catch { /* retired */ }
         }
     }
 

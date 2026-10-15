@@ -115,3 +115,15 @@ test('a template refused for want of Pro stays pickable (main checks again), kee
     for (const ev of ['onLicenseStatusChanged', 'onTrialStarted', 'onTrialEnded']) assert.ok(forget.includes(ev), ev);
     assert.match(page, /next\.delete\(okId\)/, 'a success clears that template\'s mark');
 });
+
+test('Compare shows each version\'s overview with its sections, so an overview-only difference shows', () => {
+    const cmp = live(read('../NotesCompare.tsx'));
+    const col = cmp.slice(cmp.indexOf('const NotesColumn'), cmp.indexOf('const NotesColumn') + 2500);
+    assert.match(col, /const overview = typeof notes\?\.overview === 'string' \? notes\.overview\.trim\(\) : ''/);
+    assert.match(col, /\{overview && <p[^>]*>\{overview\}<\/p>\}/);
+    assert.doesNotMatch(col, /tldr\.length === 0 && sections\.length === 0 && actions\.length === 0/, 'no longer only when nothing else is there');
+    // Main sends the overview through untouched (only identifying fields are taken out).
+    const main = readFileSync(join(HERE, '../../../../electron/services/meeting/notesCompare.ts'), 'utf8');
+    assert.match(main, /const IDENTIFYING_FIELDS = \[[^\]]*\]/);
+    assert.doesNotMatch(main.match(/const IDENTIFYING_FIELDS = \[[^\]]*\]/)[0], /overview/);
+});

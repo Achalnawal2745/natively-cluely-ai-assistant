@@ -7506,6 +7506,14 @@ export class AppState {
     // over the next ~150ms while we're already returning to the renderer.
     this.googleSTT?.finalize?.();
     this.googleSTT_User?.finalize?.();
+    // A failover stand-in carrying a channel (audio/sttFailover.ts) gets the
+    // same: told the audio is over, and waited for (bounded, per provider)
+    // before the providers stop and the transcript is saved. Resolves at once
+    // when no stand-in runs, so a normal Stop saves as promptly as before.
+    const standInDrain = Promise.all([
+      this._sttFailover.system?.drain(),
+      this._sttFailover.mic?.drain(),
+    ]).then((): void => undefined, (): void => undefined);
 
     // ─── BACKGROUND: STT drain + meeting save + RAG embed ────────────────
     // Note: `isMeetingActive` was already flipped to false synchronously above
@@ -7549,6 +7557,8 @@ export class AppState {
         // 1. Grace window for STT trailing finals (Google/Soniox/Deepgram all
         //    reply to finalize() within 100–200ms). 250ms is conservative.
         await new Promise(resolve => setTimeout(resolve, 250));
+        // 1b. A stand-in's last words (no wait when none was running).
+        await standInDrain;
 
         // 2. Tear down STT sockets now that finals have arrived.
         this.googleSTT?.stop();
