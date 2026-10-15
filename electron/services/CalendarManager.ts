@@ -651,7 +651,10 @@ export class CalendarManager extends EventEmitter {
             body: lastTime ? `"${event.title}" starts in 2 minutes.\n${lastTime}` : `"${event.title}" starts in 2 minutes. Start Natively?`,
             actions: [
                 { type: 'button', text: 'Start Meeting' },
-                { type: 'button', text: 'Dismiss' }
+                { type: 'button', text: 'Dismiss' },
+                // A "running late" note for the people on it, drafted in the
+                // launcher for the user to send (services/assist; never sent here).
+                ...(Array.isArray(event.attendees) && event.attendees.length > 0 ? [{ type: 'button' as const, text: 'Running late' }] : []),
             ],
             // Not silent: the OS's default sound. (`sound` names a macOS sound
             // file; `true` was never a valid value.)
@@ -662,6 +665,10 @@ export class CalendarManager extends EventEmitter {
         // Electron 43: the index is `details.actionIndex`; the positional one is deprecated.
         notif.on('action', (details: any, legacyIndex?: number) => {
             const index = typeof details?.actionIndex === 'number' ? details.actionIndex : legacyIndex;
+            if (index === 2) {
+                this.emit('reminder-draft-requested', event);
+                return;
+            }
             if (index === 0) {
                 // Start Meeting
                 // We need to tell the main process to open window and start meeting

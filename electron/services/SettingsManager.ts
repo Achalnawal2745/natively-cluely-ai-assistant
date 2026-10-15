@@ -52,6 +52,12 @@ export interface AppSettings {
     meetingAutoStopEnabled?: boolean;
     // Minutes of silence before the inactivity stop. No UI yet. Unset = 15.
     meetingInactivityStopMinutes?: number;
+    // The catch-up after back-to-back meetings (2026-10-15,
+    // services/assist/backToBack.ts): decisions and the user's action items
+    // across meetings with short gaps, as one launcher card. Unset = on.
+    assistCatchUpEnabled?: boolean;
+    // The longest gap (minutes) between two meetings of one block. No UI. Unset = 15.
+    assistCatchUpGapMinutes?: number;
     // Follow the meeting app's mute (2026-10-15, Settings › Audio): while the
     // user is muted in Zoom / Teams / Meet (read from the app, never changed),
     // the mic channel carries silence of the same length. Unset = on.

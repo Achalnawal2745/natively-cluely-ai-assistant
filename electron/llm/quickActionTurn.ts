@@ -22,7 +22,9 @@ import { analyzeUserInstructions, removeGroundingOverrides, userInstructionsOver
  * transcript it weighed two or more approaches in 20 replies of 90; with the
  * request in the turn, 90 of 90 (BrainstormOwnPrompt2026_10_09.test.mjs).
  */
-export type QuickAction = 'recap' | 'follow_up_questions' | 'clarify' | 'brainstorm' | 'brainstorm_alternatives';
+export type QuickAction = 'recap' | 'follow_up_questions' | 'clarify' | 'brainstorm' | 'brainstorm_alternatives'
+    // The live helpers (2026-10-15, liveHelpers.ts): What did I miss?, Define, Sound smart.
+    | 'catch_me_up' | 'define' | 'sound_smart';
 
 // Each ends by naming the conversation's language. LLMHelper's language line
 // answers in the language of "the user's most recent message", and an English
@@ -52,9 +54,19 @@ const REQUESTS: Record<QuickAction, string> = {
     // the diagram out 5 times in 5 even with the diagram contract in the system
     // prompt; asked for here, 15 of 15 on three models carry exactly one.
     brainstorm_alternatives: 'Brainstorm alternatives to this design out loud in my voice: two or three different designs and what each one costs, then the one I would go with, drawn as one diagram',
+    // Pressed after looking away: the window is only what was said since
+    // (IntelligenceEngine.runLiveHelper picks it), so the request names it.
+    catch_me_up: 'I looked away for a few minutes. Tell me what I missed in this part of the conversation: the topic now, anything decided, anything asked of me',
+    define: 'Explain the most recent term, acronym or name in the conversation that I might not know, and what it means here',
+    // "my own words": like Brainstorm's "in my voice", so it comes back as a
+    // line to say and not as advice about what to say.
+    sound_smart: 'Give me one specific, insightful point or question I could say next, in my own words, built on what was just said',
 };
 // The request's own length, and what a length is measured outside of.
 const DEFAULT_LENGTH: Partial<Record<QuickAction, { length: string; outside: string }>> = {
+    catch_me_up: { length: 'At most four short lines', outside: '' },
+    define: { length: 'Under 50 words', outside: '' },
+    sound_smart: { length: 'Under 45 words', outside: '' },
     brainstorm: { length: 'Under 100 words', outside: '' },
     brainstorm_alternatives: { length: 'Under 100 words', outside: ' outside the diagram' },
 };

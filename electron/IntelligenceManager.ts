@@ -83,6 +83,8 @@ export class IntelligenceManager extends EventEmitter {
             'refined_answer', 'refined_answer_token',
             'recap', 'recap_token', 'clarify', 'clarify_token',
             'follow_up_questions_update', 'follow_up_questions_token',
+            // The live helpers: What did I miss?, Define, Sound smart.
+            'live_helper', 'live_helper_token',
             'manual_answer_started', 'manual_answer_result',
             'mode_changed', 'error',
             // Sprint 7: dedicated channel for negotiation coaching payloads.
@@ -343,6 +345,11 @@ export class IntelligenceManager extends EventEmitter {
 
     async runFollowUpQuestions(): Promise<string | null> {
         return this.engine.runFollowUpQuestions();
+    }
+
+    /** What did I miss?, Define, Sound smart (llm/liveHelpers.ts). */
+    async runLiveHelper(action: import('./llm/liveHelpers').LiveHelperAction, opts?: { sinceMs?: number }): Promise<string | null> {
+        return this.engine.runLiveHelper(action, opts);
     }
 
     async runManualAnswer(question: string): Promise<string | null> {
