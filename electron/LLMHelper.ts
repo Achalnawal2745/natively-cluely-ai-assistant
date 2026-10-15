@@ -3845,6 +3845,37 @@ export class LLMHelper {
   // instead of burning 400+800+1600ms of backoff on a saturated tier every call.
   // Keyed by an optional `circuitKey` passed to withRetry.
   private rateLimitCircuit = new Map<string, { openUntil: number; consecutive429: number }>();
+  // Natively plan allowance (2026-10-16). A 429 whose body names a *_quota_exceeded /
+  // plan limit is the month's allowance, not a saturated model. withRetry treated it
+  // like any 429 (400/800/1600 ms backoff) and the background loops kept calling:
+  // 4,137 refused requests in 33 h from one key. Remember the server's Retry-After
+  // and fail fast, locally, until then — bounded so a plan upgrade is noticed.
+  private nativelyQuotaBlockedUntil = 0;
+  private static readonly NATIVELY_QUOTA_BLOCK_MIN_MS = 60_000;
+  private static readonly NATIVELY_QUOTA_BLOCK_MAX_MS = 6 * 60 * 60_000;
+  private static readonly PLAN_LIMIT_RE = /\b(?:[a-z]+_)?(?:quota_exceeded|plan_limit|limit_exceeded|lifetime_exceeded)\b/;
+
+  /** Records a plan-limit 429 from the Natively API. Returns true when it was one. */
+  private noteNativelyPlanLimit(status: number, headers: { get(name: string): string | null } | null | undefined, errData: any): boolean {
+    if (status !== 429) return false;
+    const code = String(errData?.error ?? errData?.code ?? '');
+    if (!LLMHelper.PLAN_LIMIT_RE.test(code)) return false;
+    const bodySec = Number(errData?.retry_after);
+    const headerSec = Number(headers?.get?.('retry-after'));
+    const sec = Number.isFinite(bodySec) && bodySec > 0 ? bodySec : (Number.isFinite(headerSec) && headerSec > 0 ? headerSec : 0);
+    const ms = Math.min(LLMHelper.NATIVELY_QUOTA_BLOCK_MAX_MS, Math.max(LLMHelper.NATIVELY_QUOTA_BLOCK_MIN_MS, sec * 1000));
+    this.nativelyQuotaBlockedUntil = Date.now() + ms;
+    console.warn(`[NativelyAPI] plan allowance exhausted (${code}) — not calling the Natively API again for ${Math.round(ms / 60000)} min${errData?.resets_at ? ` (resets ${errData.resets_at})` : ''}`);
+    return true;
+  }
+
+  /** Throws the same quota error the server would, without a network round trip. */
+  private assertNativelyNotBlocked(requestId: string): void {
+    const until = this.nativelyQuotaBlockedUntil;
+    if (until > Date.now()) {
+      throw new Error(`Natively API HTTP 429 requestId=${requestId}: ai_quota_exceeded (plan allowance exhausted; next check ${new Date(until).toISOString()})`);
+    }
+  }
   private static readonly CIRCUIT_429_THRESHOLD = 2;      // open after N consecutive 429s
   private static readonly CIRCUIT_COOLDOWN_MS = 60_000;   // skip the saturated model for 60s
 
@@ -3869,6 +3900,9 @@ export class LLMHelper {
       } catch (e: any) {
         const msg = e.message || '';
         const status = e.status ?? e.statusCode ?? 0;
+        // A plan allowance that is used up does not come back in 400 ms. Not retryable,
+        // and not a strike against the model's breaker either.
+        if (LLMHelper.PLAN_LIMIT_RE.test(msg)) { if (circuitKey) this.rateLimitCircuit.delete(circuitKey); throw e; }
         const is429 = status === 429 || msg.includes('429') || msg.includes('rate_limit') || msg.includes('rate limit');
         // Retryable: 503 overloaded (Gemini), 529 overloaded (Claude), 429 rate-limit (OpenAI/Claude), 500 transient
         const isRetryable = msg.includes("503") || msg.includes("overloaded")
@@ -6722,6 +6756,7 @@ let isMultimodal = !!(imagePaths?.length);
 
     const endpointUrl = `${NATIVELY_API_URL}/v1/chat`;
     const requestId = makeRequestId('nat_json');
+    this.assertNativelyNotBlocked(requestId);
     const requestStartedAt = nowMs();
     // When the key is the trial sentinel, authenticate with the real trial token
     // instead — the server validates x-trial-token, not __trial__ as an API key.
@@ -6869,6 +6904,7 @@ let isMultimodal = !!(imagePaths?.length);
         const errText = await response.text().catch(() => '');
         let errData: any = {};
         try { errData = errText ? JSON.parse(errText) : {}; } catch { errData = {}; }
+        this.noteNativelyPlanLimit(response.status, response.headers, errData);
         console.error('[NativelyAPI] JSON HTTP failure', {
           requestId,
           serverRequestId,
@@ -12042,6 +12078,7 @@ let isMultimodal = !!(imagePaths?.length);
 
     const endpointUrl = `${NATIVELY_API_URL}/v1/chat`;
     const requestId = makeRequestId('nat_stream');
+    this.assertNativelyNotBlocked(requestId);
     const streamStartedAt = nowMs();
     let responseStartedAt = 0;
     let firstTokenAt = 0;
@@ -12221,6 +12258,7 @@ let isMultimodal = !!(imagePaths?.length);
       const errText = await response.text().catch(() => '');
       let errData: any = {};
       try { errData = errText ? JSON.parse(errText) : {}; } catch { errData = {}; }
+      this.noteNativelyPlanLimit(response.status, response.headers, errData);
       console.error('[NativelyAPI] stream HTTP failure', {
         requestId,
         serverRequestId,
