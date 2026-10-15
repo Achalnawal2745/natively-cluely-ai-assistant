@@ -391,14 +391,16 @@ export class RAGManager {
      */
     async *queryGlobal(
         query: string,
-        abortSignal?: AbortSignal
+        abortSignal?: AbortSignal,
+        /** Only these meetings (a folder the user is looking at). */
+        scope?: { meetingIds: string[] }
     ): AsyncGenerator<string, void, unknown> {
         if (!this.llmHelper) {
             throw new Error('LLM helper not initialized');
         }
 
-        // Retrieve from all meetings
-        const context = await this.retriever.retrieveGlobal(query);
+        // Retrieve from all meetings, or from the folder's
+        const context = await this.retriever.retrieveGlobal(query, scope ? { meetingIds: scope.meetingIds } : {});
 
         // ALWAYS ANSWER (2026-09-07, owner's direction): an empty global search
         // used to yield NO_GLOBAL_CONTEXT_FALLBACK with no model call — the

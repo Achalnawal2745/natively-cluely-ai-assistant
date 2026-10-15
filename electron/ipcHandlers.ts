@@ -47,6 +47,7 @@ import { AI_RESPONSE_LANGUAGES, RECOGNITION_LANGUAGES } from './config/languages
 import { resolveCodingPromptSignals } from './llm/codingPromptSignals';
 import { resolveDiagramTurn, v3DiagramTurn, withDiagramContract, withDiagramTurnBlock, withMeetingSpeechForDiagramTurn, liveQuestionWantsADrawing, spokenRouteCarriesContract, undecidedTurnAnsweredInWords, turnStartsAFreshDesign, DIAGRAM_SPEECH_WINDOW_SECONDS, type DiagramTurn } from './llm/diagramPromptSignals';
 import { registerDiagramIpc, broadcastDiagramsEnabled } from './services/diagram/diagramIpc';
+import { registerOrganiseIpc, reindexOrganisePeople, organiseFolderMeetingIds, organiseScopeMeetingIds } from './services/organise/organiseIpc';
 import { isBareCodeRequest, looksLikeCodingAnswer, buildPriorCodingContextBlock as buildPriorCodingBlockForV3 } from './llm/codingFollowup';
 import { planAnswer, formatAnswerPlanForPrompt, isCodingAnswerType, validateAnswerStructure, validateProfileOutput, validateProfileEvidence, buildProfileRepairInstruction, raceStreamWithDeadline, firstUsefulDeadlineMs, totalHardTimeoutMs, repairDeadlineMs, LIVE_LOCAL_FIRST_USEFUL_TIMEOUT_MS, CODING_REGEN_ABORT_CHARS, isStealthEvasionQuestion, stripProfileTokensFromCoding, isBareFollowUp, isRefinementFollowUp, buildContextFreeClarification, sanitizeCandidateAnswer, acceptRepairedAnswer, CANDIDATE_VOICE_ANSWER_TYPES, detectAssistantVoiceMisfire, ASSISTANT_VOICE_ANSWER_TYPES, piTelemetry, classifyProviderError, detectExplicitCodingContract, isCodingContinuation, buildPriorCodingContextBlock, buildCodingContractPrompt, explicitContractProducesCode, CODING_VERIFICATION_INSTRUCTION, humanizeDirectiveFor, detectCorporateFiller, humanizeForAnswerType, applySpeakabilityBudget, compressTechnicalConcept, checkCodeCompleteness, varySpokenOpening, type ExplicitCodingContract, type AnswerType } from './llm';
 
@@ -338,6 +339,9 @@ export function initializeIpcHandlers(appState: AppState): void {
   // System-design diagram artifacts: repair, export, the feature switch and
   // the Phone Mirror render path. One module, registered once here.
   registerDiagramIpc(appState, safeHandle);
+
+  // Folders, tags, People and Companies (services/organise). One module.
+  registerOrganiseIpc(appState, safeHandle);
 
   // ── Expired free trial (toaster policy Phase 0) ─────────────────────────
   // Defined above every safeHandle registration: source-contract tests scan
@@ -15135,12 +15139,14 @@ export function initializeIpcHandlers(appState: AppState): void {
       // openable. The old 50-window existed only because the renderer looked the
       // hit up in its own list.
       const db = DatabaseManager.getInstance();
-      const meetings = db.getRecentMeetings(500);
+      // A folder or tag the user is looking at narrows the search to its meetings.
+      const scopeIds = organiseScopeMeetingIds(filters);
+      const meetings = scopeIds ? db.getRecentMeetings(500).filter((m) => scopeIds.has(m.id)) : db.getRecentMeetings(500);
       // WHAT WAS SAID. Titles and summaries alone never matched the words people
       // actually used, and without a transcript line there was no moment to jump
       // to. Best line per meeting: most distinct terms, then the exact phrase, then
       // the earliest.
-      const bestLine = bestTranscriptLinePerMeeting(terms.length > 0 ? db.searchTranscriptLines(terms) : [], terms, q);
+      const bestLine = bestTranscriptLinePerMeeting(terms.length > 0 ? db.searchTranscriptLines(terms).filter((l) => !scopeIds || scopeIds.has(l.meetingId)) : [], terms, q);
       const candidates: SearchCandidate[] = [];
       for (const m of meetings) {
         const ds: any = m.detailedSummary || {};
@@ -15193,7 +15199,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         const hsCfg = _hm.getHindsightConfig();
         // Short-circuit a known-down server (cached health) so search doesn't pay the 2s
         // recall timeout when Hindsight is unreachable (2026-06-14 fix).
-        if (isIntelligenceFlagEnabled('hindsightMemory') && hsCfg && _hm.isAvailable()) {
+        // Not for a folder search: long-term memories are not tied to a folder.
+        if (!scopeIds && isIntelligenceFlagEnabled('hindsightMemory') && hsCfg && _hm.isAvailable()) {
           const { LongTermMemoryService } = require('./intelligence/memory/LongTermMemoryService') as typeof import('./intelligence/memory/LongTermMemoryService');
           const ltm = LongTermMemoryService.fromFlags({ hindsight: { ...hsCfg, timeoutMs: 2000 } });
           if (ltm.enabled) {
@@ -15393,6 +15400,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         sanitized,
         applyToNotes ? (d: any) => svc.applyRenamesToSummary(d, d?.speakerLabels, sanitized) : undefined,
       );
+      // The names are people the user met (People view).
+      if (ok) { try { reindexOrganisePeople(id); } catch { /* re-read later */ } }
       return { success: ok, labels: sanitized, notesUpdated: ok && applyToNotes };
     } catch (e: any) {
       return { success: false, error: e?.message || 'failed' };
@@ -16676,6 +16685,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         }
       }
       if (ok) {
+        // The invite's people are who the meeting was with (People view).
+        try { reindexOrganisePeople(meetingId); } catch { /* re-read later */ }
         BrowserWindow.getAllWindows().forEach((w) => { if (!w.isDestroyed()) w.webContents.send('meetings-updated'); });
       }
       return { success: ok };
@@ -17026,12 +17037,14 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   // Query global (cross-meeting search)
-  safeHandle('rag:query-global', async (event, { query }: { query: string }) => {
+  safeHandle('rag:query-global', async (event, { query, folderId }: { query: string; folderId?: string }) => {
     const ragManager = appState.getRAGManager();
 
     if (!ragManager || !ragManager.isReady()) {
       return { fallback: true };
     }
+    // Asked from a folder: only that folder's meetings are searched.
+    const scope = typeof folderId === 'string' && folderId ? { meetingIds: organiseFolderMeetingIds(folderId) } : undefined;
 
     abortPriorRAGQueriesOfClass((key) => key.startsWith('global-'));
     const abortController = new AbortController();
@@ -17040,7 +17053,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     activeRAGQueries.set(queryKey, abortController);
 
     try {
-      const stream = ragManager.queryGlobal(query, abortController.signal);
+      const stream = ragManager.queryGlobal(query, abortController.signal, scope);
 
       for await (const chunk of stream) {
         if (abortController.signal.aborted) break;
