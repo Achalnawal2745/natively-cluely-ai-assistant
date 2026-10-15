@@ -10,6 +10,7 @@ import { decodeUsageMetadata, encodeUsageMetadata } from './usageMetadata';
 import { encodeSavedOrigin, decodeSavedOrigin } from '../intelligence/savedTranscriptOrigin';
 import { parseVecTableName, readPendingVecRebuilds, writePendingVecRebuilds, type PendingVecRebuild } from './vecRebuildPending';
 import { prepareVecRowWriter } from './vecRowWrite';
+import { ensureOrganiseSchema, ORGANISE_TABLES } from './organiseSchema';
 import type { ActionItem, DecisionItem, FollowUpDraft, MeetingSummaryGenerationMeta, MeetingSummaryModeMeta, MeetingSummarySectionV3, NoteBlock, PersonMention, QuestionItem, RiskItem, SourceQualityMeta, SpeakerLabelMap, SummaryStatus, TimelineItem } from '../services/meeting/types';
 
 // Interfaces for our data objects
@@ -496,6 +497,9 @@ export class DatabaseManager {
             // After the migrations (it alters `meetings`); not version-gated.
             this.ensureLiveMeetingSchema();
             this.ensureMeetingNotesSchema();
+            // Folders, tags, people, companies (organiseSchema.ts). Same rule:
+            // idempotent and not behind user_version.
+            ensureOrganiseSchema(this.db);
         } catch (error) {
             console.error('[DatabaseManager] Failed to initialize database:', error);
             throw error;
@@ -4594,6 +4598,11 @@ export class DatabaseManager {
                 this.db!.exec('DELETE FROM meetings');
                 // A meeting in progress is data too (LiveMeetingJournal).
                 try { this.db!.exec('DELETE FROM live_meeting_journal'); } catch (_) { /* table may not exist */ }
+                // Folders, tags, people and companies hold what the meetings said
+                // about people (and the user's notes on them): all data.
+                for (const table of ORGANISE_TABLES) {
+                    try { this.db!.exec(`DELETE FROM ${table}`); } catch (_) { /* table may not exist */ }
+                }
             })();
 
             console.log('[DatabaseManager] All data cleared from database.');

@@ -943,7 +943,10 @@ interface ElectronAPI {
   ) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>;
   ragQueryGlobal: (
     query: string,
+    scope?: { folderId?: string },
   ) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>;
+  /** Folders, tags, People and Companies (electron/services/organise/organiseIpc.ts). */
+  organise: Record<string, (...args: any[]) => Promise<any>>;
   ragCancelQuery: (options: {
     meetingId?: string;
     global?: boolean;
@@ -2933,7 +2936,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ragQueryMeeting: (meetingId: string, query: string) =>
     ipcRenderer.invoke('rag:query-meeting', { meetingId, query }),
   ragQueryLive: (query: string) => ipcRenderer.invoke('rag:query-live', { query }),
-  ragQueryGlobal: (query: string) => ipcRenderer.invoke('rag:query-global', { query }),
+  ragQueryGlobal: (query: string, scope?: { folderId?: string }) => ipcRenderer.invoke('rag:query-global', { query, ...(scope?.folderId ? { folderId: scope.folderId } : {}) }),
+  organise: {
+    listFolders: () => ipcRenderer.invoke('organise:folders:list'),
+    createFolder: (name: string) => ipcRenderer.invoke('organise:folders:create', { name }),
+    renameFolder: (id: string, name: string) => ipcRenderer.invoke('organise:folders:rename', { id, name }),
+    deleteFolder: (id: string) => ipcRenderer.invoke('organise:folders:delete', { id }),
+    setFolderRules: (id: string, rules: Array<{ kind: string; value: string }>) => ipcRenderer.invoke('organise:folders:set-rules', { id, rules }),
+    applyFolderRulesToPast: (id: string) => ipcRenderer.invoke('organise:folders:apply-past', { id }),
+    dismissPastOffer: (id: string) => ipcRenderer.invoke('organise:folders:dismiss-past', { id }),
+    getMeeting: (meetingId: string) => ipcRenderer.invoke('organise:meeting:get', { meetingId }),
+    setMeetingFolder: (meetingId: string, folderId: string, inFolder: boolean) => ipcRenderer.invoke('organise:meeting:set-folder', { meetingId, folderId, inFolder }),
+    setMeetingTags: (meetingId: string, tags: string[]) => ipcRenderer.invoke('organise:meeting:set-tags', { meetingId, tags }),
+    listMeetings: (filter: { folderId?: string; tag?: string }) => ipcRenderer.invoke('organise:meetings:list', filter || {}),
+    listTags: () => ipcRenderer.invoke('organise:tags:list'),
+    listPeople: (query?: string) => ipcRenderer.invoke('organise:people:list', { query }),
+    getPerson: (id: string) => ipcRenderer.invoke('organise:people:get', { id }),
+    updatePerson: (id: string, patch: Record<string, string>) => ipcRenderer.invoke('organise:people:update', { id, patch }),
+    resolveFact: (factId: number, accept: boolean) => ipcRenderer.invoke('organise:people:resolve-fact', { factId, accept }),
+    listCompanies: (query?: string) => ipcRenderer.invoke('organise:companies:list', { query }),
+    getCompany: (domain: string) => ipcRenderer.invoke('organise:companies:get', { domain }),
+    updateCompany: (domain: string, patch: Record<string, string>) => ipcRenderer.invoke('organise:companies:update', { domain, patch }),
+    draftCompanyDescription: (domain: string) => ipcRenderer.invoke('organise:companies:draft-description', { domain }),
+  },
   ragCancelQuery: (options: { meetingId?: string; global?: boolean }) =>
     ipcRenderer.invoke('rag:cancel-query', options),
   ragIsMeetingProcessed: (meetingId: string) =>

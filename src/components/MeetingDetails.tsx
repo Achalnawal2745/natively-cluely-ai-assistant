@@ -13,6 +13,7 @@ import GlassSurface from '../ui-components/GlassSurface';
 import '../ui-components/LiquidGlassButton.css';
 import { LiquidGlassButton } from '../ui-components/LiquidGlassButton';
 import EditableTextBlock from './EditableTextBlock';
+import { OrganiseChip } from './organise/MeetingOrganiseMenu';
 import NativelyLogo from './icon.png';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -2900,6 +2901,8 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                     {/* Which calendar event this was: linked, or offered when a calendar
                                         is connected. A meeting-level action, so it sits with Copy rather
                                         than on the date line. See meeting/CalendarLinkChip. */}
+                                    {/* Which folders it is in, and its tags (organise/MeetingOrganiseMenu). */}
+                                    <OrganiseChip meetingId={meeting.id} isLight={isLight} />
                                     <CalendarLinkChip meetingId={meeting.id} meetingTitle={meeting.title} event={meeting.calendarEvent} isLight={isLight} onChanged={reloadMeeting} />
                                     {/* Export and send: PDF, a shareable file, Slack, Notion, CRM (meeting/ShareMenu). */}
                                     <ShareMenu
