@@ -164,3 +164,8 @@ test('the providers that upload or infer after the audio say when work is still 
     assert.equal(liveTimingFor('local-whisper').idleMs, 30_000);
     for (const id of ['deepgram', 'soniox', 'elevenlabs', 'natively', 'google', 'nvidia_nim', 'openai']) assert.equal(liveTimingFor(id).idleMs, 1_500, id);
 });
+
+test('a restored offer respects Undetectable and disguises like a new one', () => {
+    const src = fs.readFileSync(path.join(REPO, 'electron/services/meetingDetection/wireMeetingDetection.ts'), 'utf8');
+    assert.match(src, /onBack: \(id\) => \{\s*if \(deps\.promptsBlocked\(\)\) return;\s*offers\.callBack\(id\);/);
+});
