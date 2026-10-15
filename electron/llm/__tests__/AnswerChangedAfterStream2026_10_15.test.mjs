@@ -108,10 +108,13 @@ describe('an accepted draft is marked, and gives way to the user\'s own notes', 
   test('the notice adds the rule only when an accepted draft is in the evidence', () => {
     const fact = (text) => `<evidence source_type="PROFILE_FACT">${text}</evidence>`;
     const drafted = composer.ownAnswersNotice(fact('Why you left. A suggested answer drafted from the résumé, which the user accepted without changing it: …'));
-    assert.match(drafted, /when the user's own notes or files answer the same question, say what those say instead/);
+    assert.match(drafted, /When anything else the user wrote covers the same question \(their notes or files, source_type="REFERENCE_FILE"\), answer from that and leave the suggestion out entirely/);
+    assert.match(drafted, /what ONE entry in the user's own words is headed for, that entry is the answer/);
     const typed = composer.ownAnswersNotice(fact("Biggest weakness. The user's own answer, in their words: …"));
     assert.ok(typed.length > 0);
     assert.doesNotMatch(typed, /suggested answer drafted/);
+    // With no accepted draft the notice is word for word what it was (the 2026-10-14 measurements stand).
+    assert.match(typed, /When the question asks about what ONE entry is headed for, that entry is the answer/);
     assert.equal(composer.ownAnswersNotice('<evidence source_type="RESUME">…</evidence>'), '');
   });
 });

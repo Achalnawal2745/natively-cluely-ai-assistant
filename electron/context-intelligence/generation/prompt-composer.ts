@@ -1174,17 +1174,25 @@ function exactValueGuard(question: string, hasEvidence: boolean): string {
  */
 export function ownAnswersNotice(evidenceBlock: string): string {
   if (!evidenceBlock.includes('source_type="PROFILE_FACT"')) return '';
+  // An entry the user accepted from Natively's draft (profile-retrieval-port, DRAFTED_MARK) is not their own words.
+  // Replayed 2026-10-16: with "that entry is the answer" left standing for it and a softer caveat after, the model
+  // still said the drafted reason for leaving over the one the user's notes give. So the strong rule names only the
+  // user's own words when a draft is present, and the draft is the last resort.
+  const drafted = evidenceBlock.includes('drafted from the résumé, which the user accepted');
   return 'An item with source_type="PROFILE_FACT" holds what the user wrote about themselves: their own answers to '
     + 'questions such as their weakness, why they left a job, or the salary they expect. Each entry is headed by what it '
-    + 'answers. When the question asks about what ONE entry is headed for, that entry is the answer: say it in the first '
+    + 'answers. When the question asks about what ONE entry '
+    + (drafted ? 'in the user\'s own words ' : '')
+    + 'is headed for, that entry is the answer: say it in the first '
     + 'person, close to their words, and add no reason, detail, number, example or benefit of your own. Pick the entry by '
     + 'what is being asked (pay, base or compensation is the salary entry), never by words its text happens to share '
     + 'with the question. It settles the question over a job description or '
     + 'anything the other side said about the same thing (the salary the user expects is their own range, not the '
     + 'posting\'s). An entry the question does not ask about is not volunteered.'
-    + (evidenceBlock.includes('drafted from the résumé, which the user accepted')
-      ? ' An entry marked as a suggested answer drafted from the résumé is weaker: when the user\'s own notes or files '
-        + 'answer the same question, say what those say instead.'
+    + (drafted
+      ? ' An entry marked as a suggested answer drafted from the résumé is NOT the user\'s own words and settles nothing. '
+        + 'When anything else the user wrote covers the same question (their notes or files, source_type="REFERENCE_FILE"), '
+        + 'answer from that and leave the suggestion out entirely. Use the suggestion only when nothing else covers the question.'
       : '')
     + '\n\n';
 }
