@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { SkillUploadPayload } from './services/skills/SkillValidator';
 import type { NativelyUsageResponse, NativelyPlansResponse } from '../src/types/nativelyUsage';
+import type { MeetingOutputsApi } from '../src/types/meetingOutputs';
 import { PAGE_CAPTURE_FALLBACK_CHANNEL, PAGE_CAPTURE_STARTED_CHANNEL, type PageCaptureFallbackNotice } from './services/pageCaptureFallback';
 import type { CalendarSourceId as CalendarSourceIdInfo, CalendarSourceStatus as CalendarSourceStatusInfo } from './services/calendar/providers/types';
 
@@ -575,6 +576,8 @@ interface ElectronAPI {
   acceptDiagramRepair: (payload: { originalSource: string; repairedSource: string }) => Promise<boolean>;
   /** Save a diagram the renderer produced (svg text, base64 png, or Mermaid source). */
   exportDiagram: (payload: { format: 'svg' | 'png' | 'mmd' | 'json' | 'csv'; data: string; name?: string }) => Promise<{ saved: boolean; canceled?: boolean; fileName?: string; silent?: boolean; error?: string }>;
+  /** Meeting outputs: export, Slack, Notion, CRM notes, the local MCP server, follow-up style (services/outputs). */
+  meetingOutputs: MeetingOutputsApi;
   /** The main process asks this window to draw a diagram for the phone. */
   onDiagramRenderRequest: (callback: (request: { requestId: string; key: string; source: string }) => void) => () => void;
   sendDiagramRenderResult: (result: { requestId: string; key: string; ok: boolean; svg?: string }) => void;
@@ -2204,6 +2207,35 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cancelDiagramRepair: (requestId: string) => ipcRenderer.invoke('diagram:repair-cancel', requestId),
   acceptDiagramRepair: (payload: { originalSource: string; repairedSource: string }) => ipcRenderer.invoke('diagram:repair-accepted', payload),
   exportDiagram: (payload: { format: 'svg' | 'png' | 'mmd' | 'json' | 'csv'; data: string; name?: string }) => ipcRenderer.invoke('diagram:export', payload),
+  meetingOutputs: {
+    exportPdf: (meetingId) => ipcRenderer.invoke('outputs:export-pdf', meetingId),
+    exportHtml: (meetingId, opts) => ipcRenderer.invoke('outputs:export-html', meetingId, opts),
+    getConnections: () => ipcRenderer.invoke('outputs:get-connections'),
+    addSlackWebhook: (label, url) => ipcRenderer.invoke('outputs:slack-add', label, url),
+    removeSlackWebhook: (id) => ipcRenderer.invoke('outputs:slack-remove', id),
+    testSlackWebhook: (id) => ipcRenderer.invoke('outputs:slack-test', id),
+    saveToken: (service, token) => ipcRenderer.invoke('outputs:save-token', service, token),
+    testConnection: (service) => ipcRenderer.invoke('outputs:test', service),
+    disconnect: (service) => ipcRenderer.invoke('outputs:disconnect', service),
+    searchNotion: (query) => ipcRenderer.invoke('outputs:notion-search', query),
+    setNotionParent: (parent) => ipcRenderer.invoke('outputs:notion-set-parent', parent),
+    composeSlack: (meetingId, opts) => ipcRenderer.invoke('outputs:slack-compose', meetingId, opts),
+    sendSlack: (payload) => ipcRenderer.invoke('outputs:slack-send', payload),
+    sendNotion: (meetingId, opts) => ipcRenderer.invoke('outputs:notion-send', meetingId, opts),
+    previewCrm: (meetingId, service) => ipcRenderer.invoke('outputs:crm-preview', meetingId, service),
+    sendCrm: (meetingId, service, emails) => ipcRenderer.invoke('outputs:crm-send', meetingId, service, emails),
+    setMcpEnabled: (enabled) => ipcRenderer.invoke('outputs:mcp-set-enabled', enabled),
+    resetMcpToken: () => ipcRenderer.invoke('outputs:mcp-reset-token'),
+    getWritingStyle: () => ipcRenderer.invoke('outputs:style-get'),
+    setWritingStyleEnabled: (enabled) => ipcRenderer.invoke('outputs:style-set-enabled', enabled),
+    listWritingSamples: () => ipcRenderer.invoke('outputs:style-list'),
+    addWritingSample: (text) => ipcRenderer.invoke('outputs:style-add', text),
+    removeWritingSample: (id) => ipcRenderer.invoke('outputs:style-remove', id),
+    recordFollowUpSent: (payload) => ipcRenderer.invoke('outputs:style-record-followup', payload),
+    refreshWritingStyle: () => ipcRenderer.invoke('outputs:style-refresh'),
+    saveFollowUpEdit: (payload) => ipcRenderer.invoke('outputs:followup-save', payload),
+    openNotionPage: (url) => ipcRenderer.invoke('outputs:open-notion-page', url),
+  } satisfies MeetingOutputsApi,
   onDiagramRenderRequest: (callback: (request: { requestId: string; key: string; source: string }) => void) => {
     const subscription = (_e: any, request: any) => callback(request);
     ipcRenderer.on('diagram:render-request', subscription);

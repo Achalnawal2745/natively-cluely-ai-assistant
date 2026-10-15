@@ -47,6 +47,7 @@ import { AI_RESPONSE_LANGUAGES, RECOGNITION_LANGUAGES } from './config/languages
 import { resolveCodingPromptSignals } from './llm/codingPromptSignals';
 import { resolveDiagramTurn, v3DiagramTurn, withDiagramContract, withDiagramTurnBlock, withMeetingSpeechForDiagramTurn, liveQuestionWantsADrawing, spokenRouteCarriesContract, undecidedTurnAnsweredInWords, turnStartsAFreshDesign, DIAGRAM_SPEECH_WINDOW_SECONDS, type DiagramTurn } from './llm/diagramPromptSignals';
 import { registerDiagramIpc, broadcastDiagramsEnabled } from './services/diagram/diagramIpc';
+import { registerOutputsIpc } from './services/outputs/outputsIpc';
 import { isBareCodeRequest, looksLikeCodingAnswer, buildPriorCodingContextBlock as buildPriorCodingBlockForV3 } from './llm/codingFollowup';
 import { planAnswer, formatAnswerPlanForPrompt, isCodingAnswerType, validateAnswerStructure, validateProfileOutput, validateProfileEvidence, buildProfileRepairInstruction, raceStreamWithDeadline, firstUsefulDeadlineMs, totalHardTimeoutMs, repairDeadlineMs, LIVE_LOCAL_FIRST_USEFUL_TIMEOUT_MS, CODING_REGEN_ABORT_CHARS, isStealthEvasionQuestion, stripProfileTokensFromCoding, isBareFollowUp, isRefinementFollowUp, buildContextFreeClarification, sanitizeCandidateAnswer, acceptRepairedAnswer, CANDIDATE_VOICE_ANSWER_TYPES, detectAssistantVoiceMisfire, ASSISTANT_VOICE_ANSWER_TYPES, piTelemetry, classifyProviderError, detectExplicitCodingContract, isCodingContinuation, buildPriorCodingContextBlock, buildCodingContractPrompt, explicitContractProducesCode, CODING_VERIFICATION_INSTRUCTION, humanizeDirectiveFor, detectCorporateFiller, humanizeForAnswerType, applySpeakabilityBudget, compressTechnicalConcept, checkCodeCompleteness, varySpokenOpening, type ExplicitCodingContract, type AnswerType } from './llm';
 
@@ -338,6 +339,8 @@ export function initializeIpcHandlers(appState: AppState): void {
   // System-design diagram artifacts: repair, export, the feature switch and
   // the Phone Mirror render path. One module, registered once here.
   registerDiagramIpc(appState, safeHandle);
+  // Meeting outputs: export, Slack, Notion, CRM notes, the local MCP server, follow-up style.
+  registerOutputsIpc(appState, safeHandle);
 
   // ── Expired free trial (toaster policy Phase 0) ─────────────────────────
   // Defined above every safeHandle registration: source-contract tests scan

@@ -1930,6 +1930,13 @@ export class MeetingPersistence {
 
         try {
             const { FollowUpDraftGenerator } = require('./services/meeting/FollowUpDraftGenerator');
+            // The user's own voice, when they kept samples and left it on. Derived (one
+            // model call) only when the samples changed since the cached profile.
+            let styleGuide: string | undefined;
+            try {
+                const { getWritingStyleService, styleModelCall } = require('./services/outputs/outputsIpc');
+                styleGuide = (await getWritingStyleService().guideForFollowUp(styleModelCall(this.llmHelper))) || undefined;
+            } catch { styleGuide = undefined; }
             const draft = await new FollowUpDraftGenerator(this.llmHelper).generate({
                 summary: {
                     title: detailed.title,
@@ -1949,6 +1956,7 @@ export class MeetingPersistence {
                 mode: detailed.mode?.selectedTemplateType,
                 tone,
                 senderName: followUpSenderFirstName(),
+                styleGuide,
                 // NATIVELY_FOLLOWUP_DRAFT_V2=0 kill switch: the template draft, no LLM call.
                 deterministicOnly: !isIntelligenceFlagEnabled('followUpDraftV2'),
             });

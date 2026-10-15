@@ -31,6 +31,7 @@ import { groupTranscriptTurns, isHiddenQualityNote } from '../lib/meetingNotesVi
 import { CalendarLinkChip, type CalendarEventSnapshot } from './meeting/CalendarLinkChip';
 // Your notes, earlier versions, Source and rating (2026-10-15).
 import { ConfirmDialog } from './ui/ConfirmDialog';
+import { ShareMenu } from './meeting/ShareMenu';
 import { NotesVersionTabs } from './meeting/NotesVersionTabs';
 import { NoteSource } from './meeting/NoteSource';
 import { NotesRating } from './meeting/NotesRating';
@@ -1142,7 +1143,7 @@ const isNextStepsSectionTitle = (title?: string | null): boolean => {
 };
 
 interface Evidence { speakerId?: string; speakerName?: string; speaker?: string; timestampMs?: number; timestamp?: number; quote?: string; segmentId?: string }
-interface FollowUpDraftObj { type?: string; subject?: string; body: string; tone?: string }
+interface FollowUpDraftObj { type?: string; subject?: string; body: string; tone?: string; styled?: boolean }
 
 interface Meeting {
     id: string;
@@ -1395,6 +1396,17 @@ const FollowUpCopyButton: React.FC<{ copied: boolean; onCopy: () => void }> = ({
     );
 };
 
+/** The follow-up card's in-place editor: the page owns the text, the card shows the fields. */
+interface FollowUpCardEdit {
+    editing: 'subject' | 'body' | null;
+    subject: string;
+    body: string;
+    onStart: (field: 'subject' | 'body') => void;
+    onChange: (patch: { subject?: string; body?: string }) => void;
+    onCommit: () => void;
+    onCancel: () => void;
+}
+
 /**
  * The follow-up draft as a mail card: a header strip with the subject and Copy,
  * then the message. It enters as a Transitions.dev "Texts reveal" (the same
@@ -1419,9 +1431,41 @@ const FollowUpDraftCard: React.FC<{
     recipients?: Array<{ email: string; name?: string }>;
     /** Opens the draft in Gmail, addressed to them. */
     onEmail?: () => void;
-}> = ({ reveal, subjectLabel, subject, subjectText, body, bodyKey, busy, copied, onCopy, isLight, recipients, onEmail }) => {
+    /** A quiet line under the card ("Written in your style · Turn off"). */
+    footnote?: React.ReactNode;
+    /** Editing in place: which field has the editor, and its text while it does. */
+    edit?: FollowUpCardEdit;
+}> = ({ reveal, subjectLabel, subject, subjectText, body, bodyKey, busy, copied, onCopy, isLight, recipients, onEmail, footnote, edit }) => {
     const t = useT();
     const ref = useRef<HTMLDivElement>(null);
+    const bodyEditorRef = useRef<HTMLTextAreaElement>(null);
+    const subjectEditorRef = useRef<HTMLInputElement>(null);
+    const editingBody = edit?.editing === 'body';
+    const editingSubject = edit?.editing === 'subject';
+    // The editor takes the place of the text, in the same type and padding; it
+    // grows with what is typed so the card never scrolls inside itself.
+    useLayoutEffect(() => {
+        const el = bodyEditorRef.current;
+        if (!el) return;
+        el.style.height = '0px';
+        el.style.height = `${el.scrollHeight}px`;
+    }, [editingBody, edit?.body]);
+    useEffect(() => {
+        if (editingBody) bodyEditorRef.current?.focus({ preventScroll: true });
+        if (editingSubject) subjectEditorRef.current?.focus({ preventScroll: true });
+    }, [editingBody, editingSubject]);
+    // A click (not a drag that selects text to copy part of it) opens the editor.
+    const startOnClick = (field: 'subject' | 'body') => () => {
+        if (!edit || busy) return;
+        const sel = window.getSelection?.();
+        if (sel && !sel.isCollapsed) return;
+        edit.onStart(field);
+    };
+    const editorKeys = (multiline: boolean) => (e: React.KeyboardEvent) => {
+        if (!edit) return;
+        if (e.key === 'Escape') { e.preventDefault(); edit.onCancel(); }
+        else if (e.key === 'Enter' && (!multiline || e.metaKey || e.ctrlKey)) { e.preventDefault(); edit.onCommit(); }
+    };
     const [shown, setShown] = useState(!reveal);
     // The room at the end of the text is the button's real width (labels differ by
     // language), measured, plus a 16px gap; 156px is only the first-paint guess.
@@ -1455,14 +1499,33 @@ const FollowUpDraftCard: React.FC<{
                     </div>
                 )}
                 <div className={`flex items-center gap-2.5 min-h-10 px-4 py-1.5 border-b ${isLight ? 'border-black/[0.06]' : 'border-white/[0.06]'}`}>
-                    {subject && (
+                    {subject && (editingSubject && edit ? (
+                        <p className="min-w-0 flex-1 flex items-center text-[12.5px]">
+                            <span className="text-text-tertiary mr-1 shrink-0">{subjectLabel}</span>{' '}
+                            <input
+                                ref={subjectEditorRef}
+                                value={edit.subject}
+                                onChange={(e) => edit.onChange({ subject: e.target.value })}
+                                onBlur={edit.onCommit}
+                                onKeyDown={editorKeys(false)}
+                                aria-label={t('Subject')}
+                                spellCheck
+                                className="min-w-0 flex-1 bg-transparent p-0 border-0 outline-none font-medium text-text-primary text-[12.5px]"
+                            />
+                        </p>
+                    ) : (
                         <p className="min-w-0 flex-1 truncate text-[12.5px] select-text" title={subjectText}>
                             {/* mr-1 on top of the literal space: a clear gap after the label that
                                 still reads "Subject: …" when the line is selected or copied. */}
                             <span className="text-text-tertiary mr-1">{subjectLabel}</span>{' '}
-                            <span className="font-medium text-text-primary">{subject}</span>
+                            <span
+                                className={`font-medium text-text-primary${edit ? ' cursor-text' : ''}`}
+                                onMouseUp={edit ? startOnClick('subject') : undefined}
+                            >
+                                {subject}
+                            </span>
                         </p>
-                    )}
+                    ))}
                     <div className="ml-auto shrink-0">
                         <FollowUpCopyButton copied={copied} onCopy={onCopy} />
                     </div>
@@ -1472,8 +1535,23 @@ const FollowUpDraftCard: React.FC<{
                     own if the last line is long), and the button is pinned over that
                     line, centred on it. Copying uses the draft text, not this DOM. */}
                 <div className="relative" style={gmailWidth ? { '--mn-fu-gmail-room': `${gmailWidth + 16}px` } as React.CSSProperties : undefined}>
+                    {editingBody && edit ? (
+                        // Bottom padding leaves the Gmail button its own line while editing,
+                        // since the text can no longer make room for it on the last line.
+                        <textarea
+                            ref={bodyEditorRef}
+                            value={edit.body}
+                            onChange={(e) => edit.onChange({ body: e.target.value })}
+                            onBlur={edit.onCommit}
+                            onKeyDown={editorKeys(true)}
+                            aria-label={t('Follow-up email')}
+                            spellCheck
+                            className={`block w-full resize-none overflow-hidden bg-transparent border-0 outline-none px-4 pt-4 ${onEmail ? 'pb-14' : 'pb-4'} text-[13px] text-text-secondary leading-[1.65] font-sans`}
+                        />
+                    ) : (
                     <pre
                         aria-busy={busy}
+                        onMouseUp={edit ? startOnClick('body') : undefined}
                         className={`px-4 py-4 text-[13px] text-text-secondary leading-[1.65] whitespace-pre-wrap font-sans select-text cursor-text transition-opacity duration-[250ms] ease-in-out ${busy ? 'opacity-50' : ''}`}
                     >
                         <span key={bodyKey} className={`block${bodyKey > 0 ? ' mn-fu-body-in' : ''}`}>
@@ -1481,6 +1559,7 @@ const FollowUpDraftCard: React.FC<{
                             {onEmail && <span aria-hidden="true" className="mn-fu-gmail-room" />}
                         </span>
                     </pre>
+                    )}
                     {onEmail && (
                         <div ref={gmailRef} className="mn-fu-gmail">
                             <LiquidGlassButton
@@ -1496,6 +1575,7 @@ const FollowUpDraftCard: React.FC<{
                     )}
                 </div>
             </div>
+            {footnote && <p className="t-stagger-line mt-2 px-1 text-[12px] text-text-tertiary">{footnote}</p>}
         </div>
     );
 };
@@ -1900,6 +1980,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const followUpSubject = typeof rawFollowUp === 'string' ? undefined : rawFollowUp?.subject;
     const followUpDraftTone = (typeof rawFollowUp === 'string' ? undefined : rawFollowUp?.tone) as 'professional' | 'warm' | 'concise' | 'friendly' | undefined;
     const hasFollowUpDraft = followUpBody.trim().length > 0;
+    // Written in the user's own voice (Settings › Connections › Follow-ups in your style).
+    const followUpStyled = typeof rawFollowUp === 'object' && rawFollowUp?.styled === true;
 
     // Regenerate / evidence-jump / speaker-rename UI state.
     const [isRegenerating, setIsRegenerating] = useState(false);
@@ -2281,8 +2363,67 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         } catch { /* swallow */ } finally { setIsRegenerating(false); }
     };
 
+    // ── Editing the follow-up in place ──
+    // The card's subject and body open an editor on click. The edit is saved with
+    // the meeting on blur (Enter in the subject, Cmd/Ctrl+Enter in the body), and
+    // Escape drops it. Copy and Open in Gmail use the text on screen, edited or
+    // not, and tell main it was used: an edited body then becomes a writing sample
+    // for "Follow-ups in your style" (one per meeting, outputs/followUpEdit.ts).
+    const [fuEditing, setFuEditing] = useState<'subject' | 'body' | null>(null);
+    const [fuText, setFuText] = useState<{ subject: string; body: string } | null>(null);
+    const fuTextRef = useRef(fuText);
+    fuTextRef.current = fuText;
+    // The text Copy and Gmail use: what is in the editor, else what is saved.
+    const followUpText = () => ({
+        subject: fuTextRef.current?.subject ?? followUpSubject ?? '',
+        body: fuTextRef.current?.body ?? followUpBody,
+    });
+    const saveFollowUp = async (used: boolean) => {
+        const pending = fuTextRef.current;
+        setFuEditing(null);
+        setFuText(null);
+        const api = window.electronAPI?.meetingOutputs;
+        if (!api) return;
+        // Only what changed is sent; an emptied body is dropped, not saved.
+        const subjectChanged = !!pending && followUpSubject !== undefined && pending.subject.trim() !== followUpSubject.trim();
+        const bodyChanged = !!pending && pending.body.trim() !== '' && pending.body.trim() !== followUpBody.trim();
+        if (!subjectChanged && !bodyChanged && !used) return;
+        const subject = subjectChanged ? pending!.subject.replace(/\s+/g, ' ').trim() : undefined;
+        const body = bodyChanged ? pending!.body.trim() : undefined;
+        if (subjectChanged || bodyChanged) {
+            // On screen at once; main's answer replaces it with exactly what was saved.
+            setMeeting(prev => {
+                const cur = prev.detailedSummary?.followUpDraft;
+                const base: FollowUpDraftObj = typeof cur === 'object' && cur ? cur : { body: typeof cur === 'string' ? cur : '' };
+                return { ...prev, detailedSummary: { ...prev.detailedSummary!, followUpDraft: { ...base, ...(subject !== undefined ? { subject } : {}), ...(body !== undefined ? { body } : {}) } } };
+            });
+        }
+        try {
+            const res = await api.saveFollowUpEdit({ meetingId: meeting.id, ...(subject !== undefined ? { subject } : {}), ...(body !== undefined ? { body } : {}), used });
+            if (res?.ok && res.draft) {
+                const saved = res.draft;
+                setMeeting(prev => ({ ...prev, detailedSummary: { ...prev.detailedSummary!, followUpDraft: saved } }));
+            }
+        } catch { /* the edit stays on screen; it is saved with the next one */ }
+    };
+    const followUpEdit: FollowUpCardEdit | undefined = hasFollowUpDraft ? {
+        editing: fuEditing,
+        subject: fuText?.subject ?? followUpSubject ?? '',
+        body: fuText?.body ?? followUpBody,
+        onStart: (field) => {
+            if (isRegeneratingFollowUp) return;
+            setFuText((cur) => cur ?? { subject: followUpSubject ?? '', body: followUpBody });
+            setFuEditing(field);
+        },
+        onChange: (patch) => setFuText((cur) => ({ subject: cur?.subject ?? followUpSubject ?? '', body: cur?.body ?? followUpBody, ...patch })),
+        onCommit: () => { void saveFollowUp(false); },
+        onCancel: () => { setFuEditing(null); setFuText(null); },
+    } : undefined;
+
     const copyFollowUp = () => {
-        copyRecipe((followUpSubject ? `Subject: ${followUpSubject}\n\n` : '') + followUpBody);
+        const { subject, body } = followUpText();
+        copyRecipe((subject ? `Subject: ${subject}\n\n` : '') + body);
+        void saveFollowUp(true);
         setFollowUpCopied(true);
         setTimeout(() => setFollowUpCopied(false), 1500);
     };
@@ -2292,11 +2433,14 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     // Gmail's compose window, addressed and filled in, in the calendar's own
     // Google account (followUpRecipients.mjs says why Gmail over mailto).
     const emailFollowUp = async () => {
+        // Read before the await: the text on screen when the button was pressed.
+        const { subject, body } = followUpText();
+        void saveFollowUp(true);
         const status = await window.electronAPI?.getCalendarStatus?.().catch(() => null);
         const url = gmailComposeUrl({
             to: followUpTo.map((r) => r.email),
-            subject: followUpSubject || '',
-            body: followUpBody,
+            subject,
+            body,
             account: status?.connected ? status.email : undefined,
         });
         await window.electronAPI?.openExternal?.(url);
@@ -2757,6 +2901,12 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                         is connected. A meeting-level action, so it sits with Copy rather
                                         than on the date line. See meeting/CalendarLinkChip. */}
                                     <CalendarLinkChip meetingId={meeting.id} meetingTitle={meeting.title} event={meeting.calendarEvent} isLight={isLight} onChanged={reloadMeeting} />
+                                    {/* Export and send: PDF, a shareable file, Slack, Notion, CRM (meeting/ShareMenu). */}
+                                    <ShareMenu
+                                        meetingId={meeting.id}
+                                        disabled={isSummaryGenerating}
+                                        hasTranscript={(meeting.transcript?.length ?? 0) > 0}
+                                    />
                                     <button
                                         onClick={handleCopy}
                                         disabled={activeTab === 'summary' && isSummaryGenerating}
@@ -3278,6 +3428,23 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                                     isLight={isLight}
                                                     recipients={followUpTo}
                                                     onEmail={followUpTo.length > 0 ? emailFollowUp : undefined}
+                                                    edit={followUpEdit}
+                                                    footnote={followUpStyled ? (
+                                                        <>
+                                                            {t('Written in your style')}{' · '}
+                                                            <button
+                                                                type="button"
+                                                                className="font-medium text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+                                                                disabled={isRegeneratingFollowUp}
+                                                                onClick={async () => {
+                                                                    await window.electronAPI?.meetingOutputs?.setWritingStyleEnabled(false).catch(() => undefined);
+                                                                    handleRegenerateFollowUp(followUpTone);
+                                                                }}
+                                                            >
+                                                                {t('Turn off')}
+                                                            </button>
+                                                        </>
+                                                    ) : undefined}
                                                 />
                                             );
                                         })()}

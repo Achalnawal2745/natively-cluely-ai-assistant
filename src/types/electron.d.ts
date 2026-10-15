@@ -536,6 +536,8 @@ export interface ElectronAPI {
   acceptDiagramRepair?: (payload: { originalSource: string; repairedSource: string }) => Promise<boolean>
   /** Save a diagram the renderer produced (svg text, base64 png, or Mermaid source). */
   exportDiagram?: (payload: { format: 'svg' | 'png' | 'mmd' | 'json' | 'csv'; data: string; name?: string }) => Promise<{ saved: boolean; canceled?: boolean; fileName?: string; silent?: boolean; error?: string }>
+  /** Meeting outputs: export, Slack, Notion, CRM notes, the local MCP server, follow-up style. */
+  meetingOutputs?: import('./meetingOutputs').MeetingOutputsApi
   /** The main process asks this window to draw a diagram for the phone. */
   onDiagramRenderRequest?: (callback: (request: { requestId: string; key: string; source: string }) => void) => () => void
   sendDiagramRenderResult?: (result: { requestId: string; key: string; ok: boolean; svg?: string }) => void

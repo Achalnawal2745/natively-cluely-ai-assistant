@@ -1,0 +1,527 @@
+// IPC for meeting outputs: export (PDF, HTML), Slack, Notion, CRM notes, the
+// local MCP server and follow-ups in the user's own style.
+//
+// Every handler answers only the launcher window (the meeting page and
+// Settings live there). Meeting content leaves the computer only from a
+// handler the user reached by pressing that destination's Send button; nothing
+// here runs in the background except the MCP server, which is off until the
+// user turns it on and listens on 127.0.0.1 only.
+
+import { app, BrowserWindow, dialog, safeStorage, shell } from 'electron';
+import * as fs from 'fs';
+import * as path from 'path';
+import type { AppState } from '../../main';
+import type {
+    ConnectionsStatus, CrmMatchPreview, CrmService, McpServerStatus, NotionParentInfo, OutputResult,
+} from '../../../src/types/meetingOutputs';
+import { ConnectionsStore } from './connectionsStore';
+import { buildNotesDocument, type NotesDocument } from './notesDocument';
+import { buildNotesHtml } from './htmlExport';
+import { NOTES_EXPORT_FILTERS, defaultExportPath, notesFileStem, withExportExtension, type NotesExportFormat } from './exportFiles';
+import { describeConnectionError, errorKindOf } from './httpRequest';
+import { composeSlackDraft, isSlackWebhookUrl, postSlackWebhook, slackPayloadFromDraft, testSlackWebhook } from './slack';
+import { buildNotionBlocks, createNotionPage, looksLikeNotionToken, normaliseNotionId, notionPageTitle, searchNotion, testNotion } from './notion';
+import { CRM_LABELS, crmCandidates, matchAttendees, normaliseEmail, sendCrmNote, testCrm } from './crm';
+import { mcpClientSnippets, newMcpToken, randomMcpPort, startMcpServer, type MeetingSource, type RunningMcpServer } from './mcpServer';
+import { WritingStyleService, type StyleModelCall } from './writingStyle';
+import { applyFollowUpEdit, currentDraft, followUpSample } from './followUpEdit';
+import { safeDiagramFileStem, saveDialogPlacement, uniqueDiagramFileName } from '../diagram/diagramExport';
+import { nativePromptsBlocked } from '../stealthPromptGate';
+
+type SafeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => void;
+
+const SERVICE_LABEL: Record<'slack' | 'notion' | CrmService, string> = { slack: 'Slack', notion: 'Notion', ...CRM_LABELS };
+const TOKEN_SERVICES = ['notion', 'hubspot', 'attio', 'affinity'] as const;
+type TokenService = typeof TOKEN_SERVICES[number];
+const isTokenService = (v: unknown): v is TokenService => typeof v === 'string' && (TOKEN_SERVICES as readonly string[]).includes(v);
+const isCrm = (v: unknown): v is CrmService => v === 'hubspot' || v === 'attio' || v === 'affinity';
+
+// ── Singletons ───────────────────────────────────────────────────────────
+
+let store: ConnectionsStore | null = null;
+let style: WritingStyleService | null = null;
+
+export function getConnectionsStore(): ConnectionsStore {
+    if (!store) store = new ConnectionsStore({ userDataDir: app.getPath('userData'), safeStorage });
+    return store;
+}
+
+export function getWritingStyleService(): WritingStyleService {
+    if (!style) style = new WritingStyleService({ dir: app.getPath('userData') });
+    return style;
+}
+
+/** The style-profile model call, through the same routing meeting notes use. */
+export function styleModelCall(llmHelper: any): StyleModelCall | null {
+    if (!llmHelper) return null;
+    return async (prompt) => {
+        const { generateStructured, NOTE_CALL_TIMEOUT_MS } = require('../meeting/generateStructured');
+        const res = await generateStructured({
+            schemaName: 'WritingStyleProfile',
+            systemPrompt: prompt.systemPrompt,
+            jsonShapeHint: prompt.jsonShapeHint,
+            userContent: prompt.userContent,
+            llmHelper,
+            callOpts: { timeoutMs: NOTE_CALL_TIMEOUT_MS },
+            validate: (raw: unknown) => (raw && typeof raw === 'object'
+                ? { ok: true, data: raw, errors: [], repaired: false }
+                : { ok: false, errors: ['not an object'], repaired: false }),
+        });
+        return res.ok ? res.data : null;
+    };
+}
+
+// ── Meeting reads ────────────────────────────────────────────────────────
+
+function db(): any {
+    const { DatabaseManager } = require('../../db/DatabaseManager');
+    return DatabaseManager.getInstance();
+}
+
+function selfIdentity(): { name?: string; email?: string } {
+    try {
+        const { CalendarManager } = require('../CalendarManager');
+        const s = CalendarManager.getInstance().getConnectionStatus();
+        return s?.connected ? { name: s.name, email: s.email } : {};
+    } catch {
+        return {};
+    }
+}
+
+function loadDoc(meetingId: unknown): NotesDocument | null {
+    if (typeof meetingId !== 'string' || !meetingId || meetingId.length > 200) return null;
+    const m = db().getMeetingDetails(meetingId);
+    if (!m) return null;
+    return buildNotesDocument(m, { selfName: selfIdentity().name, locale: app.getLocale?.() || 'en-US' });
+}
+
+const fail = (kind: OutputResult['kind'], service: string): OutputResult => ({ ok: false, kind, message: describeConnectionError(kind, service) });
+const NO_MEETING: OutputResult = { ok: false, kind: 'not_found', message: 'This meeting could not be found. It may have been deleted.' };
+const NO_NOTES: OutputResult = { ok: false, kind: 'invalid_input', message: 'This meeting has no notes to send yet.' };
+const hasNotes = (d: NotesDocument) => d.sections.length > 0 || d.actionItems.length > 0;
+
+/** The read-only view of meetings the MCP server answers from. */
+export function databaseMeetingSource(): MeetingSource {
+    return {
+        listMeetings: (limit) => (db().getRecentMeetings(limit) as any[]).map((m) => ({
+            id: m.id,
+            title: m.title || '',
+            date: m.date,
+            duration: m.duration,
+            notesText: notesTextOf(m),
+        })),
+        getMeeting: (id) => db().getMeetingDetails(id),
+        searchTranscript: (terms, limit) => db().searchTranscriptLines(terms, limit),
+    };
+}
+
+function notesTextOf(m: any): string {
+    try {
+        const d = buildNotesDocument({ ...m, transcript: [] });
+        return d.sections.flatMap((s) => [s.heading, s.paragraph || '', ...s.bullets]).concat(d.actionItems.map((a) => a.text)).join('\n');
+    } catch {
+        return '';
+    }
+}
+
+// ── Saving files ─────────────────────────────────────────────────────────
+
+async function saveExport(appState: AppState, event: any, doc: NotesDocument, format: NotesExportFormat, bytes: Buffer | string): Promise<OutputResult & { canceled?: boolean; fileName?: string }> {
+    const stem = notesFileStem(doc.title, doc.dateIso);
+    const downloads = app.getPath('downloads');
+    try {
+        if (nativePromptsBlocked(() => appState.getUndetectable())) {
+            // A save dialog is its own OS window and would show in a screen share. In
+            // Undetectable mode the file goes to Downloads under a name that replaces nothing.
+            const safeStem = safeDiagramFileStem(stem);
+            for (let attempt = 0; ; attempt += 1) {
+                const name = uniqueDiagramFileName(safeStem, format, (n) => fs.existsSync(path.join(downloads, n)));
+                try {
+                    await fs.promises.writeFile(path.join(downloads, name), bytes, { flag: 'wx' });
+                    return { ok: true, fileName: name, message: `Saved to Downloads as ${name}.` };
+                } catch (err: any) {
+                    if (err?.code !== 'EEXIST' || attempt >= 4) throw err;
+                }
+            }
+        }
+        const options = {
+            title: format === 'pdf' ? 'Export notes as PDF' : 'Share notes as a file',
+            defaultPath: defaultExportPath(process.platform, downloads, stem, format),
+            filters: [NOTES_EXPORT_FILTERS[format]],
+        };
+        const placement = saveDialogPlacement(process.platform);
+        let owner: BrowserWindow | null = null;
+        if (placement === 'own-by-sender') {
+            try { const w = BrowserWindow.fromWebContents(event.sender); owner = w && !w.isDestroyed() ? w : null; } catch { owner = null; }
+        } else if (placement === 'activate-app') {
+            try { app.focus({ steal: true }); } catch { /* the dialog still opens */ }
+        }
+        const result = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+        if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+        const target = withExportExtension(process.platform, result.filePath, format);
+        await fs.promises.writeFile(target, bytes);
+        return { ok: true, fileName: path.basename(target) };
+    } catch (err: any) {
+        console.warn('[Outputs] export failed:', err?.code || 'write failed');
+        return { ok: false, kind: 'unknown', message: err?.code === 'EACCES' || err?.code === 'EPERM'
+            ? 'Natively is not allowed to write there. Pick another folder.'
+            : 'The file could not be saved. Try another folder.' };
+    }
+}
+
+// ── MCP lifecycle ────────────────────────────────────────────────────────
+
+let mcpServer: RunningMcpServer | null = null;
+let mcpError: string | undefined;
+let mcpStarting: Promise<void> | null = null;
+
+function mcpStatus(): McpServerStatus {
+    const s = getConnectionsStore().mcpSettings();
+    const running = !!mcpServer;
+    const port = mcpServer?.port ?? s.port;
+    return {
+        enabled: s.enabled,
+        running,
+        ...(port ? { port } : {}),
+        ...(s.token && s.enabled ? { token: s.token } : {}),
+        ...(port && s.enabled && s.token ? (() => {
+            const { url, claudeCode, cursor, claudeDesktop } = mcpClientSnippets(port, s.token);
+            return { url, snippets: { claudeCode, cursor, claudeDesktop } };
+        })() : {}),
+        ...(s.enabled && !running && mcpError ? { error: mcpError } : {}),
+    };
+}
+
+async function startMcp(): Promise<void> {
+    if (mcpServer) return;
+    const st = getConnectionsStore();
+    let { token, port } = st.mcpSettings();
+    if (!token) { token = newMcpToken(); st.setMcp({ token }); }
+    const tried = new Set<number>();
+    let candidate = port || randomMcpPort();
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+        tried.add(candidate);
+        try {
+            mcpServer = await startMcpServer({
+                port: candidate,
+                token: () => getConnectionsStore().mcpSettings().token || '',
+                source: databaseMeetingSource(),
+                version: app.getVersion(),
+                selfName: () => selfIdentity().name,
+            });
+            mcpError = undefined;
+            if (mcpServer.port !== port) st.setMcp({ port: mcpServer.port });
+            console.log('[MCP] Local server listening on loopback');
+            return;
+        } catch (err: any) {
+            if (err?.code !== 'EADDRINUSE' && err?.code !== 'EACCES') {
+                mcpError = 'The meeting server could not start. Try turning it off and on again.';
+                return;
+            }
+            do { candidate = randomMcpPort(); } while (tried.has(candidate));
+        }
+    }
+    mcpError = 'No free port was found for the meeting server. Try again in a moment.';
+}
+
+async function stopMcp(): Promise<void> {
+    const s = mcpServer;
+    mcpServer = null;
+    if (s) await s.close().catch(() => {});
+}
+
+/** At launch: back on if the user left it on. Never started otherwise. */
+export function startMcpServerIfEnabled(): void {
+    try {
+        if (!getConnectionsStore().mcpSettings().enabled) return;
+        mcpStarting = startMcp().finally(() => { mcpStarting = null; });
+    } catch { /* never blocks launch */ }
+}
+
+/** On quit (both systems): drop open connections and stop listening. Never blocks the quit. */
+export function stopMcpServerOnQuit(): void {
+    void stopMcp();
+}
+
+// ── Handlers ─────────────────────────────────────────────────────────────
+
+export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): void {
+    const fromLauncher = (event: any): boolean => {
+        try {
+            const w = appState.getWindowHelper().getLauncherWindow();
+            return !!w && !w.isDestroyed() && w.webContents === event?.sender;
+        } catch {
+            return false;
+        }
+    };
+    const guard = <A extends any[]>(fallback: unknown, fn: (event: any, ...args: A) => unknown) =>
+        async (event: any, ...args: A): Promise<unknown> => (fromLauncher(event) ? fn(event, ...args) : fallback);
+    const FORBIDDEN: OutputResult = { ok: false, kind: 'forbidden', message: 'Not available here.' };
+    const MCP_OFF: McpServerStatus = { enabled: false, running: false };
+    const llm = () => { try { return appState.processingHelper.getLLMHelper(); } catch { return null; } };
+
+    // Export
+    safeHandle('outputs:export-pdf', guard(FORBIDDEN, async (event, meetingId: unknown) => {
+        const doc = loadDoc(meetingId);
+        if (!doc) return NO_MEETING;
+        try {
+            const { renderHtmlToPdf } = require('./pdfExport');
+            const pdf: Buffer = await renderHtmlToPdf(buildNotesHtml(doc, { includeTranscript: false, forPrint: true }));
+            return saveExport(appState, event, doc, 'pdf', pdf);
+        } catch (err: any) {
+            console.warn('[Outputs] PDF render failed:', err?.message || 'unknown');
+            return { ok: false, kind: 'unknown', message: 'The PDF could not be made. Try again, or use Share as file.' };
+        }
+    }));
+    safeHandle('outputs:export-html', guard(FORBIDDEN, async (event, meetingId: unknown, opts: any) => {
+        const doc = loadDoc(meetingId);
+        if (!doc) return NO_MEETING;
+        return saveExport(appState, event, doc, 'html', buildNotesHtml(doc, { includeTranscript: opts?.includeTranscript === true }));
+    }));
+
+    // Connections
+    safeHandle('outputs:get-connections', guard(null as unknown as ConnectionsStatus, async (): Promise<ConnectionsStatus> => {
+        const st = getConnectionsStore();
+        const s = st.read();
+        return {
+            secureStorage: st.isPersistent(),
+            slack: { webhooks: s.slack.webhooks.map(({ id, label }) => ({ id, label })) },
+            notion: { connected: !!s.notion?.token, ...(s.notion?.parent ? { parent: s.notion.parent } : {}) },
+            hubspot: { connected: !!s.hubspot?.token },
+            attio: { connected: !!s.attio?.token },
+            affinity: { connected: !!s.affinity?.token },
+            mcp: mcpStatus(),
+        };
+    }));
+
+    safeHandle('outputs:slack-add', guard(FORBIDDEN, async (_e, label: unknown, url: unknown) => {
+        const u = typeof url === 'string' ? url.trim() : '';
+        if (!isSlackWebhookUrl(u)) {
+            return { ok: false, kind: 'invalid_input', message: 'That is not a Slack webhook address. It starts with https://hooks.slack.com/services/.' };
+        }
+        try {
+            await testSlackWebhook(u);
+        } catch (err) {
+            const kind = errorKindOf(err);
+            return { ok: false, kind, message: kind === 'not_found'
+                ? 'Slack does not recognise this webhook. It may have been removed, or its channel archived. Create a new one in Slack.'
+                : describeConnectionError(kind, 'Slack') };
+        }
+        const webhook = getConnectionsStore().addSlackWebhook(typeof label === 'string' ? label : '', u);
+        if (!webhook) return { ok: false, kind: 'invalid_input', message: 'You have added as many Slack channels as Natively keeps. Remove one first.' };
+        return { ok: true, webhook, ...(getConnectionsStore().isPersistent() ? {} : { message: describeConnectionError('storage_unavailable', 'Slack') }) };
+    }));
+    safeHandle('outputs:slack-remove', guard(FORBIDDEN, async (_e, id: unknown) => {
+        if (typeof id === 'string') getConnectionsStore().removeSlackWebhook(id);
+        return { ok: true };
+    }));
+    safeHandle('outputs:slack-test', guard(FORBIDDEN, async (_e, id: unknown) => {
+        const url = typeof id === 'string' ? getConnectionsStore().slackWebhookUrl(id) : null;
+        if (!url) return fail('not_connected', 'Slack');
+        try { await testSlackWebhook(url); return { ok: true, message: 'Slack accepts this webhook.' }; } catch (err) {
+            const kind = errorKindOf(err);
+            return { ok: false, kind, message: kind === 'not_found'
+                ? 'Slack no longer recognises this webhook. It may have been removed, or its channel archived.'
+                : describeConnectionError(kind, 'Slack') };
+        }
+    }));
+
+    const testToken = async (service: TokenService, token: string): Promise<void> => {
+        if (service === 'notion') return testNotion({ token });
+        return testCrm(service, { token });
+    };
+    safeHandle('outputs:save-token', guard(FORBIDDEN, async (_e, service: unknown, token: unknown) => {
+        if (!isTokenService(service)) return { ok: false, kind: 'invalid_input', message: 'Unknown service.' };
+        const t = typeof token === 'string' ? token.trim() : '';
+        const label = SERVICE_LABEL[service];
+        if (!t || t.length > 512 || /\s/.test(t)) return { ok: false, kind: 'invalid_input', message: `Paste the ${label} token on its own, with no spaces.` };
+        if (service === 'notion' && !looksLikeNotionToken(t)) {
+            return { ok: false, kind: 'invalid_input', message: 'A Notion integration token starts with ntn_ or secret_. Copy it from your integration\'s settings in Notion.' };
+        }
+        try { await testToken(service, t); } catch (err) { return fail(errorKindOf(err), label); }
+        const persisted = getConnectionsStore().setToken(service, t);
+        return { ok: true, ...(persisted ? {} : { message: describeConnectionError('storage_unavailable', label) }) };
+    }));
+    safeHandle('outputs:test', guard(FORBIDDEN, async (_e, service: unknown) => {
+        if (!isTokenService(service)) return { ok: false, kind: 'invalid_input', message: 'Unknown service.' };
+        const token = getConnectionsStore().token(service);
+        const label = SERVICE_LABEL[service];
+        if (!token) return fail('not_connected', label);
+        try { await testToken(service, token); return { ok: true, message: `${label} is connected.` }; } catch (err) { return fail(errorKindOf(err), label); }
+    }));
+    safeHandle('outputs:disconnect', guard(FORBIDDEN, async (_e, service: unknown) => {
+        if (!isTokenService(service)) return { ok: false, kind: 'invalid_input', message: 'Unknown service.' };
+        getConnectionsStore().clear(service);
+        return { ok: true };
+    }));
+    safeHandle('outputs:notion-search', guard(FORBIDDEN, async (_e, query: unknown) => {
+        const token = getConnectionsStore().token('notion');
+        if (!token) return fail('not_connected', 'Notion');
+        try {
+            return { ok: true, results: await searchNotion(typeof query === 'string' ? query : '', { token }) };
+        } catch (err) { return fail(errorKindOf(err), 'Notion'); }
+    }));
+    safeHandle('outputs:notion-set-parent', guard(FORBIDDEN, async (_e, parent: unknown) => {
+        const p = parent as Partial<NotionParentInfo> | null;
+        const id = normaliseNotionId(p?.id);
+        if (!p || (p.type !== 'page' && p.type !== 'database') || !id) return { ok: false, kind: 'invalid_input', message: 'Pick a page or database from the list.' };
+        if (!getConnectionsStore().token('notion')) return fail('not_connected', 'Notion');
+        getConnectionsStore().setNotionParent({ type: p.type, id, title: typeof p.title === 'string' ? p.title.slice(0, 200) : 'Untitled' });
+        return { ok: true };
+    }));
+
+    // Slack send
+    safeHandle('outputs:slack-compose', guard(FORBIDDEN, async (_e, meetingId: unknown, opts: any) => {
+        const doc = loadDoc(meetingId);
+        if (!doc) return NO_MEETING;
+        if (!hasNotes(doc)) return NO_NOTES;
+        return { ok: true, title: doc.title, text: composeSlackDraft(doc, { includeActionItems: opts?.includeActionItems !== false }) };
+    }));
+    safeHandle('outputs:slack-send', guard(FORBIDDEN, async (_e, payload: any) => {
+        const url = typeof payload?.webhookId === 'string' ? getConnectionsStore().slackWebhookUrl(payload.webhookId) : null;
+        if (!url) return fail('not_connected', 'Slack');
+        const doc = loadDoc(payload?.meetingId);
+        if (!doc) return NO_MEETING;
+        const text = typeof payload?.text === 'string' ? payload.text.trim() : '';
+        if (!text) return { ok: false, kind: 'invalid_input', message: 'The message is empty.' };
+        try {
+            await postSlackWebhook(url, slackPayloadFromDraft(doc.title, doc.dateLabel, text));
+            return { ok: true };
+        } catch (err) {
+            const kind = errorKindOf(err);
+            return { ok: false, kind, message: kind === 'not_found' || kind === 'forbidden'
+                ? 'Slack no longer accepts this webhook. It may have been removed, or its channel archived. Add it again in Settings, Connections.'
+                : kind === 'invalid_input' ? 'Slack could not read this message. Try shortening it.' : describeConnectionError(kind, 'Slack') };
+        }
+    }));
+
+    // Notion send
+    safeHandle('outputs:notion-send', guard(FORBIDDEN, async (_e, meetingId: unknown, opts: any) => {
+        const n = getConnectionsStore().read().notion;
+        if (!n?.token) return fail('not_connected', 'Notion');
+        if (!n.parent) return { ok: false, kind: 'invalid_input', message: 'Pick where Notion pages go in Settings, Connections.' };
+        const doc = loadDoc(meetingId);
+        if (!doc) return NO_MEETING;
+        if (!hasNotes(doc)) return NO_NOTES;
+        try {
+            const res = await createNotionPage(
+                { parent: n.parent, title: notionPageTitle(doc), blocks: buildNotionBlocks(doc, { includeTranscript: opts?.includeTranscript === true }) },
+                { token: n.token },
+            );
+            if (res.partial) return { ok: false, kind: 'unknown', url: res.url, message: 'The page was made in Notion, but only part of the notes reached it.' };
+            return { ok: true, url: res.url };
+        } catch (err) {
+            return fail(errorKindOf(err), 'Notion');
+        }
+    }));
+
+    // CRM
+    const crmCandidatesFor = (doc: NotesDocument) => crmCandidates(doc.attendees, [selfIdentity().email || '']);
+    safeHandle('outputs:crm-preview', guard({ ok: false, kind: 'forbidden', service: 'hubspot', attendees: [] } as CrmMatchPreview, async (_e, meetingId: unknown, service: unknown): Promise<CrmMatchPreview> => {
+        if (!isCrm(service)) return { ok: false, kind: 'invalid_input', message: 'Unknown CRM.', service: 'hubspot', attendees: [] };
+        const token = getConnectionsStore().token(service);
+        if (!token) return { ...fail('not_connected', CRM_LABELS[service]), service, attendees: [] };
+        const doc = loadDoc(meetingId);
+        if (!doc) return { ...NO_MEETING, service, attendees: [] };
+        const candidates = crmCandidatesFor(doc);
+        if (!candidates.length) {
+            return { ok: false, kind: 'invalid_input', service, attendees: [], message: 'This meeting has no attendee emails to look up. Link it to its calendar event first.' };
+        }
+        try {
+            const matches = await matchAttendees(service, candidates, { token });
+            return { ok: true, service, attendees: matches.map((m) => ({ email: m.email, ...(m.name ? { name: m.name } : {}), matched: !!m.record, ...(m.record?.name ? { recordName: m.record.name } : {}) })) };
+        } catch (err) {
+            return { ...fail(errorKindOf(err), CRM_LABELS[service]), service, attendees: [] };
+        }
+    }));
+    safeHandle('outputs:crm-send', guard(FORBIDDEN, async (_e, meetingId: unknown, service: unknown, emails: unknown) => {
+        if (!isCrm(service)) return { ok: false, kind: 'invalid_input', message: 'Unknown CRM.' };
+        const token = getConnectionsStore().token(service);
+        if (!token) return fail('not_connected', CRM_LABELS[service]);
+        const doc = loadDoc(meetingId);
+        if (!doc) return NO_MEETING;
+        if (!hasNotes(doc)) return NO_NOTES;
+        // Only attendees of this meeting, and looked up again here: the renderer names who, never which record.
+        const chosen = new Set((Array.isArray(emails) ? emails : []).map(normaliseEmail).filter(Boolean) as string[]);
+        const candidates = crmCandidatesFor(doc).filter((c) => chosen.has(c.email));
+        if (!candidates.length) return { ok: false, kind: 'invalid_input', message: 'Pick at least one matched attendee.' };
+        try {
+            const matches = await matchAttendees(service, candidates, { token });
+            const records = matches.map((m) => m.record).filter((r): r is NonNullable<typeof r> => !!r);
+            if (!records.length) return { ok: false, kind: 'not_found', message: `${CRM_LABELS[service]} no longer has a record for these attendees.` };
+            const notesCreated = await sendCrmNote(service, doc, records, { token });
+            return { ok: true, notesCreated };
+        } catch (err) {
+            return fail(errorKindOf(err), CRM_LABELS[service]);
+        }
+    }));
+
+    // MCP
+    safeHandle('outputs:mcp-set-enabled', guard(MCP_OFF, async (_e, enabled: unknown) => {
+        const on = enabled === true;
+        getConnectionsStore().setMcp({ enabled: on, ...(getConnectionsStore().mcpSettings().token ? {} : { token: newMcpToken() }) });
+        if (mcpStarting) await mcpStarting;
+        if (on) await startMcp(); else await stopMcp();
+        return mcpStatus();
+    }));
+    safeHandle('outputs:mcp-reset-token', guard(MCP_OFF, async () => {
+        // The running server reads the token per request, so the old one stops working at once.
+        getConnectionsStore().setMcp({ token: newMcpToken() });
+        return mcpStatus();
+    }));
+
+    // Writing style
+    const ws = () => getWritingStyleService();
+    safeHandle('outputs:style-get', guard(null, async () => ws().status()));
+    safeHandle('outputs:style-set-enabled', guard(null, async (_e, enabled: unknown) => { ws().setEnabled(enabled === true); return ws().status(); }));
+    safeHandle('outputs:style-list', guard([], async () => ws().listSamples()));
+    safeHandle('outputs:style-add', guard(FORBIDDEN, async (_e, text: unknown) => {
+        const sample = ws().addSample(typeof text === 'string' ? text : '', 'pasted');
+        if (!sample) return { ok: false, kind: 'invalid_input', message: 'Paste a longer piece of your own writing (a few sentences), one you have not added already.' };
+        return { ok: true, status: ws().status() };
+    }));
+    safeHandle('outputs:style-remove', guard(null, async (_e, id: unknown) => { if (typeof id === 'string') ws().removeSample(id); return ws().status(); }));
+    safeHandle('outputs:style-record-followup', guard(false, async (_e, payload: any) => {
+        const finalText = typeof payload?.finalText === 'string' ? payload.finalText : '';
+        const draftText = typeof payload?.draftText === 'string' ? payload.draftText : undefined;
+        return ws().recordFollowUp(finalText, draftText);
+    }));
+    // The follow-up email edited in place on the meeting page. Saved with the meeting;
+    // when the user copies or opens it (`used`), an edited body becomes a writing sample.
+    safeHandle('outputs:followup-save', guard(FORBIDDEN, async (_e, payload: any) => {
+        const meetingId = typeof payload?.meetingId === 'string' ? payload.meetingId : '';
+        const m = meetingId ? db().getMeetingDetails(meetingId) : null;
+        if (!m) return NO_MEETING;
+        const res = applyFollowUpEdit(m.detailedSummary, { subject: payload?.subject, body: payload?.body }, Date.now());
+        if (!res.ok) {
+            return { ok: false, kind: 'invalid_input', message: res.reason === 'empty' ? 'The email is empty. Write something, or press Regenerate.' : 'This meeting has no follow-up email yet.' };
+        }
+        if (res.changed && !db().replaceDetailedSummary(meetingId, res.detailed)) {
+            return { ok: false, kind: 'unknown', message: 'Your edit could not be saved. Try again.' };
+        }
+        let recorded = false;
+        if (payload?.used === true) {
+            const sample = followUpSample(currentDraft(res.detailed));
+            if (sample) recorded = ws().recordFollowUp(sample.finalText, sample.draftText, meetingId);
+        }
+        return { ok: true, draft: res.draft, recorded };
+    }));
+
+    safeHandle('outputs:style-refresh', guard(FORBIDDEN, async () => {
+        const profile = await ws().derive(styleModelCall(llm()));
+        if (!profile) return { ok: false, kind: 'invalid_input', message: 'Add a sample of your writing first.' };
+        return { ok: true, status: ws().status() };
+    }));
+
+    // Open a Notion page the user just made (https on notion only).
+    safeHandle('outputs:open-notion-page', guard(false, async (_e, url: unknown) => {
+        try {
+            const u = new URL(String(url));
+            if (u.protocol !== 'https:' || !/(^|\.)notion\.(so|site|com)$/.test(u.hostname)) return false;
+            await shell.openExternal(u.toString());
+            return true;
+        } catch {
+            return false;
+        }
+    }));
+}

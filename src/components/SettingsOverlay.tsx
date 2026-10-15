@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
 import { LANG_NATIVE_NAMES, useLanguage, useT } from '../i18n';
 import { CalendarSettings } from './settings/CalendarSettings';
+import { ConnectionsSettings } from './settings/ConnectionsSettings';
 import packageJson from '../../package.json';
 import {
     X, Mic, Speaker, Monitor, Keyboard, User, LifeBuoy, LogOut, Upload,
@@ -8,7 +9,8 @@ import {
     Camera, RotateCcw, Eye, Layout, MessageSquare, Crop,
     ChevronDown, ChevronUp, Check, BadgeCheck, Power, Palette, Calendar, Ghost, Sun, Moon, RefreshCw, Info, Globe, FlaskConical, Terminal, Download, Settings, Activity, ExternalLink, Trash2,
     Sparkles, Pencil, Briefcase, Building2, Search, MapPin, CheckCircle, HelpCircle, Zap, SlidersHorizontal, PointerOff, Folder,
-    Star, AlertCircle, Gift, Smartphone, Cpu, Shield, Code2, Headphones, Boxes, Languages, Volume2, KeyRound, Loader2, CornerDownRight, PanelBottomClose, TriangleAlert
+    Star, AlertCircle, Gift, Smartphone, Cpu, Shield, Code2, Headphones, Boxes, Languages, Volume2, KeyRound, Loader2, CornerDownRight, PanelBottomClose, TriangleAlert,
+    Plug
 } from 'lucide-react';
 import { AutoAnswerIcon } from './AutoAnswerIcon';
 import { HiCreditCard } from 'react-icons/hi2';
@@ -567,6 +569,7 @@ const SETTINGS_NAV_ORDER = [
     'retrieval',
     'audio',
     'calendar',
+    'connections',
     'skills',
     'keybinds',
     'phone-mirror',
@@ -2374,6 +2377,13 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                     >
                                         {activeTab === 'calendar' && navActivePill}
                                         <Calendar size={16} /> {t('Calendar')}
+                                    </button>
+                                    <button
+                                        onClick={() => setActiveTab('connections')}
+                                        className={navItemClass(activeTab === 'connections')}
+                                    >
+                                        {activeTab === 'connections' && navActivePill}
+                                        <Plug size={16} /> {t('Connections')}
                                     </button>
                                     <button
                                         onClick={() => setActiveTab('skills')}
@@ -4490,6 +4500,8 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
 
 
                             {activeTab === 'calendar' && <CalendarSettings />}
+
+                            {activeTab === 'connections' && <ConnectionsSettings />}
 
                             {activeTab === 'phone-mirror' && (
                                 <PhoneMirrorSettings />

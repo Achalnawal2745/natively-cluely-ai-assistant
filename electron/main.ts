@@ -10331,6 +10331,14 @@ if (process.env.THINKING_MATRIX === '1') {
   }, 15000);
   app.once('before-quit', () => clearTimeout(catalogRefreshTimer));
 
+  // The local MCP server (Settings › Connections): back on only if the user left
+  // it on. Off the launch path; stopped in will-quit.
+  const mcpStartTimer = setTimeout(() => {
+    try { require('./services/outputs/outputsIpc').startMcpServerIfEnabled(); } catch { /* optional */ }
+  }, 4000);
+  mcpStartTimer.unref?.();
+  app.once('before-quit', () => clearTimeout(mcpStartTimer));
+
   maybeForceDevPermissionBanner(appState);
 
   // Note: We do NOT force dock show here anymore, respecting stealth mode.
@@ -10419,6 +10427,9 @@ if (process.env.THINKING_MATRIX === '1') {
       const { disposeExtensions } = require('./services/extensions/appWiring');
       void disposeExtensions();
     } catch { /* teardown must never block a quit */ }
+    // The local MCP server: drop its connections and stop listening. Its server is
+    // unref'd, so even an unfinished close never holds the quit on either system.
+    try { require('./services/outputs/outputsIpc').stopMcpServerOnQuit(); } catch { /* never blocks a quit */ }
     appState.stopNativeOomTraceSampling();
     nativeOomTrace.stop('will-quit');
     stopAppManagedHindsight('will-quit');
