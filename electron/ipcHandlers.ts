@@ -504,6 +504,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
     }
 
+    // 2a. "Cue Cards": what the user wrote about themselves, drafts included.
+    step('own-answers', () => (require('./services/knowledge/OwnAnswersStore') as typeof import('./services/knowledge/OwnAnswersStore')).wipeOwnAnswers());
+
     // 2b. PII BACKSTOP (2026-07-02): also wipe the profile OKF packs (name/
     //     companies/education) — the raw DELETE above does not cover the
     //     knowledge_sources/packs/cards rows.
@@ -2132,7 +2135,7 @@ export function initializeIpcHandlers(appState: AppState): void {
             let v3ProfilePort: unknown = null;
             let v3ProfileCounts = { profileResume: 0, profileJd: 0, profileFact: 0 };
             let v3ProfileResolved: Array<{ role: string; id: string }> = [];
-            let v3ProfileWhole: { tokens: number; docs: number } | null = null;
+            let v3ProfileWhole: { tokens: number; docs: number; answersTokens?: number } | null = null;
             try {
               if (policy.profileSources?.length) {
                 const { collectV3ProfileSources } = require('./services/knowledge/v3ProfileSources');
@@ -17306,6 +17309,82 @@ export function initializeIpcHandlers(appState: AppState): void {
     return key;
   };
 
+  // ── "Cue Cards" (services/knowledge/ownAnswers.ts) ─────────────────────
+  // What the user says about themselves that no résumé states. Drafted from the
+  // résumé when one is saved; read by a meeting only once the user approves or
+  // writes it.
+  const broadcastOwnAnswersUpdated = (written: string[]): void => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      try { if (!win.isDestroyed()) win.webContents.send('profile:own-answers-updated', { written }); } catch { /* window gone */ }
+    });
+  };
+  const kickOwnAnswerDrafts = (orchestrator: any, opts: { onlyMissing?: boolean } = {}): Promise<string[]> => {
+    try {
+      const { draftOwnAnswers, profileDocumentText } = require('./services/knowledge/ownAnswersDrafting') as typeof import('./services/knowledge/ownAnswersDrafting');
+      const store = require('./services/knowledge/OwnAnswersStore') as typeof import('./services/knowledge/OwnAnswersStore');
+      const llmHelper = appState.processingHelper.getLLMHelper();
+      return draftOwnAnswers({
+        generate: (prompt) => llmHelper.generateContentStructured(prompt),
+        resumeText: () => profileDocumentText(orchestrator?.activeResume),
+        jobText: () => profileDocumentText(orchestrator?.activeJD),
+        listAnswers: store.listOwnAnswers,
+        storeDrafts: store.storeOwnAnswerDrafts,
+        onFinished: broadcastOwnAnswersUpdated,
+      }, opts);
+    } catch (e: any) {
+      console.warn('[IPC] own answers: drafting could not start:', e?.message || e);
+      return Promise.resolve([]);
+    }
+  };
+
+  safeHandle('profile:get-own-answers', async () => {
+    try {
+      const { OWN_ANSWER_QUESTIONS } = require('./services/knowledge/ownAnswers') as typeof import('./services/knowledge/ownAnswers');
+      const { listOwnAnswers } = require('./services/knowledge/OwnAnswersStore') as typeof import('./services/knowledge/OwnAnswersStore');
+      const { isDraftingOwnAnswers } = require('./services/knowledge/ownAnswersDrafting') as typeof import('./services/knowledge/ownAnswersDrafting');
+      return { success: true, questions: OWN_ANSWER_QUESTIONS, answers: listOwnAnswers(), drafting: isDraftingOwnAnswers() };
+    } catch (error: any) {
+      return { success: false, error: error.message, questions: [], answers: [], drafting: false };
+    }
+  });
+
+  safeHandle('profile:save-own-answer', async (_, key: string, text: string) => {
+    try {
+      if (!isProOrTrialActive()) return { success: false, error: 'Pro license required.' };
+      const { saveOwnAnswer } = require('./services/knowledge/OwnAnswersStore') as typeof import('./services/knowledge/OwnAnswersStore');
+      const saved = saveOwnAnswer(String(key ?? ''), text);
+      return saved.ok ? { success: true, text: saved.text } : { success: false, error: 'That answer could not be saved.' };
+    } catch (error: any) {
+      console.error('[IPC] profile:save-own-answer error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('profile:use-own-answer-drafts', async (_, keys?: string[]) => {
+    try {
+      if (!isProOrTrialActive()) return { success: false, error: 'Pro license required.' };
+      const { useOwnAnswerDrafts } = require('./services/knowledge/OwnAnswersStore') as typeof import('./services/knowledge/OwnAnswersStore');
+      const changed = useOwnAnswerDrafts(Array.isArray(keys) ? keys.map(String) : undefined);
+      return { success: true, changed };
+    } catch (error: any) {
+      console.error('[IPC] profile:use-own-answer-drafts error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('profile:draft-own-answers', async () => {
+    try {
+      if (!isProOrTrialActive()) return { success: false, error: 'Pro license required.' };
+      const orchestrator = appState.getKnowledgeOrchestrator();
+      if (!orchestrator?.getStatus?.().hasResume) return { success: false, error: 'Add a résumé first: the drafts are written from it.' };
+      const written = await kickOwnAnswerDrafts(orchestrator);
+      return { success: true, written };
+    } catch (error: any) {
+      console.error('[IPC] profile:draft-own-answers error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
   safeHandle('profile:upload-resume', async (_, filePath: string) => {
     try {
       // Premium gate: require active license or free trial for profile features
@@ -17333,6 +17412,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const result = await orchestrator.ingestDocument(resolvedPath, DocType.RESUME);
       // Index the raw text for the profile path's semantic arm (fire and forget).
       if (result?.success) { try { require('./services/knowledge/v3ProfileSources').kickProfileRawIndex(orchestrator); } catch { /* non-fatal */ } }
+      // Draft "Cue Cards" from the new résumé (fire and forget; the upload does not wait for it).
+      if (result?.success) void kickOwnAnswerDrafts(orchestrator);
       if (!result?.success && path.extname(resolvedPath).toLowerCase() === '.doc') {
         return { success: false, error: 'Legacy Word .doc files are not supported. Save the file as .docx and upload it again.' };
       }
@@ -17462,6 +17543,12 @@ export function initializeIpcHandlers(appState: AppState): void {
       // cross-tier rollback rather than call sequencing.
       const { deleteProfileTransactional } = require('./services/knowledge/deleteProfileTransactional') as typeof import('./services/knowledge/deleteProfileTransactional');
       deleteProfileTransactional(orchestrator, DocType.RESUME, 'resume');
+      // Drafts of "Cue Cards" were written from this résumé: they go with it.
+      // What the user wrote or approved is theirs and stays.
+      try {
+        (require('./services/knowledge/OwnAnswersStore') as typeof import('./services/knowledge/OwnAnswersStore')).deleteOwnAnswerDrafts();
+        broadcastOwnAnswersUpdated([]);
+      } catch (e: any) { console.warn('[IPC] profile:delete: own-answer drafts not cleared:', e?.message || e); }
       // Pictures of Profile Intelligence show the résumé: they go with it.
       void clearGenieSnapshots('profile').catch(() => {});
       return { success: true };
@@ -17561,6 +17648,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const result = await orchestrator.ingestDocument(resolvedPath, DocType.JD);
       // Index the raw text for the profile path's semantic arm (fire and forget).
       if (result?.success) { try { require('./services/knowledge/v3ProfileSources').kickProfileRawIndex(orchestrator); } catch { /* non-fatal */ } }
+      // A job is now loaded: draft the answer about the role, and any other box still empty.
+      if (result?.success) void kickOwnAnswerDrafts(orchestrator, { onlyMissing: true });
       if (!result?.success && path.extname(resolvedPath).toLowerCase() === '.doc') {
         return { success: false, error: 'Legacy Word .doc files are not supported. Save the file as .docx and upload it again.' };
       }
@@ -18122,6 +18211,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       const result = await orchestrator.ingestDocument(resolved, DocType.JD);
       // Index the raw text for the profile path's semantic arm (fire and forget).
       if (result?.success) { try { require('./services/knowledge/v3ProfileSources').kickProfileRawIndex(orchestrator); } catch { /* non-fatal */ } }
+      if (result?.success) void kickOwnAnswerDrafts(orchestrator, { onlyMissing: true });
       if (result?.success) {
         try {
           orchestrator.setKnowledgeMode(true);

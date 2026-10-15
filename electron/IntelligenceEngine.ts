@@ -7241,7 +7241,7 @@ export class IntelligenceEngine extends EventEmitter {
         /** referenceCorpusTokens(files): a small corpus is read whole (see mode-retrieval-port). */
         attachedCorpusTokens: number | null;
         /** profileWholeInfo(docs): the résumé / JD are handed over whole (see profile-retrieval-port). */
-        profileWhole: { tokens: number; docs: number } | null;
+        profileWhole: { tokens: number; docs: number; answersTokens?: number } | null;
         profileSourceCount: number;
         resolvedProfileSources: Array<{ role: string; id: string }>;
         extraAllowedSourceTypes: string[];
@@ -7284,7 +7284,7 @@ export class IntelligenceEngine extends EventEmitter {
             // site; additive, so a failure degrades to attachments only.
             let profilePort: unknown = null;
             let profileSourceCount = 0;
-            let profileWhole: { tokens: number; docs: number } | null = null;
+            let profileWhole: { tokens: number; docs: number; answersTokens?: number } | null = null;
             let resolvedProfileSources: Array<{ role: string; id: string }> = [];
             try {
                 if (policy.profileSources?.length) {

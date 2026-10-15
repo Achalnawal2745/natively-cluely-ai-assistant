@@ -1144,6 +1144,18 @@ export interface ElectronAPI {
   }>
   profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
   profileDelete: () => Promise<{ success: boolean; error?: string }>
+  // "Cue Cards": what the user says about themselves that no résumé states.
+  profileGetOwnAnswers: () => Promise<{
+    success: boolean;
+    error?: string;
+    questions: Array<{ key: string; label: string; hint: string; drafted: boolean; needsJob?: boolean; maxChars: number }>;
+    answers: Array<{ key: string; text: string; status: 'draft' | 'saved'; updatedAt?: string }>;
+    drafting: boolean;
+  }>;
+  profileSaveOwnAnswer: (key: string, text: string) => Promise<{ success: boolean; text?: string; error?: string }>;
+  profileUseOwnAnswerDrafts: (keys?: string[]) => Promise<{ success: boolean; changed?: number; error?: string }>;
+  profileDraftOwnAnswers: () => Promise<{ success: boolean; written?: string[]; error?: string }>;
+  onProfileOwnAnswersUpdated: (callback: (data: { written: string[] }) => void) => () => void;
   profileGetProfile: () => Promise<any>
   profileGetCompanyDossier: () => Promise<any | null>
   profileSelectFile: () => Promise<{ success?: boolean; cancelled?: boolean; filePath?: string; error?: string }>

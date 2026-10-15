@@ -447,10 +447,17 @@ const SECOND_PERSON_REPAIRS: Array<[RegExp, string]> = [
 ];
 // A sentence we must NOT flip: a direct question/instruction to the user, or generic
 // advice. If the sentence is itself a question addressed outward, leave it alone.
-const ADDRESSES_USER_RE = /\?\s*$|\b(?:you can|you could|you should|you might|you may|you'?ll want|let me know|feel free)\b|\bthank you\b/i;
+const ADDRESSES_USER_RE = /\?\s*$|\b(?:you can|you could|you should|you might|you may|you'?ll want|let me know|feel free)\b|\bthank you\b|^[\s"'“‘(*_]*you(?:'re| are) (?:right|correct|absolutely right|spot on)\b/i;
+// Only a sentence whose SUBJECT is "you"/"your" talks about the candidate ("You have
+// roughly 0.4 years…", "Your experience includes…"). A "you" later in the sentence is
+// the interviewer or the user being coached: "I'd like to understand the range you've
+// set", "how you're persisting the state", "I can't describe what you're doing day to
+// day". Flipping those (2026-10-15 benchmark: 3 of 4 answers changed after streaming)
+// made the shown answer wrong after the right one had already streamed.
+const STARTS_WITH_YOU_RE = /^[\s"'“‘(*_]*(?:you|your)\b/i;
 
 function repairCandidatePerspective(sentence: string): { text: string; changed: boolean } {
-  if (!/\byou(?:'?(?:ve|re|ll|d))?\b|\byour\b/i.test(sentence)) return { text: sentence, changed: false };
+  if (!STARTS_WITH_YOU_RE.test(sentence)) return { text: sentence, changed: false };
   if (ADDRESSES_USER_RE.test(sentence)) return { text: sentence, changed: false };
   let out = sentence;
   for (const [re, rep] of SECOND_PERSON_REPAIRS) {

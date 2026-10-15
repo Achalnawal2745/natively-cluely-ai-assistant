@@ -1866,6 +1866,52 @@ export class DatabaseManager {
             }
         }
 
+        if (version < 32) {
+            console.log('[DatabaseManager] Applying migration v31 → v32: the user\'s own answers');
+            try {
+                // "Cue Cards" in Profile Intelligence (services/knowledge/ownAnswers.ts):
+                // what the user says about themselves that no résumé states. One row
+                // per question. `status` is 'draft' while the text is Natively's own
+                // proposal and 'saved' once the user wrote or approved it; only
+                // 'saved' rows are ever read by an answer.
+                this.db.exec(`
+                    CREATE TABLE IF NOT EXISTS profile_own_answers (
+                        key        TEXT PRIMARY KEY,
+                        answer     TEXT NOT NULL DEFAULT '',
+                        status     TEXT NOT NULL DEFAULT 'saved' CHECK (status IN ('draft', 'saved')),
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    );
+                `);
+                this.db.pragma('user_version = 32');
+            } catch (e) {
+                console.error('[DatabaseManager] v32 own answers failed (leaving version at 31 to retry next launch):', e);
+                // Same rule as v28 to v31 above: stop rather than fall through.
+                return;
+            }
+        }
+
+        if (version < 33) {
+            console.log('[DatabaseManager] Applying migration v32 → v33: where each own answer came from');
+            try {
+                // `origin` is 'user' when the user typed or changed the words, and
+                // 'drafted' when they accepted Natively's draft as it stood. An
+                // accepted draft is still Natively's guess about them: the
+                // 2026-10-15 benchmark had accepted drafts override the user's own
+                // notes on why they are leaving and on their weakness. Rows from
+                // before this column are treated as the user's own words.
+                const cols = this.db.prepare("PRAGMA table_info('profile_own_answers')").all() as Array<{ name: string }>;
+                if (!cols.some((c) => c.name === 'origin')) {
+                    this.db.exec(`ALTER TABLE profile_own_answers ADD COLUMN origin TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user', 'drafted'));`);
+                    // A row still waiting as a draft was written by Natively, whatever the default says.
+                    this.db.exec(`UPDATE profile_own_answers SET origin = 'drafted' WHERE status = 'draft';`);
+                }
+                this.db.pragma('user_version = 33');
+            } catch (e) {
+                console.error('[DatabaseManager] v33 own-answer origin failed (leaving version at 32 to retry next launch):', e);
+                return;
+            }
+        }
+
         console.log('[DatabaseManager] Migrations completed.');
     }
 

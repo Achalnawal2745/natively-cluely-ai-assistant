@@ -1108,6 +1108,18 @@ interface ElectronAPI {
   }>;
   profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
   profileDelete: () => Promise<{ success: boolean; error?: string }>;
+  // "Cue Cards": what the user says about themselves that no résumé states.
+  profileGetOwnAnswers: () => Promise<{
+    success: boolean;
+    error?: string;
+    questions: Array<{ key: string; label: string; hint: string; drafted: boolean; needsJob?: boolean; maxChars: number }>;
+    answers: Array<{ key: string; text: string; status: 'draft' | 'saved'; updatedAt?: string }>;
+    drafting: boolean;
+  }>;
+  profileSaveOwnAnswer: (key: string, text: string) => Promise<{ success: boolean; text?: string; error?: string }>;
+  profileUseOwnAnswerDrafts: (keys?: string[]) => Promise<{ success: boolean; changed?: number; error?: string }>;
+  profileDraftOwnAnswers: () => Promise<{ success: boolean; written?: string[]; error?: string }>;
+  onProfileOwnAnswersUpdated: (callback: (data: { written: string[] }) => void) => () => void;
   profileGetProfile: () => Promise<any>;
   profileGetCompanyDossier: () => Promise<any | null>;
   profileSelectFile: () => Promise<{
@@ -3254,6 +3266,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   profileGetStatus: () => ipcRenderer.invoke('profile:get-status'),
   profileSetMode: (enabled: boolean) => ipcRenderer.invoke('profile:set-mode', enabled),
   profileDelete: () => ipcRenderer.invoke('profile:delete'),
+  profileGetOwnAnswers: () => ipcRenderer.invoke('profile:get-own-answers'),
+  profileSaveOwnAnswer: (key: string, text: string) => ipcRenderer.invoke('profile:save-own-answer', key, text),
+  profileUseOwnAnswerDrafts: (keys?: string[]) => ipcRenderer.invoke('profile:use-own-answer-drafts', keys),
+  profileDraftOwnAnswers: () => ipcRenderer.invoke('profile:draft-own-answers'),
+  onProfileOwnAnswersUpdated: (callback: (data: { written: string[] }) => void) => {
+    const subscription = (_: any, data: { written: string[] }) => callback(data);
+    ipcRenderer.on('profile:own-answers-updated', subscription);
+    return () => { ipcRenderer.removeListener('profile:own-answers-updated', subscription); };
+  },
   profileGetProfile: () => ipcRenderer.invoke('profile:get-profile'),
   profileGetCompanyDossier: () => ipcRenderer.invoke('profile:get-company-dossier'),
   profileSelectFile: () => ipcRenderer.invoke('profile:select-file'),

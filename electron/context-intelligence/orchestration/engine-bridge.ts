@@ -92,7 +92,7 @@ export interface BridgeInput {
    *  null when a file has no text yet. Lets a small corpus be read whole. */
   attachedCorpusTokens?: number | null;
   /** profileWholeInfo(collected docs): the résumé / JD are handed over whole this turn; null = retrieval as before. */
-  profileWhole?: { tokens: number; docs: number } | null;
+  profileWhole?: { tokens: number; docs: number; answersTokens?: number } | null;
   /**
    * Bounded fast-model query rewrite for low-confidence retrieval — see
    * retrieval/llm-query-rewrite.ts. The CALLER binds the model (this module has
