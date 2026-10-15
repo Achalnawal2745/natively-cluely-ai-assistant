@@ -101,7 +101,7 @@ export function assembleMeetingBrief(input: {
     // Each of their tasks at its newest state (assistNotes.latestTaskStates),
     // so one closed in a later meeting never shows from an older open copy;
     // only tasks raised in a meeting they were on. Newest first, three at most.
-    const theirOpenItems: BriefPerson['theirOpenItems'] = [...latestTaskStates(meetings, (act) => (ownerIsPerson(act.owner, a) ? 'them' : null)).values()]
+    const theirOpenItems: BriefPerson['theirOpenItems'] = [...latestTaskStates(meetings, (act) => (ownerIsPerson(act.owner, a) ? 'them' : null), { selfEmails: identity.emails }).values()]
       .filter((st) => !st.done && st.meetings.some((m) => meetingEmails(m).has(email)))
       .sort((x, y) => y.meeting.startMs - x.meeting.startMs)
       .slice(0, 3)

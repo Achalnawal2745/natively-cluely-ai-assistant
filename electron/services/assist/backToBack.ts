@@ -76,9 +76,9 @@ export function buildCatchUp(block: CatchUpBlock, identity: UserIdentity): Catch
   }
   // The user's tasks at their newest state across the whole block
   // (assistNotes.latestTaskStates): one raised in the first meeting and closed
-  // in the third is not listed, and one repeated is listed once, from the
-  // meeting that last mentions it.
-  for (const st of latestTaskStates(block.meetings, (a) => (ownerIsUser(a.owner, identity) ? 'user' : null)).values()) {
+  // in a related later one is not listed, one repeated is listed once, and the
+  // same words done in an unrelated meeting of the block close nothing.
+  for (const st of latestTaskStates(block.meetings, (a) => (ownerIsUser(a.owner, identity) ? 'user' : null), { selfEmails: identity.emails }).values()) {
     if (st.done) continue;
     yourActions.push({ text: clip(st.action.text, 160), meetingId: st.meeting.id, meetingTitle: meetingTitle(st.meeting), ...(st.action.deadline ? { deadline: st.action.deadline } : {}) });
   }

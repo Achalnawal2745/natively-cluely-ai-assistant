@@ -160,7 +160,7 @@ describe('You owe: ordering and filtering', () => {
   });
 
   test('a ticked item is hidden, and comes back only when a later meeting raises it again', () => {
-    const key = owed.owedItemKey('Draft the SOW');
+    const key = owed.owedItemKey('Draft the SOW', 'm2');
     const ticked = owed.collectOwedItems(ms, ME, { nowMs: NOW, done: { [key]: NOW - 1 * DAY } });
     assert.ok(!ticked.some((i) => i.text === 'Draft the SOW'));
     const later = [...ms, meeting('m5', NOW - 12 * 60 * MIN, { actions: [{ text: 'Draft the SOW', owner: 'Me' }] })];
@@ -652,5 +652,53 @@ describe('third review (2026-10-15)', () => {
     assert.equal(item.dueMs, Date.parse('2026-10-09T23:59:59.999Z'), 'not Fri 16 Oct');
     assert.equal(item.overdue, true);
     assert.equal(item.meetingId, 'd2', 'still opened from the newest mention');
+  });
+});
+
+describe('fourth review: a "done" closes a task only in its own chain of related meetings', () => {
+  const clientA = { email: 'ana@client-a.com', name: 'Ana Ruiz' };
+  const clientB = { email: 'ben@client-b.com', name: 'Ben Ode' };
+  const self = { email: 'evin@acme.com', name: 'Evin John' };
+
+  test('catch-up: "Send the deck" done in client B\'s meeting leaves client A\'s open', () => {
+    const blk = [
+      meeting('ca', NOW - 150 * MIN, { title: 'Client A', durationMs: 30 * MIN, attendees: [clientA, self], actions: [{ text: 'Send the deck', owner: 'Me' }] }),
+      meeting('cb', NOW - 110 * MIN, { title: 'Client B', durationMs: 40 * MIN, attendees: [clientB, self], actions: [{ text: 'Send the deck', owner: 'Me', status: 'done' }] }),
+    ];
+    const found = b2b.findCatchUpBlock(blk, { nowMs: NOW, gapMs: b2b.catchUpGapMs(15), meetingActive: false });
+    const cu = b2b.buildCatchUp(found, ME);
+    assert.deepEqual(cu.yourActions.map((a) => [a.text, a.meetingId]), [['Send the deck', 'ca']]);
+  });
+
+  test('the user\'s own address on both invites does not make them related', () => {
+    const a = meeting('ra', NOW - DAY, { attendees: [clientA, self] });
+    const b = meeting('rb', NOW - DAY + MIN, { attendees: [clientB, self] });
+    assert.equal(notes.meetingsRelated(a, b, ME.emails), false);
+    assert.equal(notes.meetingsRelated(a, { ...b, calendarEvent: { ...b.calendarEvent, attendees: [clientA] } }, ME.emails), true);
+  });
+
+  test('You owe: same words in unrelated meetings are two tasks; closing one leaves the other; ticks are per task', () => {
+    const ms = [
+      meeting('oa', NOW - 5 * DAY, { attendees: [clientA], actions: [{ text: 'Send the deck', owner: 'Me' }] }),
+      meeting('ob', NOW - 4 * DAY, { attendees: [clientB], actions: [{ text: 'Send the deck', owner: 'Me' }] }),
+      meeting('ob2', NOW - 2 * DAY, { attendees: [clientB], actions: [{ text: 'Send the deck', owner: 'Evin', status: 'done' }] }),
+    ];
+    const list = owed.collectOwedItems(ms, ME, { nowMs: NOW, timeZone: 'UTC' });
+    assert.deepEqual(list.map((i) => i.meetingId), ['oa']);
+    const both = owed.collectOwedItems(ms.slice(0, 2), ME, { nowMs: NOW, timeZone: 'UTC' });
+    assert.equal(both.length, 2);
+    assert.notEqual(both[0].key, both[1].key);
+    const tickedA = owed.collectOwedItems(ms.slice(0, 2), ME, { nowMs: NOW, timeZone: 'UTC', done: { [owed.owedItemKey('Send the deck', 'oa')]: NOW } });
+    assert.deepEqual(tickedA.map((i) => i.meetingId), ['ob']);
+  });
+
+  test('Brief me: their task done in an unrelated meeting still shows', () => {
+    const priyaB = { ...priya };
+    const ms = [
+      meeting('ba', NOW - 6 * DAY, { attendees: [priya], actions: [{ text: 'Share the plan', owner: 'Priya' }] }),
+      meeting('bb', NOW - 3 * DAY, { attendees: [clientB], actions: [{ text: 'Share the plan', owner: 'Priya', status: 'done' }] }),
+    ];
+    const ev = { id: 'next', title: 'Check-in', startTime: '2026-10-15T10:00:00Z', attendees: [priyaB] };
+    assert.deepEqual(briefMod.assembleMeetingBrief({ event: ev, meetings: ms, identity: ME, nowMs: NOW }).people[0].theirOpenItems.map((i) => i.meetingId), ['ba']);
   });
 });

@@ -42,8 +42,12 @@ export type DoneMap = Record<string, number>;
 export const OWED_LOOKBACK_DAYS = 30;
 export const OWED_MAX_ITEMS = 50;
 
-export function owedItemKey(text: string): string {
-  return `owed:${normalizeItemText(text).slice(0, 200)}`;
+/**
+ * What a tick is stored under: the task's text and the meeting that first
+ * raised it, so the same words from an unrelated meeting are another task.
+ */
+export function owedItemKey(text: string, originMeetingId: string): string {
+  return `owed:${originMeetingId}:${normalizeItemText(text).slice(0, 200)}`;
 }
 
 export interface CollectOwedOptions {
@@ -73,8 +77,9 @@ export function collectOwedItems(meetings: AssistMeeting[], identity: UserIdenti
   const inWindow = meetings.filter((m) => m && Number.isFinite(m.startMs) && m.startMs <= opts.nowMs && opts.nowMs - m.startMs <= lookbackMs);
   // Each task's newest state first (assistNotes.latestTaskStates): the user's
   // tasks share one owner key, so "Me" and "Evin" are the same task, and a
-  // later meeting that marks it done closes it whoever wrote it down first.
-  const states = latestTaskStates(inWindow, (a) => (ownerIsUser(a.owner, identity) ? 'user' : null));
+  // later RELATED meeting that marks it done closes it; an unrelated one
+  // with the same words does not.
+  const states = latestTaskStates(inWindow, (a) => (ownerIsUser(a.owner, identity) ? 'user' : null), { selfEmails: identity.emails });
   const out: OwedItem[] = [];
   for (const st of states.values()) {
     if (st.done) continue;
@@ -87,7 +92,7 @@ export function collectOwedItems(meetings: AssistMeeting[], identity: UserIdenti
       });
       if (!withThem) continue;
     }
-    const key = owedItemKey(st.action.text);
+    const key = owedItemKey(st.action.text, st.meetings[0].id);
     const tickedAt = done[key];
     // Ticked here: hidden, unless a meeting after the tick raised it again.
     if (typeof tickedAt === 'number' && st.meeting.startMs <= tickedAt) continue;

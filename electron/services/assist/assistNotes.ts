@@ -233,25 +233,26 @@ export function parseDeadline(deadline: string | undefined | null, meetingStartM
 
 /**
  * One task's newest state across meetings. A task is its normalised text and
- * its owner, so the same words owned by two people are two tasks. Meetings are
- * read oldest first, so a later "done" closes an earlier open copy (and a
- * later open copy reopens one). A done copy with no owner closes the copies of
- * that text raised in a RELATED meeting only (the same meeting, the same
- * calendar series, or one sharing an attendee): the notes did not say whose,
- * so a same-worded task from an unrelated meeting is left alone.
+ * its owner, raised in one chain of RELATED meetings (meetingsRelated: the
+ * same meeting, the same calendar series, or one sharing an attendee other
+ * than the user). Meetings are read oldest first, so a later "done" closes an
+ * earlier open copy in the same chain (and a later open copy reopens it). The
+ * same words in an unrelated meeting are another task: "Send the deck" done
+ * for client B never closes client A's. A done copy with no owner closes
+ * every owner's copy of that text in a related chain.
  *
  * A repeat that gives no deadline keeps the earlier deadline AND the meeting
  * that set it (`deadlineFromMs`), so "Friday" is still read against the week
  * it was said in.
  */
 export interface TaskState {
-  /** Normalised text + "|" + normalised owner. */
+  /** Normalised text + "|" + owner key + "#" + the id of the meeting that first raised it. */
   key: string;
   textKey: string;
   action: NoteAction;
   /** The newest meeting that mentions it. */
   meeting: AssistMeeting;
-  /** Every meeting that mentions it, oldest first. */
+  /** Every meeting that mentions it, oldest first (meetings[0] raised it). */
   meetings: AssistMeeting[];
   firstSeenMs: number;
   /** When the meeting that set the current deadline started (what the deadline is read against). */
@@ -259,50 +260,66 @@ export interface TaskState {
   done: boolean;
 }
 
-/** Two meetings are related when they are the same one, of the same calendar series, or share an attendee. */
-export function meetingsRelated(a: AssistMeeting, b: AssistMeeting): boolean {
+/**
+ * Two meetings are related when they are the same one, of the same calendar
+ * series, or share an attendee who is not the user (`selfEmails`: the user's
+ * own addresses never make two meetings related).
+ */
+export function meetingsRelated(a: AssistMeeting, b: AssistMeeting, selfEmails: readonly string[] = []): boolean {
   if (a.id === b.id) return true;
   const sa = seriesIdOf(a.calendarEvent?.id ?? a.calendarEventId, a.calendarEvent?.recurringEventId);
   const sb = seriesIdOf(b.calendarEvent?.id ?? b.calendarEventId, b.calendarEvent?.recurringEventId);
   if (sa && sa === sb) return true;
+  const self = new Set(selfEmails.map((e) => String(e).toLowerCase()));
   const ea = meetingEmails(a);
-  if (ea.size === 0) return false;
-  for (const e of meetingEmails(b)) if (ea.has(e)) return true;
+  for (const e of meetingEmails(b)) if (!self.has(e) && ea.has(e)) return true;
   return false;
 }
 
 const ownerKeyOf = (owner?: string) => clean(owner).toLowerCase().replace(/[^\p{L}\p{N}@.\s]/gu, ' ').replace(/\s+/g, ' ').trim();
 
-export function latestTaskStates(meetings: AssistMeeting[], ownerKey: (action: NoteAction) => string | null = (a) => ownerKeyOf(a.owner)): Map<string, TaskState> {
-  const states = new Map<string, TaskState>();
+export function latestTaskStates(
+  meetings: AssistMeeting[],
+  ownerKey: (action: NoteAction) => string | null = (a) => ownerKeyOf(a.owner),
+  opts: { selfEmails?: readonly string[] } = {},
+): Map<string, TaskState> {
+  const self = opts.selfEmails ?? [];
+  const inChain = (st: TaskState, m: AssistMeeting) => st.meetings.some((x) => meetingsRelated(x, m, self));
+  const states: TaskState[] = [];
   const ordered = [...meetings].filter((m) => m && Number.isFinite(m.startMs) && notesReady(m)).sort((a, b) => a.startMs - b.startMs);
   for (const m of ordered) {
     for (const action of readActions(m.detailedSummary)) {
       const textKey = normalizeItemText(action.text);
       if (!textKey) continue;
       if (action.done && !clean(action.owner)) {
-        for (const st of states.values()) {
-          if (st.textKey === textKey && st.meetings.some((x) => meetingsRelated(x, m))) { st.done = true; st.meeting = m; st.meetings.push(m); }
+        for (const st of states) {
+          if (st.textKey === textKey && inChain(st, m)) { st.done = true; st.meeting = m; st.meetings.push(m); }
         }
         continue;
       }
       const owner = ownerKey(action);
       if (owner === null) continue;
-      const key = `${textKey}|${owner}`;
-      const prev = states.get(key);
-      states.set(key, {
-        key,
-        textKey,
-        action: { ...action, ...(!action.deadline && prev?.action.deadline ? { deadline: prev.action.deadline } : {}) },
-        deadlineFromMs: !action.deadline && prev?.action.deadline ? prev.deadlineFromMs : m.startMs,
-        meeting: m,
-        meetings: [...(prev?.meetings ?? []), m],
-        firstSeenMs: prev && !prev.done ? prev.firstSeenMs : m.startMs,
-        done: action.done,
-      });
+      const base = `${textKey}|${owner}`;
+      // The newest chain of this task that this meeting belongs to.
+      let prev: TaskState | undefined;
+      for (let i = states.length - 1; i >= 0; i--) {
+        if (states[i].key.startsWith(`${base}#`) && inChain(states[i], m)) { prev = states[i]; break; }
+      }
+      if (!prev) {
+        if (action.done) continue; // done with nothing open in its chain: nothing to close
+        states.push({ key: `${base}#${m.id}`, textKey, action, meeting: m, meetings: [m], firstSeenMs: m.startMs, deadlineFromMs: m.startMs, done: false });
+        continue;
+      }
+      const keepDeadline = !action.deadline && !!prev.action.deadline;
+      prev.action = { ...action, ...(keepDeadline ? { deadline: prev.action.deadline } : {}) };
+      prev.deadlineFromMs = keepDeadline ? prev.deadlineFromMs : m.startMs;
+      if (prev.done && !action.done) prev.firstSeenMs = m.startMs; // reopened
+      prev.meeting = m;
+      prev.meetings.push(m);
+      prev.done = action.done;
     }
   }
-  return states;
+  return new Map(states.map((st) => [st.key, st]));
 }
 
 export { DAY_MS };
