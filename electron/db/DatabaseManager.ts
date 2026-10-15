@@ -10,6 +10,7 @@ import { decodeUsageMetadata, encodeUsageMetadata } from './usageMetadata';
 import { encodeSavedOrigin, decodeSavedOrigin } from '../intelligence/savedTranscriptOrigin';
 import { parseVecTableName, readPendingVecRebuilds, writePendingVecRebuilds, type PendingVecRebuild } from './vecRebuildPending';
 import { prepareVecRowWriter } from './vecRowWrite';
+import { ensureOrganiseSchema, ORGANISE_TABLES } from './organiseSchema';
 import type { ActionItem, DecisionItem, FollowUpDraft, MeetingSummaryGenerationMeta, MeetingSummaryModeMeta, MeetingSummarySectionV3, NoteBlock, PersonMention, QuestionItem, RiskItem, SourceQualityMeta, SpeakerLabelMap, SummaryStatus, TimelineItem } from '../services/meeting/types';
 
 // Interfaces for our data objects
@@ -496,6 +497,9 @@ export class DatabaseManager {
             // After the migrations (it alters `meetings`); not version-gated.
             this.ensureLiveMeetingSchema();
             this.ensureMeetingNotesSchema();
+            // Folders, tags, people, companies (organiseSchema.ts). Same rule:
+            // idempotent and not behind user_version.
+            ensureOrganiseSchema(this.db);
         } catch (error) {
             console.error('[DatabaseManager] Failed to initialize database:', error);
             throw error;
@@ -4351,6 +4355,46 @@ export class DatabaseManager {
         }
     }
 
+    /**
+     * Saved meetings that started at or after `sinceMs`, newest first, with
+     * their notes, length and calendar snapshot (linked or not): what the
+     * assist features read (services/assist: "You owe", the pre-meeting
+     * brief, the catch-up after back-to-back meetings). Read-only; no schema
+     * change.
+     */
+    public getMeetingsWithNotesSince(sinceMs: number, limit: number = 300): Array<{
+        id: string; title: string; startMs: number; durationMs: number; calendarEventId: string | null;
+        calendarEvent: Meeting['calendarEvent']; detailedSummary: any; summaryStatus: string | null; isProcessed: boolean;
+    }> {
+        if (!this.db) return [];
+        try {
+            const rows = this.db.prepare(
+                `SELECT id, title, start_time, duration_ms, calendar_event_id, calendar_event_json, summary_json, summary_status, is_processed
+                 FROM meetings
+                 WHERE start_time >= ?
+                 ORDER BY start_time DESC LIMIT ?`,
+            ).all(Number.isFinite(sinceMs) ? sinceMs : 0, Math.max(1, Math.min(limit, 1000))) as any[];
+            return rows.map((row) => {
+                let detailedSummary: any = null;
+                try { detailedSummary = JSON.parse(row.summary_json || '{}')?.detailedSummary ?? null; } catch { /* unreadable notes: nothing to read */ }
+                return {
+                    id: row.id,
+                    title: row.title,
+                    startMs: Number(row.start_time) || 0,
+                    durationMs: Number(row.duration_ms) || 0,
+                    calendarEventId: row.calendar_event_id ?? null,
+                    calendarEvent: parseCalendarEvent(row.calendar_event_json),
+                    detailedSummary,
+                    summaryStatus: row.summary_status ?? null,
+                    isProcessed: row.is_processed === 1 || row.is_processed === true,
+                };
+            });
+        } catch (error) {
+            console.error('[DatabaseManager] getMeetingsWithNotesSince failed:', error);
+            return [];
+        }
+    }
+
     public updateSpeakerLabels(
         id: string,
         speakerLabels: Record<string, string>,
@@ -4654,6 +4698,11 @@ export class DatabaseManager {
                 this.db!.exec('DELETE FROM meetings');
                 // A meeting in progress is data too (LiveMeetingJournal).
                 try { this.db!.exec('DELETE FROM live_meeting_journal'); } catch (_) { /* table may not exist */ }
+                // Folders, tags, people and companies hold what the meetings said
+                // about people (and the user's notes on them): all data.
+                for (const table of ORGANISE_TABLES) {
+                    try { this.db!.exec(`DELETE FROM ${table}`); } catch (_) { /* table may not exist */ }
+                }
             })();
 
             console.log('[DatabaseManager] All data cleared from database.');

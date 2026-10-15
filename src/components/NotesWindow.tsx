@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { continueListOnEnter } from './meeting/notesView';
+import { useLastTimeRecap } from './assist/useLastTimeRecap';
 
 /**
  * The notes window (`?window=notes`, 2026-10-15): a plain page the user types
@@ -31,6 +32,8 @@ const NotesWindow: React.FC = () => {
     const [meetingId, setMeetingId] = useState<string | null>(null);
     const areaRef = useRef<HTMLTextAreaElement>(null);
     const lastTypingPing = useRef(0);
+    // "Last time" for a recurring meeting, as the overlay shows it (assist/useLastTimeRecap).
+    const lastTime = useLastTimeRecap();
     // A state broadcast that lands before the first read wins over that read.
     const heardFromMain = useRef(false);
 
@@ -90,6 +93,26 @@ const NotesWindow: React.FC = () => {
                     <X className="w-3.5 h-3.5" strokeWidth={2} />
                 </button>
             </div>
+            {lastTime.recap?.recap && lastTime.recap.recap.bullets.length > 0 && (
+                <div className={`shrink-0 mx-3.5 mb-2 px-3 py-2.5 rounded-lg ${isLight ? 'bg-black/[0.04]' : 'bg-white/[0.05]'}`}>
+                    <div className="flex items-start justify-between gap-2">
+                        <span className="text-[12px] font-medium text-text-secondary leading-snug">{lastTime.recap.recap.title}</span>
+                        <button
+                            type="button"
+                            aria-label="Dismiss"
+                            onClick={lastTime.dismiss}
+                            className={`-mt-0.5 -mr-1 w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-primary transition-colors ${hoverWash}`}
+                        >
+                            <X className="w-3 h-3" strokeWidth={2} />
+                        </button>
+                    </div>
+                    <ul className="mt-1 space-y-0.5">
+                        {lastTime.recap.recap.bullets.map((b, i) => (
+                            <li key={i} className="text-[12.5px] leading-snug text-text-primary">{`• ${b}`}</li>
+                        ))}
+                    </ul>
+                </div>
+            )}
             <textarea
                 ref={areaRef}
                 aria-label="Meeting notes"

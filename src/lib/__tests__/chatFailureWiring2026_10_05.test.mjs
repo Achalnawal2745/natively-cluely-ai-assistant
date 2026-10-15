@@ -39,7 +39,8 @@ test('every failure goes through one place, which makes notice data and one plai
   // fails to start (two call sites, two branches each) and one that fails midway.
   const uses = overlay.split('failedLine(').length - 1;
   assert.ok(uses >= 14, `failedLine is used at ${uses - 1} sites`);
-  assert.equal(overlay.split('...failedLine(err)').length - 1, 11);
+  // 12 since 2026-10-15: the live helpers' handler (handleLiveHelper) is one more quick action.
+  assert.equal(overlay.split('...failedLine(err)').length - 1, 12);
 });
 
 test('a What to Answer failure is never silent, and is said once', () => {

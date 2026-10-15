@@ -510,6 +510,8 @@ export class MeetingPersistence {
                 return { ...renamed, speakerSuggestions };
             });
             console.log(`[MeetingPersistence] speaker name suggestion: ${applied ? 'applied' : 'kept as a suggestion'} (${result.suggestions.length})`);
+            // A name now on the voice is someone the user met (People view).
+            if (ok && applied) this.reindexPeople(meetingId);
             if (ok) {
                 try {
                     require('electron').BrowserWindow.getAllWindows().forEach((w: any) => w.webContents.send('meetings-updated'));
@@ -518,6 +520,14 @@ export class MeetingPersistence {
         } catch (e: any) {
             console.warn('[MeetingPersistence] speaker name suggestion skipped:', e?.message);
         }
+    }
+
+    /** Re-read who a meeting was with (People view). Never throws. */
+    protected reindexPeople(meetingId: string): void {
+        try {
+            const { indexMeetingPeople } = require('./services/organise/organiseService') as typeof import('./services/organise/organiseService');
+            indexMeetingPeople(meetingId);
+        } catch { /* the People view re-reads it later */ }
     }
 
     /**
@@ -574,6 +584,42 @@ export class MeetingPersistence {
         }
     }
 
+    /**
+     * Titles, companies and the user's notes on the invite's people, from the
+     * People and Companies pages (accepted values only). A method so a test can
+     * supply them.
+     */
+    protected knownPeopleFor(event: import('./services/calendar/calendarSessionMatch').CalendarEventSnapshot): import('./services/meeting/meetingNotesContext').KnownPersonInput[] {
+        try {
+            const { knownPeopleForEvent } = require('./services/organise/organiseService') as typeof import('./services/organise/organiseService');
+            return knownPeopleForEvent(event);
+        } catch {
+            return [];
+        }
+    }
+
+    /**
+     * After a meeting is saved: who it was with, the folders its rules file it
+     * into, and (when the notes may be written) the titles and companies people
+     * stated, kept as suggestions. Never awaited by the save; never throws.
+     */
+    protected organiseAfterSave(input: Omit<import('./services/organise/organiseService').AfterSaveInput, 'call'>): void {
+        try {
+            const { afterMeetingSaved } = require('./services/organise/organiseService') as typeof import('./services/organise/organiseService');
+            void afterMeetingSaved({
+                ...input,
+                call: (system, context) => this.llmHelper.generateMeetingSummary(system, context, system, { timeoutMs: 25_000, purpose: 'extraction' }),
+            }).then((r) => {
+                if (r.folders.length || r.facts) console.log(`[MeetingPersistence] organise: ${r.people} people, ${r.folders.length} folder(s), ${r.facts} suggested fact(s)`);
+                if (r.folders.length || r.facts) {
+                    try { require('electron').BrowserWindow.getAllWindows().forEach((w: any) => w.webContents.send('meetings-updated')); } catch { /* a closed window is not a failure */ }
+                }
+            }).catch(() => { /* logged inside */ });
+        } catch (e: any) {
+            console.warn('[MeetingPersistence] organise step skipped:', e?.message);
+        }
+    }
+
     /** Earlier meetings linked to calendar events, for the "last time" lookup. */
     protected seriesCandidates(beforeMs: number): import('./services/meeting/recurringMeetings').SeriesCandidate[] {
         try {
@@ -602,6 +648,7 @@ export class MeetingPersistence {
                 user: this.calendarAccount() ?? null,
                 profile: this.profileForNotes() ?? null,
                 seriesCandidates: src.calendarEvent ? this.seriesCandidates(src.startMs) : [],
+                knownPeople: src.calendarEvent ? this.knownPeopleFor(src.calendarEvent) : [],
             });
         } catch (e: any) {
             console.warn('[MeetingPersistence] notes context skipped (non-fatal):', e?.message);
@@ -839,6 +886,8 @@ export class MeetingPersistence {
         let v3SummaryMeta: MeetingSummaryTelemetryMeta | null = null;
         let generationSucceeded = false;
         let postCallSummaryAllowed = true;
+        // The detected mode, kept for the folder rules that run after the save.
+        let detectedTemplateType: string | undefined;
         // Phase 6 — post_call_summary lifecycle telemetry. Wrapped in try/catch
         // around track calls so a telemetry sink fault never breaks persistence.
         const _postCallStart = Date.now();
@@ -1119,6 +1168,8 @@ export class MeetingPersistence {
                         calendarTitle: metadata?.title ?? calendarEvent?.title,
                         calendarDescription: calendarEvent?.description,
                         participants: notesInputs?.participantNames ?? [],
+                        participantEmails: notesInputs?.participantEmails ?? [],
+                        userEmail: this.calendarAccount()?.email,
                     });
                     if (detection.confidence > 0 && detection.templateType !== 'general') {
                         let modeId: string | undefined;
@@ -1129,6 +1180,7 @@ export class MeetingPersistence {
                             if (match) { modeId = match.id; modeName = match.name; }
                         } catch { /* non-fatal */ }
                         detectedMode = { templateType: detection.templateType, modeId, modeName, confidence: detection.confidence };
+                        detectedTemplateType = detection.templateType;
                         console.log(`[MeetingPersistence] Mode auto-detect: ${detection.templateType} (conf ${detection.confidence})`);
                     }
                 }
@@ -1437,6 +1489,19 @@ export class MeetingPersistence {
                 && (process.env.NATIVELY_SPEAKER_NAME_SUGGESTIONS || '').toLowerCase() !== 'off') {
                 void this.suggestSpeakerNamesAfterSave(meetingId, storedTranscript, summaryData?.speakerLabels, callParticipants, calendarEvent);
             }
+
+            // People, folder rules, proposed titles (services/organise). After the
+            // speaker suggestion is queued, so a name it applies is picked up
+            // the next time the People view syncs; the model call here is the
+            // same data scope as the notes.
+            this.organiseAfterSave({
+                meetingId,
+                detectedTemplateType,
+                transcript: storedTranscript,
+                speakerLabels: summaryData?.speakerLabels,
+                userNotes: metadata?.userNotes,
+                allowModel: postCallSummaryAllowed,
+            });
 
             // HINDSIGHT POST-MEETING RETAIN (Phase 13 wiring, behind
             // hindsight_post_meeting_retain_enabled). After the meeting is persisted
@@ -1956,6 +2021,16 @@ export class MeetingPersistence {
 
         try {
             const { FollowUpDraftGenerator } = require('./services/meeting/FollowUpDraftGenerator');
+            // The user's own voice, when they kept samples and left it on. Derived (one
+            // model call) only when the samples changed since the cached profile.
+            // Off with the template draft (NATIVELY_FOLLOWUP_DRAFT_V2=0): no model call at all.
+            const llmDraft = isIntelligenceFlagEnabled('followUpDraftV2');
+            let styleGuide: string | undefined;
+            try {
+                const { getWritingStyleService, styleModelCall } = require('./services/outputs/outputsIpc');
+                const { styleGuideForDraft } = require('./services/outputs/writingStyle');
+                styleGuide = await styleGuideForDraft(getWritingStyleService(), llmDraft, styleModelCall(this.llmHelper));
+            } catch { styleGuide = undefined; }
             const draft = await new FollowUpDraftGenerator(this.llmHelper).generate({
                 summary: {
                     title: detailed.title,
@@ -1975,8 +2050,9 @@ export class MeetingPersistence {
                 mode: detailed.mode?.selectedTemplateType,
                 tone,
                 senderName: followUpSenderFirstName(),
+                styleGuide,
                 // NATIVELY_FOLLOWUP_DRAFT_V2=0 kill switch: the template draft, no LLM call.
-                deterministicOnly: !isIntelligenceFlagEnabled('followUpDraftV2'),
+                deterministicOnly: !llmDraft,
             });
             const ok = db.replaceDetailedSummary(meetingId, { ...detailed, followUpDraft: draft });
             try {

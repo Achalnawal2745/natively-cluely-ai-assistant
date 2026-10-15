@@ -65,7 +65,11 @@ export type PromptSystemV2Action =
     | 'code_hint'
     | 'title'
     | 'summary_json'
-    | 'followup_email';
+    | 'followup_email'
+    // The overlay's live helpers (2026-10-15, llm/liveHelpers.ts).
+    | 'catch_me_up'
+    | 'define'
+    | 'sound_smart';
 
 export type PromptTierV2 = 'cloud' | 'local';
 
@@ -472,6 +476,20 @@ Use empty arrays when a category is absent. Do not wrap JSON in markdown.
     followup_email: `<active_action name="followup_email">
 Write only the email body. Use a natural greeting, one specific reference to the conversation, the agreed next step when grounded, and a brief sign off. Keep it warm and concise. Do not invent commitments, names, or dates.
 </active_action>`,
+
+    // The live helpers (2026-10-15). Each is pressed by the user mid-meeting
+    // and read at a glance, so each is short and only from the transcript.
+    catch_me_up: `<active_action name="catch_me_up">
+The user looked away for a few minutes and wants to rejoin. From the transcript window only, say what they missed: the topic now on the table, anything decided, anything asked of them or still waiting on them, in that order. At most four short labelled lines. If nothing of substance was said, say so in one line. Never pad with what happened before the window.
+</active_action>`,
+
+    define: `<active_action name="define">
+Find the most recent term, acronym, product or name in the transcript that a listener might not know, and explain it: what it is in plain words and what it means in this conversation. Start with the term itself, then at most two short sentences. If the transcript gives its meaning, use that; otherwise give the standard meaning and never invent a company-specific one. If nothing in the window needs explaining, say which term you would pick and that it seems clear from context.
+</active_action>`,
+
+    sound_smart: `<active_action name="sound_smart">
+Give the user one thing they could say next that moves the conversation forward: a specific, insightful point or question built on what was just said, naming the actual detail it builds on. One or two spoken sentences in the user's own voice, ready to say as is. Never generic praise, never a summary of what was said, and nothing the transcript does not support.
+</active_action>`,
 };
 
 // ==========================================
@@ -534,7 +552,7 @@ const MODE_SPEAKER: Record<PromptSystemV2Mode, { speaker: string; never: string 
 /** Actions whose output is informational: the action's shape wins over the
  *  mode's spoken role voice. A recap in sales mode is still a recap. */
 const INFORMATIONAL_ACTIONS: ReadonlySet<PromptSystemV2Action> = new Set([
-    'recap', 'summary_json', 'title', 'follow_up_questions', 'followup_email',
+    'recap', 'summary_json', 'title', 'follow_up_questions', 'followup_email', 'catch_me_up', 'define',
 ]);
 
 /** Targeted overlays for the (mode, action) collisions the benchmark measured. */
@@ -886,7 +904,7 @@ function chatLayoutBlock(input: BuildSystemPromptV2Input, tier: PromptTierV2): s
 // Actions whose output is not an answer to the turn's question. A diagram
 // contract on these would put a Mermaid block into a title or a JSON summary.
 const NO_DIAGRAM_ACTIONS: ReadonlySet<PromptSystemV2Action> = new Set([
-    'title', 'summary_json', 'followup_email', 'follow_up_questions', 'clarify',
+    'title', 'summary_json', 'followup_email', 'follow_up_questions', 'clarify', 'catch_me_up', 'define', 'sound_smart',
 ]);
 
 // System-design diagram contract (2026-10-01). One shared text
