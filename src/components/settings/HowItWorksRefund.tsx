@@ -41,7 +41,7 @@ const SETTINGS_BTN =
 const PORTAL_URL = 'https://customer.dodopayments.com/';
 const POLICY_URL = 'https://natively.software/refundpolicy';
 const DEMO_URL = 'https://natively.software/pro';
-const CONTACT_EMAIL = 'natively.contact@gmail.com';
+const CONTACT_EMAIL = 'refund@heynatively.com';
 
 /** This section's indigo — theme-aware, see HowItWorksRefund.css. */
 const INDIGO = 'var(--hiw-indigo)';

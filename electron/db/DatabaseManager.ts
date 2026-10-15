@@ -4866,7 +4866,7 @@ The credit can be used for Speech-to-Text and is sufficient for extended testing
 # Support
 
 If you need help with setup or usage, contact us anytime at:
-natively.contact@gmail.com`;
+support@heynatively.com`;
 
         const demoMeeting: Meeting = {
             id: demoId,

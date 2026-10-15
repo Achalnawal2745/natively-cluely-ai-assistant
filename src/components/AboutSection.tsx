@@ -340,7 +340,7 @@ export const AboutSection: React.FC<AboutSectionProps> = ({ onNavigate, onOpenMo
         { title: t('LinkedIn'), body: t('Follow the climb to the top of AI note-taking assistants.'), action: actionButton(t('Follow'), 'https://www.linkedin.com/company/nativley-ai', Linkedin, 'group-hover:text-sky-600') },
         { title: t('Report an Issue'), body: t('Found a bug? Let us know so we can fix it.'), action: actionButton(t('Report'), `${REPO_URL}/issues`, Bug, 'group-hover:text-red-500', false) },
         { title: t('Affiliate Program'), body: t('Recommend Natively and earn a commission on every sale.'), action: actionButton(t('Affiliate'), AFFILIATE_URL, HandCoins, 'group-hover:text-emerald-500', false) },
-        { title: t('Get in Touch'), body: t('Open for professional collaborations and job offers.'), action: actionButton(t('Contact Me'), 'mailto:evinjohnignatious@gmail.com', Mail, 'group-hover:text-accent-primary', false) },
+        { title: t('Get in Touch'), body: t('Open for professional collaborations and job offers.'), action: actionButton(t('Contact Me'), 'mailto:evin@heynatively.com', Mail, 'group-hover:text-accent-primary', false) },
         { title: t('Support Development'), body: t('Natively is independent source-available software.'), action: actionButton(t('Support Project'), DONATE_URL, Heart, 'group-hover:text-pink-500') },
     ];
 

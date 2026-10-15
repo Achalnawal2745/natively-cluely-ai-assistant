@@ -362,7 +362,7 @@ Natively works as a **free, undetectable AI coding interview assistant** for sta
 [![Portfolio](https://img.shields.io/badge/Portfolio-evinjohn.vercel.app-blueviolet?style=flat-square&logo=vercel&logoColor=white)](https://evinjohn.vercel.app/)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0077B5?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/evinjohn/)
 [![X](https://img.shields.io/badge/X-@evinjohnn-black?style=flat-square&logo=x&logoColor=white)](https://x.com/evinjohnn)
-[![Hire Me](https://img.shields.io/badge/Hire_Me-Contact-success?style=flat-square&logo=gmail&logoColor=white)](mailto:evinjohnn@gmail.com?subject=Natively%20-%20Hiring%20Inquiry)
+[![Hire Me](https://img.shields.io/badge/Hire_Me-Contact-success?style=flat-square&logo=gmail&logoColor=white)](mailto:evin@heynatively.com?subject=Natively%20-%20Hiring%20Inquiry)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/evinjohn)
 
 </div>
@@ -1106,7 +1106,7 @@ You are not allowed to use this codebase, forks, modified versions, or substanti
 
 Public forks must clearly state that they are based on Natively, originally developed by Natively AI Private Limited.
 
-Commercial license requests: natively.contact@gmail.com · https://natively.software
+Commercial license requests: sales@heynatively.com · https://natively.software
 
 > **Note:** This project is available for sponsorships, ads, or partnerships – perfect for companies in the AI, productivity, or developer tools space.
 

@@ -4,7 +4,7 @@ _Last updated: 4 September 2026_
 
 This is the full refund policy for **Natively Pro** and the **Natively API** service. We've tried to write it like a person, not a lawyer — please give it a read before purchasing.
 
-If you have a question that isn't answered here, email us at **natively.contact@gmail.com**. We aim to reply within **24–72 hours on weekdays**. We may not respond on weekends or Indian public holidays — if you write in over a weekend, please expect a reply early the following week.
+If you have a question that isn't answered here, email us at **refund@heynatively.com**. We aim to reply within **24–72 hours on weekdays**. We may not respond on weekends or Indian public holidays — if you write in over a weekend, please expect a reply early the following week.
 
 ---
 
@@ -198,7 +198,7 @@ We sometimes provide bulk Pro licenses or educational discounts under a separate
 
 ## 5. How to request a refund
 
-Email **natively.contact@gmail.com** with:
+Email **refund@heynatively.com** with:
 
 1. Your **order ID** (it's in the receipt email from the payment processor). **Refund requests without a verifiable order ID cannot be processed** — please don't omit this.
 2. The **product** (Natively Pro or Natively API) and the plan.

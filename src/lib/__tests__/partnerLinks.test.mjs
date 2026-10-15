@@ -50,7 +50,7 @@ describe('AGENTROUTER_REFERRAL_URL', () => {
 
 describe('SPONSORSHIP_EMAIL', () => {
   test('is a single plain email address', () => {
-    assert.equal(SPONSORSHIP_EMAIL, 'natively.contact@gmail.com');
+    assert.equal(SPONSORSHIP_EMAIL, 'partnerships@heynatively.com');
     assert.match(SPONSORSHIP_EMAIL, /^[^\s@]+@[^\s@]+\.[^\s@]+$/);
   });
 });
@@ -86,7 +86,7 @@ describe('SPONSORSHIP_GMAIL_COMPOSE_URL', () => {
 
   test('contains no raw whitespace and percent-encodes the @ and /', () => {
     assert.doesNotMatch(SPONSORSHIP_GMAIL_COMPOSE_URL, /\s/);
-    assert.ok(SPONSORSHIP_GMAIL_COMPOSE_URL.includes('to=natively.contact%40gmail.com'));
+    assert.ok(SPONSORSHIP_GMAIL_COMPOSE_URL.includes('to=partnerships%40heynatively.com'));
   });
 });
 

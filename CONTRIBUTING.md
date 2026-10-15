@@ -29,7 +29,7 @@ Please do not submit contributions unless you have the legal right to do so.
 
 ## Code of Conduct
 
-This project and everyone participating in it is governed by the [Natively Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to evinjohnn@gmail.com.
+This project and everyone participating in it is governed by the [Natively Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to evin@heynatively.com.
 
 ## How Can I Contribute?
 

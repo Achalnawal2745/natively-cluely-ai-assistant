@@ -13,7 +13,7 @@ export const FLUXION_REFERRAL_URL = 'https://fluxionai.world/register?source=git
 export const AGENTROUTER_REFERRAL_URL = 'https://agentrouter.org/register?aff=9ZCx';
 
 /** Inbound address for advertising and sponsorship enquiries. */
-export const SPONSORSHIP_EMAIL = 'natively.contact@gmail.com';
+export const SPONSORSHIP_EMAIL = 'partnerships@heynatively.com';
 
 /**
  * Gmail compose, pre-addressed to SPONSORSHIP_EMAIL. Opened in the default
