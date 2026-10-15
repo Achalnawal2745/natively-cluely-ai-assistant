@@ -206,7 +206,13 @@ export class SessionTracker {
     // past the 500-entry cap of fullUsage (which used to drop them from the
     // saved meeting too).
     private usageArchive: any[] = [];
-    private static readonly MAX_ARCHIVED_USAGE = 10_000;
+    // In memory: the live journal rewrites the whole session every few seconds
+    // (LiveMeetingJournal), and its row grows with this archive: measured 0.4 ms
+    // a write at 3 hours, 23 ms (84 worst) with 10,000 answers. Answers past it
+    // go to usageOverflowSink, written once each, and are read back at Stop and
+    // at recovery, so none is lost (2026-10-16).
+    private static readonly MAX_ARCHIVED_USAGE = 1_000;
+    private usageOverflowSink: ((entries: any[]) => void) | null = null;
     // Screenshot previews (base64 JPEGs) in the archive are bounded too: past
     // this many characters the oldest archived answers keep their text and
     // lose their previews. (fullUsage's own 500 still hold theirs.)
@@ -909,7 +915,12 @@ export class SessionTracker {
         return this.fullUsage;
     }
 
-    /** Every AI interaction of the meeting, for saving it (includes those before a mid-meeting reset). */
+    /** Receives the oldest archived interactions as they leave memory (the running meeting writes them to disk). */
+    setUsageOverflowSink(sink: ((entries: any[]) => void) | null): void {
+        this.usageOverflowSink = sink;
+    }
+
+    /** Every AI interaction of the meeting still in memory, for saving it (includes those before a mid-meeting reset). */
     getPersistableUsage(): any[] {
         return this.usageArchive.length > 0 ? [...this.usageArchive, ...this.fullUsage] : this.fullUsage;
     }
@@ -922,6 +933,9 @@ export class SessionTracker {
         if (this.usageArchive.length > SessionTracker.MAX_ARCHIVED_USAGE) {
             const dropped = this.usageArchive.slice(0, this.usageArchive.length - SessionTracker.MAX_ARCHIVED_USAGE);
             for (const e of dropped) this.archivedImageChars -= imageChars(e);
+            // Their text goes to disk; screenshot previews of answers this old do not.
+            try { this.usageOverflowSink?.(dropped.map((e) => (Array.isArray(e?.images) ? (({ images: _i, ...rest }) => rest)(e) : e))); }
+            catch (err) { console.warn('[SessionTracker] usage overflow sink failed (non-fatal):', err); }
             this.usageArchive = this.usageArchive.slice(-SessionTracker.MAX_ARCHIVED_USAGE);
         }
         // A copy without previews replaces the entry: the original object may

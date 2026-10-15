@@ -4027,6 +4027,55 @@ export class DatabaseManager {
             console.error('[DatabaseManager] live_meeting_journal could not be created (meetings in progress will not survive a quit):', e);
         }
         try { this.db.exec('ALTER TABLE meetings ADD COLUMN recovery_meta_json TEXT'); } catch (e) { /* Column already exists */ }
+        // AI interactions of a running meeting past what memory keeps (see
+        // appendLiveUsageOverflow). rowid is the order they happened in.
+        try {
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS live_meeting_usage_overflow (
+                    meeting_id TEXT NOT NULL,
+                    usage_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_live_usage_overflow_meeting ON live_meeting_usage_overflow(meeting_id);
+            `);
+        } catch (e) {
+            console.error('[DatabaseManager] live_meeting_usage_overflow could not be created (a meeting past 1,500 AI answers keeps only the newest):', e);
+        }
+    }
+
+    /**
+     * AI interactions of a running meeting that left memory (SessionTracker
+     * keeps the newest 1,500; the journal row holds those), oldest first, one
+     * row each, written once. Read back at Stop and with the meeting's live row.
+     */
+    public appendLiveUsageOverflow(id: string, entries: unknown[]): void {
+        if (!this.db || entries.length === 0) return;
+        const insert = this.db.prepare('INSERT INTO live_meeting_usage_overflow (meeting_id, usage_json) VALUES (?, ?)');
+        this.db.transaction(() => { for (const e of entries) insert.run(id, JSON.stringify(e ?? null)); })();
+    }
+
+    public getLiveUsageOverflow(id: string): any[] {
+        if (!this.db) return [];
+        try {
+            const rows = this.db.prepare('SELECT usage_json FROM live_meeting_usage_overflow WHERE meeting_id = ? ORDER BY rowid ASC').all(id) as Array<{ usage_json: string }>;
+            const out: any[] = [];
+            for (const r of rows) { try { const v = JSON.parse(r.usage_json); if (v && typeof v === 'object') out.push(v); } catch { /* skip one bad row */ } }
+            return out;
+        } catch {
+            return [];
+        }
+    }
+
+    public removeLiveUsageOverflow(id: string): void {
+        if (!this.db) return;
+        try { this.db.prepare('DELETE FROM live_meeting_usage_overflow WHERE meeting_id = ?').run(id); } catch { /* table may not exist */ }
+    }
+
+    /** Overflow rows whose meeting has no live row any more (and is not `runningId`). */
+    public sweepOrphanUsageOverflow(runningId: string | null): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare('DELETE FROM live_meeting_usage_overflow WHERE meeting_id NOT IN (SELECT id FROM live_meeting_journal) AND meeting_id IS NOT ?').run(runningId);
+        } catch { /* table may not exist */ }
     }
 
     /** Upsert the running meeting's row. Synchronous; throws on failure (the journal retries). */
@@ -4046,6 +4095,7 @@ export class DatabaseManager {
     public removeLiveMeeting(id: string): void {
         if (!this.db) return;
         this.db.prepare('DELETE FROM live_meeting_journal WHERE id = ?').run(id);
+        try { this.db.prepare('DELETE FROM live_meeting_usage_overflow WHERE meeting_id = ?').run(id); } catch { /* table may not exist */ }
     }
 
     /** Every left-over live meeting, oldest first. A malformed row is dropped from the list, not thrown. */
@@ -4064,7 +4114,9 @@ export class DatabaseManager {
                 const usage = JSON.parse(row.usage_json || '[]');
                 const meta = JSON.parse(row.meta_json || '{}');
                 if (!Array.isArray(transcript)) continue;
-                out.push({ id: row.id, startedAt: row.started_at, updatedAt: row.updated_at, transcript, usage: Array.isArray(usage) ? usage : [], meta: meta && typeof meta === 'object' ? meta : {} });
+                const kept = Array.isArray(usage) ? usage : [];
+                const overflow = this.getLiveUsageOverflow(row.id);
+                out.push({ id: row.id, startedAt: row.started_at, updatedAt: row.updated_at, transcript, usage: overflow.length ? [...overflow, ...kept] : kept, meta: meta && typeof meta === 'object' ? meta : {} });
             } catch {
                 console.warn(`[DatabaseManager] live meeting ${row?.id} is unreadable; left in place`);
             }
@@ -4089,6 +4141,7 @@ export class DatabaseManager {
                 created = true;
             }
             this.db!.prepare('DELETE FROM live_meeting_journal WHERE id = ?').run(meeting.id);
+            try { this.db!.prepare('DELETE FROM live_meeting_usage_overflow WHERE meeting_id = ?').run(meeting.id); } catch { /* table may not exist */ }
         })();
         return created;
     }
@@ -4744,6 +4797,7 @@ export class DatabaseManager {
                 this.db!.exec('DELETE FROM meetings');
                 // A meeting in progress is data too (LiveMeetingJournal).
                 try { this.db!.exec('DELETE FROM live_meeting_journal'); } catch (_) { /* table may not exist */ }
+                try { this.db!.exec('DELETE FROM live_meeting_usage_overflow'); } catch (_) { /* table may not exist */ }
                 // Folders, tags, people and companies hold what the meetings said
                 // about people (and the user's notes on them): all data.
                 for (const table of ORGANISE_TABLES) {

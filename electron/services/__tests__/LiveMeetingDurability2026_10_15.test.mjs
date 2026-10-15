@@ -380,6 +380,80 @@ describe('a meeting left behind, recovered', () => {
         DatabaseManager.getInstance().deleteMeeting(id);
     });
 
+    // Memory keeps the newest answers only (the journal row grows with them:
+    // 23 ms a write at 10,000); the rest go to disk once each (2026-10-16).
+    const waitProcessed = async (id) => {
+        for (let i = 0; i < 100 && readDb((db) => db.prepare('SELECT is_processed FROM meetings WHERE id = ?').get(id)?.is_processed) !== 1; i++) await new Promise((r) => setTimeout(r, 50));
+    };
+    const overflowRows = (id) => readDb((db) => db.prepare('SELECT COUNT(*) AS n FROM live_meeting_usage_overflow WHERE meeting_id = ?').get(id).n);
+
+    test('answers past what memory keeps go to disk once each; Stop saves every one, in order', async () => {
+        const { SessionTracker } = require(dist('SessionTracker.js'));
+        const realMax = SessionTracker.MAX_ARCHIVED_USAGE;
+        SessionTracker.MAX_ARCHIVED_USAGE = 5; // test-sized: 500 answers + 5 archived stay in memory
+        try {
+            const session = new SessionTracker();
+            const mp = new MeetingPersistence(session, llmRecording([]));
+            const id = mp.beginLiveMeeting(Date.now() - 60_000);
+            session.addTranscript({ speaker: 'user', text: 'hello there', timestamp: Date.now(), final: true, confidence: 0.9, origin: 'stt' });
+            for (let i = 0; i < 520; i++) session.logUsage('chat', `q${i}`, `a${i}`);
+            assert.equal(session.getPersistableUsage().length, 505);
+            assert.equal(overflowRows(id), 15, 'the 15 oldest are on disk');
+            const result = await mp.stopMeeting();
+            assert.equal(result.meetingId, id);
+            const questions = readDb((db) => db.prepare('SELECT user_query FROM ai_interactions WHERE meeting_id = ? ORDER BY id').all(id).map((r) => r.user_query));
+            assert.equal(questions.length, 520);
+            assert.deepEqual(questions.slice(0, 3), ['q0', 'q1', 'q2']);
+            assert.equal(questions.at(-1), 'q519');
+            assert.equal(overflowRows(id), 0, 'removed with the live copy');
+            await waitProcessed(id);
+            DatabaseManager.getInstance().deleteMeeting(id);
+        } finally {
+            SessionTracker.MAX_ARCHIVED_USAGE = realMax;
+        }
+    });
+
+    test('a crash keeps them too: recovery reads the older answers back with the live copy', async () => {
+        const { SessionTracker } = require(dist('SessionTracker.js'));
+        const realMax = SessionTracker.MAX_ARCHIVED_USAGE;
+        SessionTracker.MAX_ARCHIVED_USAGE = 5;
+        try {
+            const session = new SessionTracker();
+            const mp = new MeetingPersistence(session, llmRecording([]));
+            const id = mp.beginLiveMeeting(Date.now() - 60_000);
+            session.addTranscript({ speaker: 'user', text: 'hello there', timestamp: Date.now(), final: true, confidence: 0.9, origin: 'stt' });
+            for (let i = 0; i < 520; i++) session.logUsage('chat', `q${i}`, `a${i}`);
+            assert.equal(mp.flushLiveMeeting('quit'), true);
+            // Next launch: a new persistence object with no running meeting.
+            await new MeetingPersistence(new SessionTracker(), llmRecording([])).recoverUnprocessedMeetings();
+            const questions = readDb((db) => db.prepare('SELECT user_query FROM ai_interactions WHERE meeting_id = ? ORDER BY id').all(id).map((r) => r.user_query));
+            assert.equal(questions.length, 520);
+            assert.equal(questions[0], 'q0');
+            assert.equal(overflowRows(id), 0);
+            await waitProcessed(id);
+            DatabaseManager.getInstance().deleteMeeting(id);
+        } finally {
+            SessionTracker.MAX_ARCHIVED_USAGE = realMax;
+        }
+    });
+
+    test('a meeting that must not be kept writes no older answers to disk', () => {
+        const { SessionTracker } = require(dist('SessionTracker.js'));
+        const realMax = SessionTracker.MAX_ARCHIVED_USAGE;
+        SessionTracker.MAX_ARCHIVED_USAGE = 5;
+        try {
+            const session = new SessionTracker();
+            session.setMeetingMetadata({ doNotPersist: true });
+            const mp = new MeetingPersistence(session, llmRecording([]));
+            const id = mp.beginLiveMeeting(Date.now() - 60_000);
+            for (let i = 0; i < 520; i++) session.logUsage('chat', `q${i}`, `a${i}`);
+            assert.equal(overflowRows(id), 0);
+            session.setUsageOverflowSink(null);
+        } finally {
+            SessionTracker.MAX_ARCHIVED_USAGE = realMax;
+        }
+    });
+
     test('an AI interaction holding a value SQLite cannot bind no longer loses the whole save', () => {
         const db = DatabaseManager.getInstance();
         const id = 'bind-safe-1';

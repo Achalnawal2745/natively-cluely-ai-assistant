@@ -421,7 +421,23 @@ export class MeetingPersistence {
         this.session.markMeetingStart(startedAt);
         const id = crypto.randomUUID();
         this.liveJournal.begin(id, startedAt);
+        // AI interactions past what memory keeps go to disk once each, so a
+        // meeting with thousands of answers loses none (2026-10-16). Same
+        // privacy rule as the journal: nothing is written for a meeting that
+        // must not be kept.
+        this.session.setUsageOverflowSink?.((entries) => {
+            if (this.liveJournal.meetingId !== id || this.mustNotPersist()) return;
+            try { DatabaseManager.getInstance().appendLiveUsageOverflow(id, entries); }
+            catch (e) { console.warn('[MeetingPersistence] could not write older AI answers to disk:', (e as Error)?.message); }
+        });
         return id;
+    }
+
+    /** The running meeting's AI interactions that left memory (oldest first). Read before its live row is removed. */
+    private liveUsageOverflow(): any[] {
+        const id = this.liveJournal.meetingId;
+        if (!id) return [];
+        try { return DatabaseManager.getInstance().getLiveUsageOverflow(id); } catch { return []; }
     }
 
     /** A line or answer was added to the session; `final`: a finished line. */
@@ -728,7 +744,7 @@ export class MeetingPersistence {
             // past 1,800 lines and getFullUsage() kept the last 500 answers, so a
             // 187-minute meeting was saved with only its last 73 minutes.
             transcript: [...this.session.getPersistableTranscript()],
-            usage: [...this.session.getPersistableUsage()],
+            usage: [...this.liveUsageOverflow(), ...this.session.getPersistableUsage()],
             startTime: this.session.getSessionStartTime(),
             durationMs: durationMs,
             context: this.session.getFullSessionContext(),
@@ -789,6 +805,9 @@ export class MeetingPersistence {
             // Saved: the live copy is no longer needed. (Not on failure: the
             // live copy is then the only one, and the next launch recovers it.)
             this.liveJournal.end();
+            // The older answers are in the saved meeting now (read into the
+            // snapshot above), whether or not a live row was ever written.
+            DatabaseManager.getInstance().removeLiveUsageOverflow(meetingId);
             // Notify Frontend
             const wins = require('electron').BrowserWindow.getAllWindows();
             wins.forEach((w: any) => w.webContents.send('meetings-updated'));
@@ -1757,6 +1776,7 @@ export class MeetingPersistence {
             console.warn('[MeetingPersistence] reading live meetings failed:', (e as Error)?.message);
             return;
         }
+        try { db.sweepOrphanUsageOverflow(this.liveJournal.meetingId); } catch { /* next launch */ }
         if (rows.length === 0) return;
         let retentionNever = false;
         try {
