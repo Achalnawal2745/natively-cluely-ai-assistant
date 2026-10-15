@@ -15,6 +15,7 @@ import type { MeetingSummaryTelemetryMeta } from './services/meeting/types';
 import { TranscriptNormalizer } from './services/meeting/TranscriptNormalizer';
 import { buildShortSessionPrompt, countHumanContent, isShortSession, parseShortSessionNotes } from './services/meeting/shortSessionNotes';
 import { notesContextFromParams } from './services/meeting/MeetingContextAssembler';
+import { formatSharedScreensBlock, sharedScreenEntries } from './services/meeting/screenShareNotes';
 import { buildNotesInputs, type NotesInputs } from './services/meeting/notesInputs';
 import { buildV2FallbackPrompts, parseV2SummaryResponse, v2NotesHaveContent } from './services/meeting/v2FallbackNotes';
 import { MeetingMemoryService, buildPersistedMeetingMemory } from './intelligence/MeetingMemoryService';
@@ -291,6 +292,13 @@ function formatDuration(durationMs: number): string {
  * the caller passed one. Undefined when the list is empty, so the prompts stay
  * exactly as before for users without a dictionary.
  */
+/** The notes' SHARED SCREENS block for a meeting's saved descriptions; undefined for none. */
+function sharedScreensBlockFor(raw: unknown): string | undefined {
+    let timeZone: string | undefined;
+    try { timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { /* UTC */ }
+    return formatSharedScreensBlock(raw, { timeZone }) || undefined;
+}
+
 function notesVocabulary(explicit?: string[]): string[] | undefined {
     if (Array.isArray(explicit)) return explicit;
     const list = getUserDictionary();
@@ -305,7 +313,11 @@ type ProcessMetadata = {
     callKey?: string;
     source?: 'manual' | 'calendar';
     /** A recovered meeting's saved speaking record (the live roster is gone). */
-    callRoster?: { participants: string[]; spans: Array<{ name: string; start: number; end: number }> };
+    callRoster?: { participants: string[]; spans: Array<{ name: string; start: number; end: number }>; count?: number };
+    /** The user's name as the Zoom / Teams window showed it: names "Me" when the calendar gives no name. */
+    callSelfName?: string;
+    /** What others shared on screen, described (ScreenShareContext): context for the notes. */
+    sharedScreens?: import('./services/meeting/ScreenShareContext').SharedScreenEntry[];
     /** The user's own notes typed during the meeting; the notes are built around them when present. */
     userNotes?: string;
     /** The user's spelling list for names and terms. */
@@ -348,6 +360,8 @@ export function recoveryMetadataFor(
     if (source === 'manual' || source === 'calendar') metadata.source = source;
     if (typeof saved?.callKey === 'string') metadata.callKey = saved.callKey;
     if (saved?.callRoster && Array.isArray(saved.callRoster.participants) && Array.isArray(saved.callRoster.spans)) metadata.callRoster = saved.callRoster;
+    if (typeof saved?.callSelfName === 'string' && saved.callSelfName.trim()) metadata.callSelfName = saved.callSelfName;
+    if (Array.isArray(saved?.sharedScreens) && saved.sharedScreens.length > 0) metadata.sharedScreens = saved.sharedScreens;
     // The user's notes from the meeting: the live copy's, else the meeting row's.
     const userNotes = typeof saved?.userNotes === 'string' && saved.userNotes.trim() ? saved.userNotes : details.userNotes;
     if (typeof userNotes === 'string' && userNotes.trim()) metadata.userNotes = userNotes;
@@ -496,6 +510,8 @@ export class MeetingPersistence {
                 return { ...renamed, speakerSuggestions };
             });
             console.log(`[MeetingPersistence] speaker name suggestion: ${applied ? 'applied' : 'kept as a suggestion'} (${result.suggestions.length})`);
+            // A name now on the voice is someone the user met (People view).
+            if (ok && applied) this.reindexPeople(meetingId);
             if (ok) {
                 try {
                     require('electron').BrowserWindow.getAllWindows().forEach((w: any) => w.webContents.send('meetings-updated'));
@@ -504,6 +520,14 @@ export class MeetingPersistence {
         } catch (e: any) {
             console.warn('[MeetingPersistence] speaker name suggestion skipped:', e?.message);
         }
+    }
+
+    /** Re-read who a meeting was with (People view). Never throws. */
+    protected reindexPeople(meetingId: string): void {
+        try {
+            const { indexMeetingPeople } = require('./services/organise/organiseService') as typeof import('./services/organise/organiseService');
+            indexMeetingPeople(meetingId);
+        } catch { /* the People view re-reads it later */ }
     }
 
     /**
@@ -560,6 +584,42 @@ export class MeetingPersistence {
         }
     }
 
+    /**
+     * Titles, companies and the user's notes on the invite's people, from the
+     * People and Companies pages (accepted values only). A method so a test can
+     * supply them.
+     */
+    protected knownPeopleFor(event: import('./services/calendar/calendarSessionMatch').CalendarEventSnapshot): import('./services/meeting/meetingNotesContext').KnownPersonInput[] {
+        try {
+            const { knownPeopleForEvent } = require('./services/organise/organiseService') as typeof import('./services/organise/organiseService');
+            return knownPeopleForEvent(event);
+        } catch {
+            return [];
+        }
+    }
+
+    /**
+     * After a meeting is saved: who it was with, the folders its rules file it
+     * into, and (when the notes may be written) the titles and companies people
+     * stated, kept as suggestions. Never awaited by the save; never throws.
+     */
+    protected organiseAfterSave(input: Omit<import('./services/organise/organiseService').AfterSaveInput, 'call'>): void {
+        try {
+            const { afterMeetingSaved } = require('./services/organise/organiseService') as typeof import('./services/organise/organiseService');
+            void afterMeetingSaved({
+                ...input,
+                call: (system, context) => this.llmHelper.generateMeetingSummary(system, context, system, { timeoutMs: 25_000, purpose: 'extraction' }),
+            }).then((r) => {
+                if (r.folders.length || r.facts) console.log(`[MeetingPersistence] organise: ${r.people} people, ${r.folders.length} folder(s), ${r.facts} suggested fact(s)`);
+                if (r.folders.length || r.facts) {
+                    try { require('electron').BrowserWindow.getAllWindows().forEach((w: any) => w.webContents.send('meetings-updated')); } catch { /* a closed window is not a failure */ }
+                }
+            }).catch(() => { /* logged inside */ });
+        } catch (e: any) {
+            console.warn('[MeetingPersistence] organise step skipped:', e?.message);
+        }
+    }
+
     /** Earlier meetings linked to calendar events, for the "last time" lookup. */
     protected seriesCandidates(beforeMs: number): import('./services/meeting/recurringMeetings').SeriesCandidate[] {
         try {
@@ -588,6 +648,7 @@ export class MeetingPersistence {
                 user: this.calendarAccount() ?? null,
                 profile: this.profileForNotes() ?? null,
                 seriesCandidates: src.calendarEvent ? this.seriesCandidates(src.startMs) : [],
+                knownPeople: src.calendarEvent ? this.knownPeopleFor(src.calendarEvent) : [],
             });
         } catch (e: any) {
             console.warn('[MeetingPersistence] notes context skipped (non-fatal):', e?.message);
@@ -781,6 +842,8 @@ export class MeetingPersistence {
             if (typeof metadata.calendarEventId === 'string') meta.calendarEventId = metadata.calendarEventId;
             if (metadata.calendarEvent && typeof metadata.calendarEvent === 'object') meta.calendarEvent = metadata.calendarEvent;
             if (metadata.source === 'manual' || metadata.source === 'calendar') meta.source = metadata.source;
+            if (typeof metadata.callSelfName === 'string' && metadata.callSelfName) meta.callSelfName = metadata.callSelfName;
+            if (Array.isArray(metadata.sharedScreens) && metadata.sharedScreens.length > 0) meta.sharedScreens = metadata.sharedScreens;
             if (typeof metadata.callKey === 'string') {
                 meta.callKey = metadata.callKey;
                 try {
@@ -823,6 +886,8 @@ export class MeetingPersistence {
         let v3SummaryMeta: MeetingSummaryTelemetryMeta | null = null;
         let generationSucceeded = false;
         let postCallSummaryAllowed = true;
+        // The detected mode, kept for the folder rules that run after the save.
+        let detectedTemplateType: string | undefined;
         // Phase 6 — post_call_summary lifecycle telemetry. Wrapped in try/catch
         // around track calls so a telemetry sink fault never breaks persistence.
         const _postCallStart = Date.now();
@@ -916,7 +981,9 @@ export class MeetingPersistence {
         // if the user had typed the names, and under the same "Speaker labels" switch.
         let calendarLabels: Record<string, string> | null = null;
         let llmTranscript = data.transcript;
-        const userName = this.calendarUserName();
+        // No calendar name: the name the Zoom / Teams window showed as the user's.
+        const appSelfName = typeof metadata?.callSelfName === 'string' && metadata.callSelfName.trim() ? metadata.callSelfName.trim() : undefined;
+        const userName = this.calendarUserName() ?? appSelfName;
         if ((calendarEvent || userName) && isIntelligenceFlagEnabled('speakerLabelsV1')) {
             try {
                 const { calendarSpeakerLabels } = require('./services/calendar/calendarSessionMatch') as typeof import('./services/calendar/calendarSessionMatch');
@@ -1015,6 +1082,8 @@ export class MeetingPersistence {
             lastTimeBlock: notesInputs?.lastTimeBlock,
             userNotes: notesInputs?.userNotes,
             vocabulary: notesInputs?.vocabulary,
+            // What others shared on screen ("Snapshot shared screens"), described.
+            sharedScreensBlock: notesInputs ? sharedScreensBlockFor(metadata?.sharedScreens) : undefined,
         };
 
         try {
@@ -1099,6 +1168,8 @@ export class MeetingPersistence {
                         calendarTitle: metadata?.title ?? calendarEvent?.title,
                         calendarDescription: calendarEvent?.description,
                         participants: notesInputs?.participantNames ?? [],
+                        participantEmails: notesInputs?.participantEmails ?? [],
+                        userEmail: this.calendarAccount()?.email,
                     });
                     if (detection.confidence > 0 && detection.templateType !== 'general') {
                         let modeId: string | undefined;
@@ -1109,6 +1180,7 @@ export class MeetingPersistence {
                             if (match) { modeId = match.id; modeName = match.name; }
                         } catch { /* non-fatal */ }
                         detectedMode = { templateType: detection.templateType, modeId, modeName, confidence: detection.confidence };
+                        detectedTemplateType = detection.templateType;
                         console.log(`[MeetingPersistence] Mode auto-detect: ${detection.templateType} (conf ${detection.confidence})`);
                     }
                 }
@@ -1380,6 +1452,9 @@ export class MeetingPersistence {
                 if (callLabels) summaryData = { ...summaryData, speakerLabels: { ...callLabels, ...(summaryData.speakerLabels || {}) } };
                 if (callConfidence && Object.keys(callConfidence).length > 0) summaryData = { ...summaryData, speakerConfidence: callConfidence };
                 if (callParticipants.length > 0) summaryData = { ...summaryData, callParticipants };
+                // Kept with the meeting so Regenerate writes from the same screens.
+                const screens = sharedScreenEntries(metadata?.sharedScreens);
+                if (screens.length > 0) summaryData = { ...summaryData, sharedScreens: screens };
             }
 
             const meetingData: Meeting = {
@@ -1414,6 +1489,19 @@ export class MeetingPersistence {
                 && (process.env.NATIVELY_SPEAKER_NAME_SUGGESTIONS || '').toLowerCase() !== 'off') {
                 void this.suggestSpeakerNamesAfterSave(meetingId, storedTranscript, summaryData?.speakerLabels, callParticipants, calendarEvent);
             }
+
+            // People, folder rules, proposed titles (services/organise). After the
+            // speaker suggestion is queued, so a name it applies is picked up
+            // the next time the People view syncs; the model call here is the
+            // same data scope as the notes.
+            this.organiseAfterSave({
+                meetingId,
+                detectedTemplateType,
+                transcript: storedTranscript,
+                speakerLabels: summaryData?.speakerLabels,
+                userNotes: metadata?.userNotes,
+                allowModel: postCallSummaryAllowed,
+            });
 
             // HINDSIGHT POST-MEETING RETAIN (Phase 13 wiring, behind
             // hindsight_post_meeting_retain_enabled). After the meeting is persisted
@@ -1853,6 +1941,7 @@ export class MeetingPersistence {
                 lastTimeBlock: regenInputs?.lastTimeBlock,
                 userNotes: regenInputs?.userNotes,
                 vocabulary: regenInputs?.vocabulary,
+                sharedScreensBlock: regenInputs ? sharedScreensBlockFor((details.detailedSummary as any)?.sharedScreens) : undefined,
             });
 
             if (!assembled.summary) {
@@ -1892,6 +1981,8 @@ export class MeetingPersistence {
             if (recall) detailedSummary.crossMeeting = recall;
             const prevMemory = (details.detailedSummary as any)?.meetingMemory;
             if (prevMemory) detailedSummary.meetingMemory = prevMemory;
+            const prevScreens = sharedScreenEntries((details.detailedSummary as any)?.sharedScreens);
+            if (prevScreens.length > 0) detailedSummary.sharedScreens = prevScreens;
             // The notes being replaced stay as a version the meeting page shows
             // in its own tab (bounded; DatabaseManager.archiveNotesVersion).
             if (isArchivableNotes(details.detailedSummary)) db.archiveNotesVersion(meetingId, details.detailedSummary);
@@ -1930,6 +2021,16 @@ export class MeetingPersistence {
 
         try {
             const { FollowUpDraftGenerator } = require('./services/meeting/FollowUpDraftGenerator');
+            // The user's own voice, when they kept samples and left it on. Derived (one
+            // model call) only when the samples changed since the cached profile.
+            // Off with the template draft (NATIVELY_FOLLOWUP_DRAFT_V2=0): no model call at all.
+            const llmDraft = isIntelligenceFlagEnabled('followUpDraftV2');
+            let styleGuide: string | undefined;
+            try {
+                const { getWritingStyleService, styleModelCall } = require('./services/outputs/outputsIpc');
+                const { styleGuideForDraft } = require('./services/outputs/writingStyle');
+                styleGuide = await styleGuideForDraft(getWritingStyleService(), llmDraft, styleModelCall(this.llmHelper));
+            } catch { styleGuide = undefined; }
             const draft = await new FollowUpDraftGenerator(this.llmHelper).generate({
                 summary: {
                     title: detailed.title,
@@ -1949,8 +2050,9 @@ export class MeetingPersistence {
                 mode: detailed.mode?.selectedTemplateType,
                 tone,
                 senderName: followUpSenderFirstName(),
+                styleGuide,
                 // NATIVELY_FOLLOWUP_DRAFT_V2=0 kill switch: the template draft, no LLM call.
-                deterministicOnly: !isIntelligenceFlagEnabled('followUpDraftV2'),
+                deterministicOnly: !llmDraft,
             });
             const ok = db.replaceDetailedSummary(meetingId, { ...detailed, followUpDraft: draft });
             try {

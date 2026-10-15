@@ -48,7 +48,7 @@ const MAX_NAME = 80;
  * re-validated: a well-formed key, names cleaned and bounded, the user's own
  * tile left out (the page marks it `self`). Null for anything malformed.
  */
-export function meetingPeopleReport(raw: Record<string, unknown>): { key: string; people: PersonReport[] } | null {
+export function meetingPeopleReport(raw: Record<string, unknown>): { key: string; people: PersonReport[]; selfMuted: boolean | null } | null {
     if (!providerOfKey(raw?.key) || !Array.isArray(raw.people)) return null;
     const people: PersonReport[] = [];
     const seen = new Set<string>();
@@ -61,7 +61,9 @@ export function meetingPeopleReport(raw: Record<string, unknown>): { key: string
         seen.add(name);
         people.push({ name, speaking: person.speaking === true });
     }
-    return { key: raw.key as string, people };
+    // The user's own mute in Meet (newer extensions send it): anything but a boolean is unknown.
+    const selfMuted = typeof raw.selfMuted === 'boolean' ? raw.selfMuted : null;
+    return { key: raw.key as string, people, selfMuted };
 }
 
 /** The slice of PhoneMirrorService this needs. */
@@ -81,6 +83,8 @@ export function wireExtensionMeetingTabs(
     wanted: boolean,
     meetings: LiveMeetings = liveMeetings,
     roster: CallRoster = callRoster,
+    /** The user's mute as the Meet page shows it ("Follow the meeting app's mute"). */
+    onSelfMute: (key: string, muted: boolean | null) => void = defaultSelfMute,
 ): void {
     // The calls each socket reported people for, so its going ends their open spans.
     const callsBySocket = new Map<object, Set<string>>();
@@ -101,9 +105,20 @@ export function wireExtensionMeetingTabs(
         const report = meetingPeopleReport(raw);
         if (!report) return;
         roster.report(report.key, report.people, Date.now());
+        if (report.key.startsWith('meet:')) {
+            try {
+                onSelfMute(report.key, report.selfMuted);
+            } catch { /* mute is extra; names still count */ }
+        }
         const keys = callsBySocket.get(socket) ?? new Set<string>();
         keys.add(report.key);
         callsBySocket.set(socket, keys);
     });
     channel.setMeetingTabsWanted(wanted);
+}
+
+function defaultSelfMute(key: string, muted: boolean | null): void {
+    const { meetingMuteSync } = require('../meeting/MeetingMuteSync') as typeof import('../meeting/MeetingMuteSync');
+    // Per call: two Meet tabs never overwrite each other's state.
+    meetingMuteSync.report('meet', muted, key);
 }

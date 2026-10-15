@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { EventEmitter } from 'events';
-import { meetingLinksIn, meetingRefOf } from './meetingDetection/meetingLinks';
+import { meetingIdRefsIn, meetingLinksIn, meetingRefOf } from './meetingDetection/meetingLinks';
 import { cleanEventDescription } from './calendar/calendarSessionMatch';
 import { describeOAuthError, renderOAuthCallbackPage, type OAuthCallbackOutcome } from './oauth/callbackPage';
 import type { CalendarEvent, CalendarEventProvider, CalendarSourceId, CalendarSourceStatus } from './calendar/providers/types';
@@ -175,6 +175,10 @@ function meetingKeysField(item: any): { meetingKeys?: string[] } {
     }
     for (const text of [item?.location, item?.description]) {
         if (typeof text === 'string') for (const l of meetingLinksIn(text)) keys.add(l.ref.key);
+    }
+    // A Teams invite's "Meeting ID", which is what the Teams app shows in the call.
+    for (const text of [item?.location, item?.description]) {
+        if (typeof text === 'string') for (const ref of meetingIdRefsIn(text)) keys.add(ref.key);
     }
     return keys.size > 0 ? { meetingKeys: [...keys].slice(0, 8) } : {};
 }

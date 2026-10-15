@@ -434,6 +434,7 @@ import { TrialChip, TrialNoticeBanner } from './overlay/TrialNotice';
 import { AutoStopNoticeBanner, useMeetingAutoStopNotice } from './overlay/AutoStopNotice';
 import { LastTimeRecapBanner, useLastTimeRecap } from './overlay/LastTimeRecapNotice';
 import type { LiveHelperAction } from '../types/assist';
+import { useMeetingMute } from './overlay/useMeetingMute';
 
 // PERF: hoisted plugin arrays. ReactMarkdown receives `remarkPlugins` and
 // `rehypePlugins` as new array literals if defined inline at the call site —
@@ -1426,6 +1427,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
   const autoStop = useMeetingAutoStopNotice();
   // "Last time" for a recurring meeting (overlay/LastTimeRecapNotice.tsx).
   const lastTime = useLastTimeRecap();
+  // Muted in Zoom / Teams / Meet: the mic is transcribed as silence (main: MeetingMuteSync).
+  const meetingMute = useMeetingMute();
   const [inputValue, setInputValue] = useState('');
   const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([]);
   const [skillPickerIndex, setSkillPickerIndex] = useState(0);
@@ -11237,7 +11240,7 @@ Provide only the answer, nothing else.`;
       }
     } catch (_) {}
   };
-  const hasStatusPill = shouldShowSttSummaryPill || !!pageContext;
+  const hasStatusPill = shouldShowSttSummaryPill || !!pageContext || meetingMute.muted;
   const statusPillBaseClass = `flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-medium shadow-sm backdrop-blur-xl ${isLightTheme ? 'bg-white/55 border-black/10' : 'bg-black/20 border-white/10'}`;
 
   // Suppress the shell's scale/translate entry animation until it has rendered
@@ -11413,6 +11416,16 @@ Provide only the answer, nothing else.`;
               <div className="relative no-drag flex flex-wrap items-center justify-center gap-1.5 px-4 pt-3 pb-1">
                 {/* The free trial's countdown, for as long as one is running. */}
                 {trial.chip && <TrialChip minutesLeft={trial.chip.minutesLeft} tone={trial.chip.tone} />}
+                {/* Muted in the meeting app: Natively hears silence on the mic until you unmute there. */}
+                {meetingMute.muted && (
+                  <div
+                    className={`${statusPillBaseClass} ${getStatusToneClass('warn')}`}
+                    title={t("Your microphone isn't transcribed while you're muted in the meeting app.")}
+                  >
+                    <MicOff className="h-3 w-3 opacity-70" />
+                    <span>{meetingMute.app ? `${t('Muted in')} ${meetingMute.app}` : t('Muted')}</span>
+                  </div>
+                )}
                 {shouldShowSttSummaryPill && (
                   <div
                     className={`${statusPillBaseClass} ${getStatusToneClass(sttSummary.tone)}`}

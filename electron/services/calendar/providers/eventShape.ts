@@ -6,7 +6,7 @@
  * Pure (crypto only), so the provider tests run it directly.
  */
 import crypto from 'crypto';
-import { meetingLinksIn, meetingRefOf } from '../../meetingDetection/meetingLinks';
+import { meetingIdRefsIn, meetingLinksIn, meetingRefOf } from '../../meetingDetection/meetingLinks';
 import type { CalendarAttendee } from './types';
 
 /** Google's rule for every source: an event shorter than this is not a meeting. */
@@ -61,6 +61,8 @@ export function meetingLinkAndKeys(
             link ??= l.url;
         }
     }
+    // A Teams invite's "Meeting ID", which is what the Teams app shows in the call.
+    for (const text of texts) for (const ref of meetingIdRefsIn(text)) keys.add(ref.key);
     if (!link) {
         for (const text of texts) {
             link = providerLinkIn(text);

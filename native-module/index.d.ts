@@ -168,8 +168,16 @@ export interface CallTreeNode {
   description: string
   /** macOS AXValue (strings only); Windows ItemStatus. */
   value: string
-  /** macOS AXIdentifier; Windows AutomationId. */
+  /**
+   * macOS AXIdentifier, else AXDOMIdentifier (a web view's element id);
+   * Windows AutomationId (a WebView2 element's DOM id).
+   */
   id: string
+  /**
+   * A link's address: macOS AXURL; Windows a Hyperlink's Value. Empty for
+   * everything else. Read so a meeting's join link can be recognised.
+   */
+  url: string
 }
 
 export interface CallTreeOptions {

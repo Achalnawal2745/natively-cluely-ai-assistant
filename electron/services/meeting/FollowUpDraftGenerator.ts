@@ -238,6 +238,9 @@ export interface FollowUpGenerateParams {
   // sync). Signed under the sign-off per the mode's `signAs`. Pass it raw:
   // cleanSenderName() is applied here.
   senderName?: string;
+  // How the user writes, learned from their own emails (outputs/writingStyle.ts
+  // renderStyleGuide). Absent when they turned it off or have no samples.
+  styleGuide?: string;
 }
 
 /**
@@ -372,6 +375,7 @@ export class FollowUpDraftGenerator {
     // one. Only the Slack / CRM-note recipe shapes, which no mode produces, go bare.
     const hasSubject = type !== 'slack' && type !== 'crm_note';
     const inputs = this.buildInputs(params.summary);
+    const styleGuide = typeof params.styleGuide === 'string' ? params.styleGuide.trim().slice(0, 2000) : '';
     // The next-steps rule is the ONLY part of STRICT RULES that legitimately differs
     // between the two INCLUDE_NEXT_STEPS branches. Every other rule — including the
     // plain-text and no-absence-statements rules below — is assembled OUTSIDE this
@@ -412,7 +416,7 @@ AUDIENCE & VOICE:
 - Sender: ${signName}. Put exactly this name on its own line directly under the sign-off.` : ''}
 - Register: ${profile.register}
 - Cover, in order: ${structure}
-
+${styleGuide ? `\n${styleGuide}\n` : ''}
 STRICT RULES:
 - Ground everything in the notes below. Do NOT invent decisions, owners, deadlines, numbers, pricing, or promises that aren't there.
 - Be specific to THIS meeting — reference the actual topics, names, and outcomes from the notes, not generic filler. A reader should be able to tell exactly which meeting this was about.
@@ -506,6 +510,7 @@ ${inputs}`;
       ...(validatedSubject ? { subject: validatedSubject } : (hasSubject ? { subject: subjectFromContent(params.summary) } : {})),
       body: finishSignature(result.data.body.slice(0, 4000), signName, params.mode),
       tone,
+      ...(styleGuide ? { styled: true } : {}),
       ...(actionItems.length ? { basedOnActionItemIds: actionItems.map(a => a.id).filter(Boolean) as string[] } : {}),
       ...(decisions.length ? { basedOnDecisionIds: decisions.map(d => d.id).filter(Boolean) as string[] } : {}),
     };

@@ -42,6 +42,8 @@ export function providerOfHost(hostname: string): MeetingProvider | null {
 
 const MEET_CODE = /^[a-z]{3}-[a-z]{4}-[a-z]{3}$/;
 const ZOOM_ID = /^\d{9,11}$/;
+/** A Teams meeting's numeric ID, as its short join link and its invite text carry it. */
+const TEAMS_ID = /^\d{9,20}$/;
 // A Teams meeting's thread: the same in a join link (URL-encoded, in the path)
 // and in the web app while in the call (decoded, often after the #).
 const TEAMS_THREAD = /19:meeting_[A-Za-z0-9_\-+=/]+?@thread\.v2/;
@@ -98,7 +100,7 @@ export function meetingRefOf(raw: string): MeetingRef | null {
             const thread = safeDecode(`${url.pathname}${url.search}${url.hash}`).match(TEAMS_THREAD);
             if (thread) return { provider, key: `teams:${thread[0]}` };
             // The short join links (teams.microsoft.com/meet/<id>, teams.live.com/meet/<id>).
-            if (segs[0] === 'meet' && /^\d{9,16}$/.test(segs[1] ?? '')) return { provider, key: `teams-id:${segs[1]}` };
+            if (segs[0] === 'meet' && TEAMS_ID.test(segs[1] ?? '')) return { provider, key: `teams-id:${segs[1]}` };
             return null;
         }
         case 'webex': {
@@ -120,7 +122,7 @@ const KEY_SHAPES: Array<[RegExp, MeetingProvider]> = [
     [/^zoom:\d{9,11}$/, 'zoom'],
     [/^zoom-my:[a-z0-9._-]{1,64}$/, 'zoom'],
     [/^teams:19:meeting_[A-Za-z0-9_\-+=/]{1,200}@thread\.v2$/, 'teams'],
-    [/^teams-id:\d{9,16}$/, 'teams'],
+    [/^teams-id:\d{9,20}$/, 'teams'],
     [/^webex:[a-z0-9.-]{1,100}\/[a-z0-9._-]{1,64}$/, 'webex'],
     [/^webex-mtid:[A-Za-z0-9]{8,64}$/, 'webex'],
 ];
@@ -156,4 +158,37 @@ export function meetingLinksIn(text: string | undefined | null): Array<{ url: st
 /** Every distinct meeting joined by a URL in `text`, in order of appearance. */
 export function meetingRefsIn(text: string | undefined | null): MeetingRef[] {
     return meetingLinksIn(text).map((l) => l.ref);
+}
+
+// "Meeting ID: 241 342 539 466" in an invite's text. Teams invites carry the
+// numeric ID only in words (the join link names the thread instead), and that
+// ID is what the Teams desktop app shows in a call; a Zoom invite has both.
+const MEETING_ID_IN_TEXT = /\b(?:meeting id|meeting-id|besprechungs-id|id de (?:la )?réunion|id de (?:la )?reunión|id da reunião|id riunione|vergader-id)\s*[:：]?\s*(\d[\d \u00a0.-]{7,32}\d)/gi;
+const MENTIONS_TEAMS = /\bteams\.(?:microsoft|live|cloud\.microsoft)\b|\bmicrosoft teams\b/i;
+const MENTIONS_ZOOM = /\bzoom(?:gov)?\.(?:us|com)\b|\bzoom meeting\b/i;
+
+/**
+ * Meetings an invite's text names by a labelled "Meeting ID", as keys. The
+ * provider comes from the text itself (a Teams or a Zoom invite); text that
+ * names both, or neither, gives nothing.
+ */
+export function meetingIdRefsIn(text: string | undefined | null): MeetingRef[] {
+    if (typeof text !== 'string' || text.length === 0) return [];
+    const body = text.slice(0, 200_000);
+    const teams = MENTIONS_TEAMS.test(body);
+    const zoom = MENTIONS_ZOOM.test(body);
+    if (teams === zoom) return [];
+    const out: MeetingRef[] = [];
+    const seen = new Set<string>();
+    for (const m of body.matchAll(MEETING_ID_IN_TEXT)) {
+        const digits = m[1].replace(/[\s\u00a0.-]/g, '');
+        const ref: MeetingRef | null = teams
+            ? (TEAMS_ID.test(digits) ? { provider: 'teams', key: `teams-id:${digits}` } : null)
+            : (ZOOM_ID.test(digits) ? { provider: 'zoom', key: `zoom:${digits}` } : null);
+        if (ref && !seen.has(ref.key)) {
+            seen.add(ref.key);
+            out.push(ref);
+        }
+    }
+    return out;
 }
