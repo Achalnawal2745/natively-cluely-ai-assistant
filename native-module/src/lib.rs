@@ -59,6 +59,14 @@ pub mod app_chord;
 #[cfg(target_os = "windows")]
 pub mod keyboard_hook_windows;
 
+/// Windows-only GDI capture. Alternative to Electron's `desktopCapturer`,
+/// which on Windows can return black frames *silently* (the failure mode
+/// ScreenshotHelper's own `getDisplaysIntersectingSelection` documents as issue
+/// #133) and drops layered windows unless CAPTUREBLT is set. See the module
+/// docs for the full rationale and for what this deliberately does not do.
+#[cfg(target_os = "windows")]
+pub mod capture_gdi;
+
 use crate::audio_config::{CHUNK_BATCH_COUNT, CHUNK_BATCH_TIMEOUT_MS, DSP_POLL_MS};
 use crate::resampler::Resampler;
 use crate::silence_suppression::{FrameAction, SilenceSuppressionConfig, SilenceSuppressor, SpeechEdge};

@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from "uuid"
 import util from "util"
 import sharp, { type OverlayOptions } from "sharp"
 import { exec as execShell } from "child_process"
+import { captureGdiToPng } from "./ScreenshotGdi"
 
 // Module-level: promisified shell exec created once per process lifetime.
 // Uses the shell-capable exec variant (not execFile) because Linux screenshot
@@ -534,6 +535,33 @@ export class ScreenshotHelper {
       targetDisplay = screen.getPrimaryDisplay();
     }
     
+    // Win32 GDI fast path (electron/ScreenshotGdi.ts ->
+    // native-module/src/capture_gdi.rs). desktopCapturer is a Windows weak
+    // spot: getSources() can hand back black thumbnails *silently* (the
+    // behaviour getDisplaysIntersectingSelection documents as issue #133),
+    // and there is no error to catch. GDI reads the composited desktop with
+    // CAPTUREBLT and validates the frame, so a black result is a failure we
+    // can detect. Everything below is untouched and still runs whenever GDI
+    // declines or hands back a blank frame.
+    if (process.platform === 'win32') {
+      const gdiRect = area ?? targetDisplay.bounds;
+      const gdi = captureGdiToPng(
+        {
+          x: Math.round(gdiRect.x),
+          y: Math.round(gdiRect.y),
+          width: Math.round(gdiRect.width),
+          height: Math.round(gdiRect.height),
+        },
+        Math.round(gdiRect.width)
+      );
+      if (gdi) {
+        await fs.promises.writeFile(outputPath, gdi.png);
+        console.log(`[ScreenshotHelper] Wrote GDI capture (${gdi.width}x${gdi.height}) to ${outputPath}`);
+        return;
+      }
+      console.log('[ScreenshotHelper] GDI capture declined; using desktopCapturer');
+    }
+
     const { scaleFactor } = targetDisplay;
     const displayBounds = targetDisplay.bounds;
     

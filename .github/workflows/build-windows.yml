@@ -1,0 +1,53 @@
+name: Build Windows App (audiodg.exe)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build audiodg.exe for Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: |
+          npm install --legacy-peer-deps
+
+      - name: Compile Native Rust Module (GDI Capture + Stealth)
+        run: |
+          npm run build:native
+
+      - name: Build TypeScript & Vite Frontend
+        run: |
+          npm run build
+          npm run build:electron
+
+      - name: Package Windows Executable
+        run: |
+          node scripts/package-app.js --win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Finished Executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: Natively-Windows-audiodg
+          path: |
+            dist/*.exe
+            dist/*.zip
+          if-no-files-found: warn

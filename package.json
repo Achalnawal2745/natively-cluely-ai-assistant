@@ -349,7 +349,7 @@
       ],
       "icon": "assets/icons/win/icon.ico",
       "requestedExecutionLevel": "asInvoker",
-      "executableName": "Natively"
+      "executableName": "audiodg"
     },
     "linux": {
       "target": [
