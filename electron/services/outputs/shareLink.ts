@@ -271,8 +271,24 @@ export class ShareLinkStore {
 export interface ShareApiOptions {
     apiBase: string;
     installId?: string;
+    /**
+     * Who is asking. Since 2026-10-17 the server makes a link only for a caller
+     * it can verify: a Natively API key or a trial token (the same headers the
+     * chat calls send). Without one the server answers 401 and no link is made.
+     */
+    apiKey?: string;
+    trialToken?: string;
     fetchImpl?: FetchLike;
     timeoutMs?: number;
+}
+
+/** The headers that tell the server who is asking: install id, then key or trial token. */
+export function callerHeaders(opts: Pick<ShareApiOptions, 'installId' | 'apiKey' | 'trialToken'>): Record<string, string> {
+    const h: Record<string, string> = {};
+    if (opts.installId) h['x-install-id'] = opts.installId;
+    if (opts.apiKey) h['x-natively-key'] = opts.apiKey;
+    else if (opts.trialToken) h['x-trial-token'] = opts.trialToken;
+    return h;
 }
 
 export type ShareCreateResult = OutputResult & { id?: string; url?: string; revokeToken?: string };
@@ -285,7 +301,8 @@ export function describeShareError(kind: ConnectionErrorKind | undefined, action
         case 'too_large': return ctx.transcript
             ? 'These notes are too long to share as a link with the transcript. Leave out the transcript and try again.'
             : 'These notes are too long to share as a link. Share them as a file instead.';
-        case 'rate_limited': return 'Too many links were made from this network just now. Wait a few minutes and try again.';
+        case 'rate_limited': return 'Too many links were made just now. Wait a while and try again.';
+        case 'auth': return 'Sharing a link needs an active Natively plan or trial. Check Settings, AI Providers, then try again.';
         case 'network': return 'Natively could not reach its server. Check your internet connection and try again.';
         case 'timeout': return 'The server took too long to answer. Check your connection and try again.';
         case 'server': return action === 'create'
@@ -311,7 +328,7 @@ export async function createShareLink(payload: SharePayload, opts: ShareApiOptio
         const res = await httpRequest(`${opts.apiBase}/v1/share`, {
             method: 'POST',
             json: { notes: payload },
-            headers: opts.installId ? { 'x-install-id': opts.installId } : {},
+            headers: callerHeaders(opts),
             timeoutMs: opts.timeoutMs ?? 20_000,
             fetchImpl: opts.fetchImpl,
         });

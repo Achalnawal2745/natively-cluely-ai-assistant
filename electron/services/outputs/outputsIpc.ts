@@ -120,12 +120,22 @@ function installIdForShare(): string | undefined {
     return cachedInstallId;
 }
 
+/** The key or trial token the chat calls send; the server makes links only for a caller it can verify. */
+function callerForShare(): { apiKey?: string; trialToken?: string } {
+    try {
+        const cm = (require('../CredentialsManager') as typeof import('../CredentialsManager')).CredentialsManager.getInstance();
+        return { apiKey: cm.getNativelyApiKey() || undefined, trialToken: cm.getTrialToken() || undefined };
+    } catch {
+        return {};
+    }
+}
+
 let shareLinksInstance: ShareLinks | null = null;
 function shareLinks(): ShareLinks {
     if (!shareLinksInstance) {
         shareLinksInstance = new ShareLinks(
             new ShareLinkStore(app.getPath('userData')),
-            () => ({ apiBase: nativelyApiBase(), installId: installIdForShare() }),
+            () => ({ apiBase: nativelyApiBase(), installId: installIdForShare(), ...callerForShare() }),
         );
     }
     return shareLinksInstance;

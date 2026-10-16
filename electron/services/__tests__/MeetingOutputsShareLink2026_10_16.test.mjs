@@ -150,6 +150,27 @@ describe('createShareLink', () => {
         assert.equal(calls[0].init.headers['x-install-id'], 'uuid-1');
         assert.deepEqual(JSON.parse(calls[0].init.body), { notes: payload });
     });
+    test('the caller is named: the API key wins, else the trial token, never both (server needs one since 2026-10-17)', async () => {
+        const ok = { status: 200, body: { ok: true, id: 'AbCdEfGhIjKl', url: 'https://heynatively.com/s/AbCdEfGhIjKl', revokeToken: 'tok' } };
+        let f = fakeFetch([ok]);
+        await share.createShareLink(payload, OPTS(f.fetchImpl, { installId: 'uuid-1', apiKey: 'natively_sk_abc', trialToken: 'trial_xyz' }));
+        assert.equal(f.calls[0].init.headers['x-natively-key'], 'natively_sk_abc');
+        assert.equal(f.calls[0].init.headers['x-trial-token'], undefined);
+        assert.equal(f.calls[0].init.headers['x-install-id'], 'uuid-1');
+        f = fakeFetch([ok]);
+        await share.createShareLink(payload, OPTS(f.fetchImpl, { trialToken: 'trial_xyz' }));
+        assert.equal(f.calls[0].init.headers['x-trial-token'], 'trial_xyz');
+        assert.equal(f.calls[0].init.headers['x-natively-key'], undefined);
+        assert.equal(f.calls[0].init.headers['x-install-id'], undefined);
+        assert.deepEqual(share.callerHeaders({}), {});
+    });
+    test('a 401 from the server is told as a missing plan or trial, in words', async () => {
+        const r = await share.createShareLink(payload, OPTS(fakeFetch([{ status: 401, body: { ok: false, error: 'share_auth_required' } }]).fetchImpl));
+        assert.equal(r.ok, false);
+        assert.equal(r.kind, 'auth');
+        assert.match(r.message, /Natively plan or trial/);
+        assert.doesNotMatch(r.message, /401|share_auth_required/);
+    });
     test('each failure is a plain sentence: too long, rate limited, offline, server trouble, odd answer', async () => {
         let r = await share.createShareLink(payload, OPTS(fakeFetch([{ status: 413, body: { ok: false, error: 'too_long' } }]).fetchImpl));
         assert.equal(r.ok, false); assert.equal(r.kind, 'too_large'); assert.match(r.message, /too long to share as a link/);
