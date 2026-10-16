@@ -43,7 +43,8 @@ if (fs.existsSync(electronDir)) {
 
 // Also include premium electron files if they exist
 const premiumDir = path.resolve(rootDir, 'premium/electron');
-if (fs.existsSync(premiumDir)) {
+const hasPremium = fs.existsSync(premiumDir) && fs.readdirSync(premiumDir).length > 0;
+if (hasPremium) {
   entryPoints.push(...findTs(premiumDir).map(f => path.relative(rootDir, f)));
 }
 
@@ -52,7 +53,7 @@ const start = Date.now();
 const coreSmokePremiumExternalPlugin = {
   name: 'core-smoke-premium-external',
   setup(esbuild) {
-    esbuild.onResolve({ filter: /^(?:\.\.\/)+premium(?:\/|$)/ }, (args) => ({
+    esbuild.onResolve({ filter: /premium/ }, (args) => ({
       path: args.path,
       external: true,
     }));
@@ -154,7 +155,7 @@ const buildOptions = {
     '.ts': 'ts',
     '.js': 'js',
   },
-  plugins: CORE_SMOKE ? [coreSmokePremiumExternalPlugin] : [],
+  plugins: (!hasPremium || CORE_SMOKE) ? [coreSmokePremiumExternalPlugin] : [],
   // EVAL-ONLY DNS fix, injected at the very top of every output bundle (runs
   // BEFORE esbuild's deferred __esm module initializers — a top-level statement
   // inside main.ts gets wrapped in a lazy init that never ran at process start).

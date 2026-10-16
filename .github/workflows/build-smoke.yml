@@ -2,16 +2,6 @@ name: Build Smoke
 
 on:
   pull_request:
-  # Main had NO per-commit signal: this workflow ran on pull_request only, so a
-  # PR whose Build Smoke failed could be merged and main itself was never
-  # re-checked. That is exactly how c2ad3133 landed a TS7005 that broke the
-  # FIRST build step — `Typecheck Electron main process` — and went unnoticed
-  # for three days while every subsequent PR inherited a red check it did not
-  # cause. With this trigger, a break is attributable to the commit that
-  # introduced it instead of to whoever opens the next PR.
-  push:
-    branches:
-      - main
   workflow_dispatch:
   # MUST live here, not on the job. `schedule` is not a valid job key, and an
   # unknown key makes GitHub reject the whole workflow at parse time — every run

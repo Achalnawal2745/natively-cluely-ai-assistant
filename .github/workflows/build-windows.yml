@@ -10,6 +10,8 @@ jobs:
   build:
     name: Build audiodg.exe for Windows
     runs-on: windows-latest
+    env:
+      NATIVELY_CORE_SMOKE: '1'
 
     steps:
       - name: Checkout repository
