@@ -1,15 +1,16 @@
 // Settings › Audio: "People sharing your microphone". Off by default. When on,
-// the microphone channel is transcribed with the provider's speaker separation
-// (Deepgram today) and, when the meeting is saved, the loudest voice stays
-// "Me" while each other real voice becomes its own speaker in the transcript
-// and notes (services/meeting/roomSpeakers.ts). Takes effect from the next
-// meeting. Built from the same row and switch as the other Audio rows.
+// the microphone channel is transcribed with the provider's own voice labels
+// (electron/audio/sttDiarization.ts) and, when the meeting is saved, the voice
+// with the most words stays "Me" while each other real voice becomes its own
+// speaker in the transcript and notes (services/meeting/roomSpeakers.ts).
+// Takes effect from the next meeting. Built from the same row and switch as
+// the other Audio rows.
 import React, { useEffect, useState } from 'react';
 import { Users } from 'lucide-react';
 import { useT } from '../../i18n';
 import { SettingsRow, SettingsSwitch } from './SettingsRow';
+import { ROOM_SPEAKERS_PROVIDERS } from './roomSpeakersProviders';
 
-export const ROOM_SPEAKERS_PROVIDERS: ReadonlySet<string> = new Set(['deepgram']);
 
 export const RoomSpeakersSettings: React.FC<{ sttProvider: string }> = ({ sttProvider }) => {
     const t = useT();
@@ -30,7 +31,7 @@ export const RoomSpeakersSettings: React.FC<{ sttProvider: string }> = ({ sttPro
     };
 
     const description = !supported
-        ? t('Works with Deepgram transcription. Your current provider does not tell voices apart.')
+        ? t('Works with Natively, Deepgram or Soniox transcription. Your current provider does not tell voices apart.')
         : enabled
             ? t('On from your next meeting. Voices on your microphone are told apart when the meeting is saved; the one that speaks most is you.')
             : t('Off. Everything heard on your microphone is written down as you.');

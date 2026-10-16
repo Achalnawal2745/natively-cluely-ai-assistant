@@ -8,6 +8,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { nextVoiceEpoch } from './sttDiarization';
 import { deepgramHintParams, getSttContextTerms } from './sttContextTerms';
 import { RECOGNITION_LANGUAGES } from '../config/languages';
 import { RealtimeSilenceTail } from './realtimeSilenceTail';
@@ -207,6 +208,9 @@ export class DeepgramStreamingSTT extends EventEmitter {
     private connect(): void {
         if (this.isConnecting) return;
         this.isConnecting = true;
+        // Deepgram numbers voices afresh on every connection: this one's lines
+        // carry its own window number (sttDiarization.nextVoiceEpoch).
+        const voiceEpoch = nextVoiceEpoch();
 
         console.log(`[DeepgramStreaming] Connecting (rate=${this.sampleRate}, ch=${this.numChannels}, lang=${this.languageCode})...`);
 
@@ -293,7 +297,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
                             text: transcript,
                             isFinal,
                             confidence: alt?.confidence ?? 1.0,
-                            ...(speakerId ? { speakerId } : {}),
+                            ...(speakerId ? { speakerId, voiceEpoch } : {}),
                         });
                         // Auto Answer V3 endpoint normalization (additive): Deepgram
                         // distinguishes is_final (segment) from speech_final (utterance).
