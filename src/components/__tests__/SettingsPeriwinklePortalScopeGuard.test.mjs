@@ -57,6 +57,7 @@ const GUARDED_FILES = [
   'src/components/settings/ProviderPerformanceSettings.tsx',
   'src/components/settings/RerankerSettings.tsx',
   'src/components/settings/RetrievalSettings.tsx',
+  'src/components/settings/RoomSpeakersSettings.tsx',
   'src/components/settings/SettingsRow.tsx',
   'src/components/settings/SettingsToggle.tsx',
   'src/components/settings/Sidebar.tsx', // dead code (unused, zero imports) — covered in case it's ever revived

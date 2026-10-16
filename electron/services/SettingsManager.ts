@@ -174,6 +174,10 @@ export interface AppSettings {
     localWhisperPerChannelEnabled?: boolean;
     localWhisperModelMic?: string;
     localWhisperModelSystem?: string;
+    /** Tell apart people sharing the microphone (a room): diarize the mic
+     *  channel and split its voices at save (meeting/roomSpeakers.ts). Off by
+     *  default; needs a provider with diarization (Deepgram). */
+    roomSpeakersEnabled?: boolean;
     // Phase 6 — TelemetryService toggle. Defaults to true (local-only JSONL).
     // When false, no telemetry is written to disk and no sinks fire.
     telemetryEnabled?: boolean;

@@ -3766,14 +3766,19 @@ export class AppState {
       if (apiKey) {
         console.log(`[Main] Using DeepgramStreamingSTT for ${speaker}`);
         const dg = new DeepgramStreamingSTT(apiKey, CredentialsManager.getInstance().getSttModel('deepgram'));
-        // Opt-in diarization (#3): only on the remote/system channel ('interviewer'), where
-        // multiple people may speak. The mic channel is always the local user ('me'), so
-        // diarizing it adds cost with no benefit. Default OFF via flag.
+        // Opt-in diarization (#3): on the remote/system channel ('interviewer'), where
+        // multiple people may speak, behind the flag. On the mic channel only when the
+        // user turned on "people sharing your microphone" (Settings, Audio): a room's
+        // voices then carry provider ids and are split at save (meeting/roomSpeakers.ts).
+        // Otherwise the mic stays undiarized: it is one person, and diarizing it would
+        // add cost with no benefit. Both default OFF.
         try {
           if (speaker === 'interviewer' && isIntelligenceFlagEnabled('speakerDiarizationV1')) {
             dg.setDiarization(true);
+          } else if (speaker === 'user' && SettingsManager.getInstance().get('roomSpeakersEnabled') === true) {
+            dg.setDiarization(true);
           }
-        } catch { /* flag read non-fatal */ }
+        } catch { /* flag / setting read non-fatal */ }
         stt = dg;
       } else {
         console.warn(`[Main] No API key for Deepgram STT, falling back to GoogleSTT`);

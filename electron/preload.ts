@@ -1982,6 +1982,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // In-app recovery: resets the active local-Whisper model + per-channel
   // overrides back to the safe fallback. See electron/ipcHandlers.ts handler.
   localWhisperResetToDefault: () => ipcRenderer.invoke('local-whisper-reset-to-default'),
+  roomSpeakersGet: () => ipcRenderer.invoke('room-speakers-get'),
+  roomSpeakersSet: (enabled: boolean) => ipcRenderer.invoke('room-speakers-set', enabled),
   localWhisperGetChannelConfig: () => ipcRenderer.invoke('local-whisper-get-channel-config'),
   localWhisperSetChannelConfig: (cfg: {
     enabled?: boolean;

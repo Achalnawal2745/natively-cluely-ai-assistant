@@ -1072,6 +1072,27 @@ export class MeetingPersistence {
                 callParticipants = [];
             }
         }
+        // People sharing the user's microphone (Settings, Audio): the mic channel
+        // was transcribed with provider diarization, so its lines carry voice ids.
+        // The loudest voice stays "Me"; each other real voice becomes "Speaker N",
+        // numbered past the call's named people (meeting/roomSpeakers.ts). The
+        // same lines are renamed in the notes' copy. Before the strip below,
+        // which would drop the voice ids this reads.
+        try {
+            const { SettingsManager } = require('./services/SettingsManager');
+            if (SettingsManager.getInstance().get('roomSpeakersEnabled') === true) {
+                const { splitRoomSpeakers } = require('./services/meeting/roomSpeakers') as typeof import('./services/meeting/roomSpeakers');
+                const split = splitRoomSpeakers(storedTranscript, { usedIds: Object.keys(callLabels || {}) });
+                if (split.voices > 0) {
+                    storedTranscript = split.transcript;
+                    llmTranscript = llmTranscript.map((seg, i) => (split.renamed.has(i) ? { ...seg, speaker: split.renamed.get(i)! } : seg));
+                    console.log(`[MeetingPersistence] room speakers: ${split.voices} other voice(s) on the microphone`);
+                }
+            }
+        } catch (e: any) {
+            console.warn('[MeetingPersistence] room speakers skipped:', e?.message);
+        }
+
         // Only the call's named ids are stored: an STT provider's own voice ids
         // (diarization) stay in-session, as they always have.
         storedTranscript = storedTranscript.map((seg: any) => {

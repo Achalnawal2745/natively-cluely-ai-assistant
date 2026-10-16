@@ -165,6 +165,9 @@ export interface ElectronAPI {
   // The model panel itself goes through its own `(window as any).electronAPI`
   // cast, so only the two read APIs SettingsOverlay calls are declared here.
   localWhisperGetModels?: () => Promise<{ models: any[]; activeModelId: string }>
+  /** People sharing the microphone: diarize the mic channel and split its voices at save. */
+  roomSpeakersGet?: () => Promise<{ enabled: boolean }>
+  roomSpeakersSet?: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
   localWhisperGetChannelConfig?: () => Promise<{
     enabled: boolean
     micModelId: string

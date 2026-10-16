@@ -14143,6 +14143,17 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // People sharing the microphone (Settings, Audio): diarize the mic channel and
+  // split its voices at save (services/meeting/roomSpeakers.ts). Takes effect
+  // from the next meeting; the STT instance is built when a meeting starts.
+  safeHandle('room-speakers-get', async () => ({ enabled: SettingsManager.getInstance().get('roomSpeakersEnabled') === true }));
+  safeHandle('room-speakers-set', async (_, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') return { success: false, error: 'invalid' };
+    return SettingsManager.getInstance().set('roomSpeakersEnabled', enabled)
+      ? { success: true }
+      : { success: false, error: 'settings_store_degraded' };
+  });
+
   // Per-channel model overrides (mic / system audio). When enabled, the two
   // STT instances pick their own model via these slots. When disabled, both
   // fall back to localWhisperModel (the existing global setting).
