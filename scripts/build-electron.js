@@ -53,10 +53,15 @@ const start = Date.now();
 const coreSmokePremiumExternalPlugin = {
   name: 'core-smoke-premium-external',
   setup(esbuild) {
-    esbuild.onResolve({ filter: /premium/ }, (args) => ({
-      path: args.path,
-      external: true,
-    }));
+    esbuild.onResolve({ filter: /premium/ }, (args) => {
+      if (args.kind === 'entry-point') {
+        return null;
+      }
+      return {
+        path: args.path,
+        external: true,
+      };
+    });
   },
 };
 
