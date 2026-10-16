@@ -126,6 +126,13 @@ const TOKEN_META: Record<'notion' | CrmService, { title: string; icon: React.Rea
         tokenLabel: 'API key',
         howTo: 'In Affinity, open Settings, API, and generate an API key. Copy it here.',
     },
+    salesforce: {
+        title: 'Salesforce',
+        icon: <Contact size={20} />,
+        blurb: 'Log meetings on the contacts you met.',
+        tokenLabel: 'Access token',
+        howTo: 'Paste your Salesforce access token and your instance URL (from the Salesforce CLI, "sf org display", or a connected app). Access tokens expire, so paste a fresh one when logging stops working.',
+    },
 };
 
 const TokenServiceRow: React.FC<{
@@ -137,18 +144,22 @@ const TokenServiceRow: React.FC<{
 }> = ({ service, connected, description, onChanged, children }) => {
     const t = useT();
     const meta = TOKEN_META[service];
+    const needsUrl = service === 'salesforce';
     const [open, setOpen] = useState(false);
     const [token, setToken] = useState('');
+    const [instanceUrl, setInstanceUrl] = useState('');
     const [busy, setBusy] = useState<'save' | 'test' | null>(null);
     const [flash, setFlash] = useState<Flash>(null);
+    const canSave = !!token.trim() && (!needsUrl || !!instanceUrl.trim()) && !busy;
 
     const save = async () => {
+        if (!canSave) return;
         setBusy('save');
         setFlash(null);
-        const res = await api()?.saveToken(service, token).catch(() => undefined);
+        const res = await api()?.saveToken(service, token, needsUrl ? instanceUrl.trim() : undefined).catch(() => undefined);
         setBusy(null);
         setFlash(flashOf(res, `${meta.title} is connected.`));
-        if (res?.ok) { setToken(''); setOpen(false); onChanged(); }
+        if (res?.ok) { setToken(''); setInstanceUrl(''); setOpen(false); onChanged(); }
     };
     const test = async () => {
         setBusy('test');
@@ -191,6 +202,21 @@ const TokenServiceRow: React.FC<{
                 <div className="pb-3">
                     <div className={`${SETTINGS_CARD} p-4 space-y-3`}>
                         <p className="text-xs leading-relaxed text-text-secondary">{t(meta.howTo)}</p>
+                        {needsUrl && (
+                            <label className="block">
+                                <span className={SETTINGS_FIELD_LABEL}>{t('Instance URL')}</span>
+                                <input
+                                    type="text"
+                                    autoComplete="off"
+                                    spellCheck={false}
+                                    placeholder="https://yourorg.my.salesforce.com"
+                                    className={`${SETTINGS_INPUT} mt-1`}
+                                    value={instanceUrl}
+                                    onChange={(e) => setInstanceUrl(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' && canSave) void save(); }}
+                                />
+                            </label>
+                        )}
                         <label className="block">
                             <span className={SETTINGS_FIELD_LABEL}>{t(meta.tokenLabel)}</span>
                             <div className="mt-1 flex items-center gap-2">
@@ -201,9 +227,9 @@ const TokenServiceRow: React.FC<{
                                     className={SETTINGS_INPUT}
                                     value={token}
                                     onChange={(e) => setToken(e.target.value)}
-                                    onKeyDown={(e) => { if (e.key === 'Enter' && token.trim()) void save(); }}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' && canSave) void save(); }}
                                 />
-                                <button type="button" className={SETTINGS_BTN} onClick={() => void save()} disabled={!token.trim() || !!busy}>
+                                <button type="button" className={SETTINGS_BTN} onClick={() => void save()} disabled={!canSave}>
                                     <BusyIcon busy={busy === 'save'} icon={<KeyRound size={14} />} />
                                     {t('Save')}
                                 </button>
@@ -603,6 +629,7 @@ export const ConnectionsSettings: React.FC = () => {
                     <TokenServiceRow service="hubspot" connected={status.hubspot.connected} onChanged={() => void load()} />
                     <TokenServiceRow service="attio" connected={status.attio.connected} onChanged={() => void load()} />
                     <TokenServiceRow service="affinity" connected={status.affinity.connected} onChanged={() => void load()} />
+                    <TokenServiceRow service="salesforce" connected={status.salesforce.connected} onChanged={() => void load()} />
                     <SettingsFootnote icon={<KeyRound size={14} />}>
                         {t('Tokens and webhook addresses are kept in your system keychain and never shown again.')}
                     </SettingsFootnote>

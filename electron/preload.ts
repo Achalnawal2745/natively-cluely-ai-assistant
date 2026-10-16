@@ -2291,7 +2291,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     addSlackWebhook: (label, url) => ipcRenderer.invoke('outputs:slack-add', label, url),
     removeSlackWebhook: (id) => ipcRenderer.invoke('outputs:slack-remove', id),
     testSlackWebhook: (id) => ipcRenderer.invoke('outputs:slack-test', id),
-    saveToken: (service, token) => ipcRenderer.invoke('outputs:save-token', service, token),
+    saveToken: (service, token, instanceUrl) => ipcRenderer.invoke('outputs:save-token', service, token, instanceUrl),
     testConnection: (service) => ipcRenderer.invoke('outputs:test', service),
     disconnect: (service) => ipcRenderer.invoke('outputs:disconnect', service),
     searchNotion: (query) => ipcRenderer.invoke('outputs:notion-search', query),

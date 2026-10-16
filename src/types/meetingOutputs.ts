@@ -8,8 +8,8 @@
 /** The longest Slack draft Natively sends (the composer shows a counter against it). */
 export const SLACK_DRAFT_MAX_CHARS = 40_000;
 
-export type ConnectionService = 'slack' | 'notion' | 'hubspot' | 'attio' | 'affinity';
-export type CrmService = 'hubspot' | 'attio' | 'affinity';
+export type ConnectionService = 'slack' | 'notion' | 'hubspot' | 'attio' | 'affinity' | 'salesforce';
+export type CrmService = 'hubspot' | 'attio' | 'affinity' | 'salesforce';
 
 /** Why a connection call failed, in categories the UI words plainly. */
 export type ConnectionErrorKind =
@@ -66,6 +66,8 @@ export interface ConnectionsStatus {
     hubspot: { connected: boolean };
     attio: { connected: boolean };
     affinity: { connected: boolean };
+    /** Salesforce also keeps the instance URL the user pasted, so the row can show it. */
+    salesforce: { connected: boolean; instanceUrl?: string };
     mcp: McpServerStatus;
 }
 
@@ -108,7 +110,8 @@ export interface MeetingOutputsApi {
     addSlackWebhook: (label: string, url: string) => Promise<OutputResult & { webhook?: SlackWebhookInfo }>;
     removeSlackWebhook: (id: string) => Promise<OutputResult>;
     testSlackWebhook: (id: string) => Promise<OutputResult>;
-    saveToken: (service: 'notion' | CrmService, token: string) => Promise<OutputResult>;
+    /** Salesforce passes its instance URL too; the other services ignore it. */
+    saveToken: (service: 'notion' | CrmService, token: string, instanceUrl?: string) => Promise<OutputResult>;
     testConnection: (service: 'notion' | CrmService) => Promise<OutputResult>;
     disconnect: (service: 'notion' | CrmService) => Promise<OutputResult>;
     searchNotion: (query: string) => Promise<OutputResult & { results?: NotionSearchResult[] }>;

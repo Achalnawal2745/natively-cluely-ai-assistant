@@ -1,19 +1,57 @@
 // CRM notes: the meeting's notes as a note on each attendee the CRM knows,
-// found by email. HubSpot (private app token), Attio (API key) and Affinity
-// (API key). The user sees who matched before anything is written.
+// found by email. HubSpot (private app token), Attio (API key), Affinity
+// (API key) and Salesforce (access token + the org's instance URL). The user
+// sees who matched before anything is written.
 //
-// TODO(salesforce): Salesforce is not built. Its REST API needs an OAuth
-// connected app (a client id registered with Salesforce and a browser sign-in
-// with a redirect back to Natively), which a pasted token cannot replace. Add
-// it as a provider here once that app exists, with the same match-then-send
-// shape: SOQL `SELECT Id, Name FROM Contact WHERE Email IN (...)`, then a
-// ContentNote linked to each contact through ContentDocumentLink.
+// Salesforce differs from the other three: it is reached at the user's own org
+// host (instanceUrl), not one fixed API host, so every Salesforce call also
+// takes `instanceUrl`. People are found with SOQL on Contact.Email; the meeting
+// is logged as a completed Task on each contact (Salesforce's own "log a call"
+// activity), one request per contact so a partial failure reports who already
+// has theirs. A pasted access token is enough to post — no OAuth connected app
+// is required — but such tokens expire, so the UI says to paste a fresh one
+// when it stops working.
 
 import type { ConnectionErrorKind, CrmService } from '../../../src/types/meetingOutputs';
 import { errorKindOf, httpRequest, type FetchLike } from './httpRequest';
 import { notesToMarkdown, notesToPlainText, type NotesDocument } from './notesDocument';
 
-export const CRM_LABELS: Record<CrmService, string> = { hubspot: 'HubSpot', attio: 'Attio', affinity: 'Affinity' };
+export const CRM_LABELS: Record<CrmService, string> = { hubspot: 'HubSpot', attio: 'Attio', affinity: 'Affinity', salesforce: 'Salesforce' };
+
+/** Salesforce REST API version Natively calls (a stable, widely available one). */
+export const SALESFORCE_API_VERSION = 'v60.0';
+/** Salesforce Task.Description is limited to 32,000 characters; Subject to 255. */
+const SALESFORCE_DESCRIPTION_MAX = 32_000;
+const SALESFORCE_SUBJECT_MAX = 255;
+
+/**
+ * The org REST host from whatever the user pasted ("acme.my.salesforce.com",
+ * "https://acme.my.salesforce.com/", with or without a path). Returns a bare
+ * `https://host` origin, or null when it is not an https Salesforce host. The
+ * host allow-list keeps a stored value from pointing requests anywhere else.
+ */
+export function normaliseSalesforceInstanceUrl(raw: unknown): string | null {
+    let s = String(raw ?? '').trim();
+    if (!s) return null;
+    if (!/^[a-z]+:\/\//i.test(s)) s = `https://${s}`;
+    let u: URL;
+    try { u = new URL(s); } catch { return null; }
+    if (u.protocol !== 'https:') return null;
+    const host = u.hostname.toLowerCase();
+    if (!/(^|\.)(my\.salesforce\.com|salesforce\.com|force\.com)$/.test(host)) return null;
+    return `https://${host}`;
+}
+
+/** Escape a value for a single-quoted SOQL string literal. */
+function soqlEscape(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+/** Salesforce ActivityDate wants YYYY-MM-DD; fall back to today for a bad date. */
+export function salesforceActivityDate(dateIso: string, now: () => number = Date.now): string {
+    const ms = Date.parse(dateIso);
+    return new Date(Number.isNaN(ms) ? now() : ms).toISOString().slice(0, 10);
+}
 
 /** Attendees looked up per send; more are not worth a burst of requests. */
 export const CRM_MAX_ATTENDEES = 25;
@@ -22,7 +60,7 @@ const NOTE_MAX_CHARS = 60_000;
 export interface CrmRecord { id: string; name?: string }
 export interface CrmMatch { email: string; name?: string; record?: CrmRecord }
 
-interface CrmCallOpts { token: string; fetchImpl?: FetchLike; signal?: AbortSignal }
+interface CrmCallOpts { token: string; fetchImpl?: FetchLike; signal?: AbortSignal; /** Required for Salesforce: the org's REST host. */ instanceUrl?: string }
 
 export function normaliseEmail(raw: unknown): string | null {
     const e = String(raw ?? '').trim().toLowerCase();
@@ -73,6 +111,18 @@ export function parseAttioPeople(data: any, email: string): CrmRecord | undefine
     return undefined;
 }
 
+/** Salesforce SOQL result: the first Contact whose Email is exactly this one. */
+export function parseSalesforceContacts(data: any, email: string): CrmRecord | undefined {
+    for (const r of Array.isArray(data?.records) ? data.records : []) {
+        if (String(r?.Email || '').toLowerCase() !== email) continue;
+        const id = r?.Id;
+        if (typeof id !== 'string' || !id) continue;
+        const name = String(r?.Name || '').trim();
+        return { id, ...(name ? { name } : {}) };
+    }
+    return undefined;
+}
+
 export function parseAffinityPersons(data: any, email: string): CrmRecord | undefined {
     for (const p of Array.isArray(data?.persons) ? data.persons : []) {
         const emails: string[] = [p?.primary_email, ...(Array.isArray(p?.emails) ? p.emails : [])].map((e) => String(e || '').toLowerCase());
@@ -111,6 +161,14 @@ export async function findCrmRecord(service: CrmService, email: string, o: CrmCa
         });
         return parseAttioPeople(res.data, email);
     }
+    if (service === 'salesforce') {
+        if (!o.instanceUrl) throw new Error('salesforce instance url missing');
+        const soql = `SELECT Id, Name, Email FROM Contact WHERE Email = '${soqlEscape(email)}' LIMIT 5`;
+        const res = await httpRequest(`${o.instanceUrl}/services/data/${SALESFORCE_API_VERSION}/query/?q=${encodeURIComponent(soql)}`, {
+            headers: bearer(o.token), fetchImpl: o.fetchImpl, signal: o.signal,
+        });
+        return parseSalesforceContacts(res.data, email);
+    }
     const res = await httpRequest(`${AFFINITY}/persons?term=${encodeURIComponent(email)}&page_size=10`, {
         headers: affinityAuth(o.token), fetchImpl: o.fetchImpl, signal: o.signal,
     });
@@ -132,6 +190,9 @@ export async function testCrm(service: CrmService, o: CrmCallOpts): Promise<void
         await httpRequest(`${HUBSPOT}/crm/v3/objects/contacts?limit=1`, { headers: bearer(o.token), fetchImpl: o.fetchImpl, signal: o.signal });
     } else if (service === 'attio') {
         await httpRequest(`${ATTIO}/self`, { headers: bearer(o.token), fetchImpl: o.fetchImpl, signal: o.signal });
+    } else if (service === 'salesforce') {
+        if (!o.instanceUrl) throw new Error('salesforce instance url missing');
+        await httpRequest(`${o.instanceUrl}/services/data/${SALESFORCE_API_VERSION}/limits`, { headers: bearer(o.token), fetchImpl: o.fetchImpl, signal: o.signal });
     } else {
         await httpRequest(`${AFFINITY}/auth/whoami`, { headers: affinityAuth(o.token), fetchImpl: o.fetchImpl, signal: o.signal });
     }
@@ -144,9 +205,10 @@ function htmlParagraphs(text: string): string {
     return text.split(/\n{2,}/).map((p) => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('');
 }
 
-/** The note bodies, per CRM: HubSpot takes HTML, Attio Markdown, Affinity plain text. */
+/** The note bodies, per CRM: HubSpot takes HTML, Attio Markdown, Affinity and Salesforce plain text. */
 export function crmNoteBody(service: CrmService, doc: NotesDocument): string {
     if (service === 'attio') return notesToMarkdown(doc, { includeTitle: false }).slice(0, NOTE_MAX_CHARS);
+    if (service === 'salesforce') return notesToPlainText(doc).slice(0, SALESFORCE_DESCRIPTION_MAX);
     const text = notesToPlainText(doc).slice(0, NOTE_MAX_CHARS);
     return service === 'hubspot' ? htmlParagraphs(text) : text;
 }
@@ -214,17 +276,30 @@ export async function sendCrmNote(service: CrmService, doc: NotesDocument, recor
             return { sentIds: [], notesCreated: 0, error: errorKindOf(err) };
         }
     }
-    // Attio notes belong to one record each, written one after another (its rate
-    // limits); a failure stops there and reports who already has theirs.
+    // Attio and Salesforce attach to one record each, written one after another
+    // (their rate limits); a failure stops there and reports who already has
+    // theirs. Salesforce logs a completed Task (its "log a call" activity);
+    // Attio writes a note.
+    if (service === 'salesforce' && !o.instanceUrl) return { sentIds: [], notesCreated: 0, error: 'not_connected' };
+    const activityDate = service === 'salesforce' ? salesforceActivityDate(doc.dateIso) : '';
     const sentIds: string[] = [];
     for (const r of records) {
         try {
-            await httpRequest(`${ATTIO}/notes`, {
-                method: 'POST',
-                headers: bearer(o.token),
-                json: { data: { parent_object: 'people', parent_record_id: r.id, title: doc.title.slice(0, 250), format: 'markdown', content: body } },
-                fetchImpl: o.fetchImpl, signal: o.signal,
-            });
+            if (service === 'salesforce') {
+                await httpRequest(`${o.instanceUrl}/services/data/${SALESFORCE_API_VERSION}/sobjects/Task`, {
+                    method: 'POST',
+                    headers: bearer(o.token),
+                    json: { Subject: doc.title.slice(0, SALESFORCE_SUBJECT_MAX), Description: body, WhoId: r.id, Status: 'Completed', ActivityDate: activityDate, TaskSubtype: 'Call' },
+                    fetchImpl: o.fetchImpl, signal: o.signal,
+                });
+            } else {
+                await httpRequest(`${ATTIO}/notes`, {
+                    method: 'POST',
+                    headers: bearer(o.token),
+                    json: { data: { parent_object: 'people', parent_record_id: r.id, title: doc.title.slice(0, 250), format: 'markdown', content: body } },
+                    fetchImpl: o.fetchImpl, signal: o.signal,
+                });
+            }
             sentIds.push(r.id);
         } catch (err) {
             return { sentIds, notesCreated: sentIds.length, error: errorKindOf(err) };

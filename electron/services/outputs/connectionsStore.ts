@@ -21,6 +21,8 @@ export interface ConnectionSecrets {
     hubspot?: { token: string };
     attio?: { token: string };
     affinity?: { token: string };
+    /** Salesforce needs the org's instance URL as well as the access token. */
+    salesforce?: { token: string; instanceUrl: string };
     /** The local MCP server: its bearer token, the port it keeps, and whether it is on. */
     mcp?: { token: string; port?: number; enabled?: boolean };
 }
@@ -63,6 +65,12 @@ function sanitize(raw: any): ConnectionSecrets {
     for (const k of ['hubspot', 'attio', 'affinity'] as const) {
         if (token(raw?.[k])) out[k] = { token: token(raw[k])! };
     }
+    // Salesforce is kept only with BOTH a token and an https instance URL; the
+    // IPC validates the host before it reaches here, so a half-saved pair (e.g.
+    // an older file) is dropped rather than used.
+    const sfTok = token(raw?.salesforce);
+    const sfUrl = typeof raw?.salesforce?.instanceUrl === 'string' ? raw.salesforce.instanceUrl.slice(0, MAX_TOKEN_CHARS) : '';
+    if (sfTok && /^https:\/\//i.test(sfUrl)) out.salesforce = { token: sfTok, instanceUrl: sfUrl };
     if (token(raw?.mcp)) {
         const port = Number(raw.mcp.port);
         out.mcp = {
@@ -146,8 +154,21 @@ export class ConnectionsStore {
         return this.update((n) => {
             if (service === 'notion') n.notion = { token, ...(n.notion?.parent && n.notion.token === token ? { parent: n.notion.parent } : {}) };
             else if (service === 'mcp') n.mcp = { ...(n.mcp || {}), token };
+            // Salesforce carries an instance URL too, so its token is set through
+            // setSalesforce; here we only refresh a token for an already-saved org.
+            else if (service === 'salesforce') { if (n.salesforce?.instanceUrl) n.salesforce = { token, instanceUrl: n.salesforce.instanceUrl }; }
             else n[service] = { token };
         });
+    }
+
+    /** The saved Salesforce instance URL (its org's REST host), or null. */
+    salesforceInstanceUrl(): string | null {
+        return this.read().salesforce?.instanceUrl ?? null;
+    }
+
+    /** Save the Salesforce access token and instance URL together. */
+    setSalesforce(token: string, instanceUrl: string): boolean {
+        return this.update((n) => { n.salesforce = { token, instanceUrl }; });
     }
 
     clear(service: 'notion' | CrmService | 'mcp'): void {

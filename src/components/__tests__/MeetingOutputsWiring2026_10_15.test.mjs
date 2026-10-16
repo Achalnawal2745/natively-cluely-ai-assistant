@@ -47,6 +47,22 @@ test('opening the Share menu reads connection status only; sends happen from a S
     assert.equal((src.match(/sendNotion\(meetingId, \{ includeTranscript, startOver: true \}\)/g) || []).length, 1);
 });
 
-test('Salesforce is left as a clear TODO, not half-built', () => {
-    assert.match(read('electron/services/outputs/crm.ts'), /TODO\(salesforce\): Salesforce is not built\. Its REST API needs an OAuth\s+\/\/ connected app/);
+test('Salesforce is wired end to end as a fourth CRM (parity round 3)', () => {
+    // Type: part of the CRM union.
+    assert.match(read('src/types/meetingOutputs.ts'), /export type CrmService = [^;]*'salesforce'/);
+    // Sender: label, instance-URL guard, SOQL lookup and Task send.
+    const crm = read('electron/services/outputs/crm.ts');
+    assert.match(crm, /CRM_LABELS[^=]*=\s*\{[^}]*salesforce: 'Salesforce'/);
+    assert.match(crm, /export function normaliseSalesforceInstanceUrl/);
+    assert.match(crm, /FROM Contact WHERE Email/);
+    assert.match(crm, /\/sobjects\/Task/);
+    // Main: a recognised token service and CRM.
+    const ipc = read('electron/services/outputs/outputsIpc.ts');
+    assert.match(ipc, /TOKEN_SERVICES = \[[^\]]*'salesforce'/);
+    assert.match(ipc, /isCrm[^=]*=.*'salesforce'/);
+    // UI: a Settings row and a place in the Share menu's CRM picker.
+    assert.match(read('src/components/settings/ConnectionsSettings.tsx'), /<TokenServiceRow service="salesforce"/);
+    const share = read('src/components/meeting/ShareMenu.tsx');
+    assert.match(share, /CRM_NAMES[^=]*=\s*\{[^}]*salesforce: 'Salesforce'/);
+    assert.match(share, /'hubspot', 'attio', 'affinity', 'salesforce'/);
 });

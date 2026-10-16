@@ -19,7 +19,7 @@ import { crmSendable, notionResultView, slackDraftStatus } from './outputsView';
 const api = (): MeetingOutputsApi | undefined => window.electronAPI?.meetingOutputs;
 const MENU_CLOSE_MS = 150;
 const DIALOG_LAYER = 400;
-const CRM_NAMES: Record<CrmService, string> = { hubspot: 'HubSpot', attio: 'Attio', affinity: 'Affinity' };
+const CRM_NAMES: Record<CrmService, string> = { hubspot: 'HubSpot', attio: 'Attio', affinity: 'Affinity', salesforce: 'Salesforce' };
 
 type DialogKind = 'html' | 'slack' | 'notion' | 'crm' | 'message';
 
@@ -270,7 +270,7 @@ const OutputDialog: React.FC<{
     const [matches, setMatches] = useState<CrmMatchPreview | null>(null);
     const [chosen, setChosen] = useState<Set<string>>(new Set());
 
-    const crmConnected = (['hubspot', 'attio', 'affinity'] as CrmService[]).filter((s) => conn?.[s]?.connected);
+    const crmConnected = (['hubspot', 'attio', 'affinity', 'salesforce'] as CrmService[]).filter((s) => conn?.[s]?.connected);
 
     // Reset on every open.
     useEffect(() => {
@@ -510,7 +510,7 @@ const OutputDialog: React.FC<{
                     sendable.length > 0,
                 )}</> : closeBtn(t('Close'))}
             >
-                {!crmConnected.length ? <NotConnected service="HubSpot, Attio or Affinity" onClose={onClose} /> : (
+                {!crmConnected.length ? <NotConnected service="HubSpot, Attio, Affinity or Salesforce" onClose={onClose} /> : (
                     <div className="space-y-3">
                         {crmConnected.length > 1 && (
                             <label className="block">
