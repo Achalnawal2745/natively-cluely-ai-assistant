@@ -101,7 +101,7 @@ const DISGUISE_TILE_RESTING = {
 // Shared with the main process so the picker cannot offer a model the ipc
 // validator rejects. Pure data module — no node/electron imports.
 import { NVIDIA_NIM_STT_MODELS, DEFAULT_NVIDIA_NIM_STT_MODEL, allowedLanguageKeysForNvidiaModel } from '../../electron/audio/nvidiaNimSttModels';
-import { STT_MODEL_CATALOG, isEnglishOnlySttModel, type SttModelProvider } from '../../electron/audio/sttModelCatalog';
+import { STT_MODEL_CATALOG, isEnglishOnlySttModel, sttModelRejectsLanguage, type SttModelProvider } from '../../electron/audio/sttModelCatalog';
 import { isDefaultOpenAiSttBase } from '../../electron/audio/openaiSttBaseUrl';
 import { isRecognitionLanguageOffered, PARAKEET_ONLY_LANGUAGE_KEYS } from '../../electron/config/languages';
 
@@ -1493,9 +1493,20 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
     // Parakeet-only languages are hidden unless the active local model lists them.
     // Deepgram's English-only models (Nova-3 Medical, Nova-2 Meeting) answer
     // any other language, or `multi`, with a 400 — measured live 2026-09-26.
+    // The multilingual ones refuse a few languages too (Nova-3 has no
+    // Malayalam, Nova-2 none of the Indian languages but Hindi; 2026-10-16).
+    const deepgramEnglishOnly = sttProvider === 'deepgram' && isEnglishOnlySttModel('deepgram', sttModels.deepgram);
     const deepgramLanguageCapability = useMemo(() => {
-        if (sttProvider !== 'deepgram' || !isEnglishOnlySttModel('deepgram', sttModels.deepgram)) return null;
-        const keys = Object.entries(availableLanguages).filter(([, l]: [string, any]) => l?.group === 'English').map(([k]) => k);
+        if (sttProvider !== 'deepgram') return null;
+        const model = sttModels.deepgram;
+        const englishOnly = isEnglishOnlySttModel('deepgram', model);
+        const entries = Object.entries(availableLanguages) as [string, any][];
+        const keys = entries
+            .filter(([key, l]) => englishOnly
+                ? l?.group === 'English'
+                : key === 'auto' || !sttModelRejectsLanguage('deepgram', model, String(l?.iso639 ?? '')))
+            .map(([k]) => k);
+        if (!englishOnly && keys.length === entries.length) return null;
         return keys.length > 0 ? new Set<string>(keys) : null;
     }, [sttProvider, sttModels.deepgram, availableLanguages]);
 
@@ -1544,9 +1555,13 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
     // session always sends English (DeepgramStreamingSTT.connectLanguage), so
     // an Auto or non-English stored choice shows as the English it gets —
     // not as an empty placeholder with nothing in the list to match.
-    const showsEnglishFallback = (languageLocked || !!deepgramLanguageCapability) && (storedLanguageUnsupported || autoDetectUnavailable);
-    const displayedSttGroup = showsEnglishFallback ? 'English' : selectedSttGroup;
-    const displayedRecognitionLanguage = showsEnglishFallback ? 'english-us' : recognitionLanguage;
+    const showsEnglishFallback = (languageLocked || deepgramEnglishOnly) && (storedLanguageUnsupported || autoDetectUnavailable);
+    // A multilingual Deepgram model sends `multi` for a stored language it has
+    // no model for (DeepgramStreamingSTT.connectLanguage), so that is shown as
+    // the Auto Detect it gets rather than a value missing from the list.
+    const showsAutoFallback = !showsEnglishFallback && sttProvider === 'deepgram' && storedLanguageUnsupported;
+    const displayedSttGroup = showsEnglishFallback ? 'English' : showsAutoFallback ? 'Auto' : selectedSttGroup;
+    const displayedRecognitionLanguage = showsEnglishFallback ? 'english-us' : showsAutoFallback ? 'auto' : recognitionLanguage;
 
     // Helper to get variants for current group
     const currentGroupVariants = Object.entries(availableLanguages)

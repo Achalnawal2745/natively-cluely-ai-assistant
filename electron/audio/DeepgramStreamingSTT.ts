@@ -11,7 +11,7 @@ import { EventEmitter } from 'events';
 import { deepgramHintParams, getSttContextTerms } from './sttContextTerms';
 import { RECOGNITION_LANGUAGES } from '../config/languages';
 import { RealtimeSilenceTail } from './realtimeSilenceTail';
-import { isEnglishOnlySttModel, resolveSttModel } from './sttModelCatalog';
+import { isEnglishOnlySttModel, sttModelRejectsLanguage, resolveSttModel } from './sttModelCatalog';
 
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
@@ -76,6 +76,10 @@ export class DeepgramStreamingSTT extends EventEmitter {
      *  English for these models too; this covers a language stored earlier. */
     private connectLanguage(): string {
         if (isEnglishOnlySttModel('deepgram', this.model) && !this.languageCode.startsWith('en')) return 'en';
+        // A multilingual model that has no such language (Nova-3 and Malayalam)
+        // would refuse the connection outright; `multi` keeps the meeting
+        // transcribing. Settings hides these languages for the model too.
+        if (sttModelRejectsLanguage('deepgram', this.model, this.languageCode)) return 'multi';
         return this.languageCode;
     }
 

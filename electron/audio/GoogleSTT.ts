@@ -109,6 +109,10 @@ export class GoogleSTT extends EventEmitter {
     private static readonly V1_LANGUAGE_CODE_OVERRIDES: Record<string, string> = {
         'zh-CN': 'cmn-Hans-CN',
         'zh-TW': 'cmn-Hant-TW',
+        // Google names Punjabi by script, not country, and lists Urdu under
+        // Pakistan (cloud.google.com speech-to-text supported languages).
+        'pa-IN': 'pa-Guru-IN',
+        'ur-IN': 'ur-PK',
     };
 
     // Languages the `latest_long` model does not cover in STT v1 (Mandarin
