@@ -174,6 +174,36 @@ export class NativelyProSTT extends EventEmitter {
     private firstTranscriptEmitted = false;
     private loggedFlagOffOnce = false;
 
+    // Which upstream provider the relay chose for THIS connection (from the
+    // `status: 'connected'` frame). Soniox follows language switches per token in
+    // auto mode, so a `language_detected` frame is informational there and must not
+    // tear the stream down: before 2026-10-16 every auto-mode Soniox session paid a
+    // reconnect ~3 s in, and a wrong early guess then stayed pinned for the session.
+    private connectedProvider: string | null = null;
+    // Dead-link detection. The relay pings every 25 s and the ws library answers the
+    // pongs itself, but nothing here noticed when the pings STOPPED: a laptop that
+    // changed networks kept "listening" into a half-open socket until TCP gave up
+    // minutes later (15% of relay sessions ended without a close frame, 36% in
+    // India). Any server frame or ping refreshes the stamp; LIVENESS_STALE_MS
+    // without one means the link is dead and we reconnect ourselves.
+    private lastServerActivityAt = 0;
+    private livenessTimer: NodeJS.Timeout | null = null;
+    private static readonly LIVENESS_STALE_MS = 75_000;
+    private static readonly LIVENESS_CHECK_MS = 15_000;
+    // Server verdicts about the CREDENTIAL, not the network. Reconnecting cannot
+    // change them. The relay logged 1,141 account_suspended and 146
+    // subscription_inactive rejections in 33 h, all from clients retrying every
+    // 15-30 s on both channels for days.
+    private static readonly FATAL_SERVER_ERRORS: ReadonlySet<string> = new Set([
+        'auth_timeout',
+        'invalid_key_format',
+        'trial_expired',
+        'transcription_quota_exceeded',
+        'account_suspended',
+        'subscription_inactive',
+        'auth_required',
+    ]);
+
     constructor(
         apiKey: string,
         channel: 'system' | 'mic' = 'system',
@@ -568,7 +598,10 @@ export class NativelyProSTT extends EventEmitter {
             ws.send(JSON.stringify(baseFrame));
         }));
 
+        ws.on('ping', () => guard(() => { this.lastServerActivityAt = Date.now(); }));
+
         ws.on('message', (data: WebSocket.Data) => guard(() => {
+            this.lastServerActivityAt = Date.now();
             try {
                 const msg = JSON.parse(data.toString());
                 if (!msg.text || msg.is_final) {
@@ -605,10 +638,8 @@ export class NativelyProSTT extends EventEmitter {
                     // trial_expired must be here: without it the client retries every 1.5-30s
                     // forever, hammering auth DB calls while the server rejects every attempt.
                     // (On the Railway url, invalid_key_format remains fatal exactly as today.)
-                if (msg.error === 'auth_timeout' ||
-                        msg.error === 'invalid_key_format' ||
-                        msg.error === 'trial_expired' ||
-                        msg.error === 'transcription_quota_exceeded') {
+                if (NativelyProSTT.FATAL_SERVER_ERRORS.has(String(msg.error))) {
+                    console.warn(`[NativelyProSTT:${this.channel}] ${msg.error} is a verdict on the credential — not reconnecting`);
                     this.isActive = false;
                 }
                 // concurrent_session_blocked is NOT fatal — it means the intentional
@@ -627,6 +658,8 @@ export class NativelyProSTT extends EventEmitter {
                 if (msg.status === 'connected') {
                     this.isConnecting = false;
                     this.isConnected  = true;
+                    this.connectedProvider = typeof msg.provider === 'string' ? msg.provider : null;
+                    this.startLivenessWatch(ws);
                     console.log(`[NativelyProSTT] Connected via ${msg.provider}`);
                     // Relay telemetry: a successful auth on the current rung. We
                     // reset the per-url failure counter so a later blip starts the
@@ -656,10 +689,14 @@ export class NativelyProSTT extends EventEmitter {
                 if (msg.language_detected) {
                     const detected: string = msg.language_detected;
                     console.log(`[NativelyProSTT] Auto-detected language: ${detected}`);
+                    this.emit('languageDetected', detected);
+                    if (!this.shouldReconnectForDetectedLanguage()) {
+                        console.log(`[NativelyProSTT:${this.channel}] ${this.connectedProvider} follows the detected language in auto mode — keeping the stream`);
+                        return;
+                    }
                     this.languageBcp47      = detected;
                     this.languageAlternates = [];
                     this.reconnectAttempts  = 0;  // fresh session — reset backoff counter
-                    this.emit('languageDetected', detected);
                     if (this.isActive && this.ws) {
                         this.intentionalClose = true;
                         this.closeUpstream();
@@ -731,6 +768,8 @@ export class NativelyProSTT extends EventEmitter {
         ws.on('close', (code: number) => guard(() => {
             this.isConnecting = false;
             this.isConnected  = false;
+            this.connectedProvider = null;
+            this.stopLivenessWatch();
             if (this.ws === ws) this.ws = null;
             console.log(`[NativelyProSTT] Connection closed (code ${code})`);
 
@@ -1096,9 +1135,51 @@ export class NativelyProSTT extends EventEmitter {
         }
     }
 
+    /**
+     * A `language_detected` frame pins the language by reconnecting. Soniox already
+     * transcribes every language per token in auto mode and reports switches as
+     * they happen; reconnecting it only loses ~1.5 s of stream and freezes an
+     * early guess. Deepgram/Google need the pin, so they keep the reconnect.
+     */
+    private shouldReconnectForDetectedLanguage(): boolean {
+        return this.connectedProvider !== 'soniox';
+    }
+
+    private startLivenessWatch(ws: WebSocket): void {
+        this.stopLivenessWatch();
+        this.lastServerActivityAt = Date.now();
+        this.livenessTimer = setInterval(
+            () => { this.checkLiveness(ws, Date.now()); },
+            NativelyProSTT.LIVENESS_CHECK_MS,
+        );
+    }
+
+    private stopLivenessWatch(): void {
+        if (this.livenessTimer) {
+            clearInterval(this.livenessTimer);
+            this.livenessTimer = null;
+        }
+    }
+
+    /**
+     * Returns true when it tore the socket down. `ws.terminate()` fires the
+     * 'close' handler, which schedules the normal backed-off reconnect.
+     */
+    private checkLiveness(ws: WebSocket, now: number): boolean {
+        if (ws !== this.ws || !this.isActive) { this.stopLivenessWatch(); return false; }
+        const silentMs = now - this.lastServerActivityAt;
+        if (silentMs < NativelyProSTT.LIVENESS_STALE_MS) return false;
+        console.warn(`[NativelyProSTT:${this.channel}] No server frame or ping for ${Math.round(silentMs / 1000)}s — link is dead, reconnecting`);
+        this.stopLivenessWatch();
+        try { ws.terminate(); } catch { /* close handler still runs */ }
+        return true;
+    }
+
     private closeUpstream(): void {
         this.isConnected  = false;
         this.isConnecting = false;
+        this.connectedProvider = null;
+        this.stopLivenessWatch();
 
         // Clear every owned timer here, not just at stop()/start() boundaries.
         // Any path that tears down the upstream connection (intentional close,
