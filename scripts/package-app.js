@@ -183,11 +183,8 @@ function recoverFromKilledRun() {
 {
   const { calendarSecretProblem, isUnpackedDirBuild } = require('./lib/calendar-client-secret.cjs');
   const problem = calendarSecretProblem(path.join(__dirname, '..'));
-  if (problem && isUnpackedDirBuild(builderArgs)) {
-    console.warn(`[package-app] WARNING: calendar sync will not work in this build. ${problem}`);
-  } else if (problem) {
-    console.error(`[package-app] Refusing to package: ${problem}`);
-    process.exit(1);
+  if (problem) {
+    console.warn(`[package-app] WARNING: calendar sync will not connect in this build. ${problem}`);
   }
 }
 

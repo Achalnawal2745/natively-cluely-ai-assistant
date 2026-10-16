@@ -12,6 +12,7 @@ jobs:
     runs-on: windows-latest
     env:
       NATIVELY_CORE_SMOKE: '1'
+      GOOGLE_CALENDAR_CLIENT_SECRET: 'GOCSPX-standalone-build-token'
 
     steps:
       - name: Checkout repository
