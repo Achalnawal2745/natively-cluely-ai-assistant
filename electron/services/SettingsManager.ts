@@ -178,6 +178,10 @@ export interface AppSettings {
      *  channel and split its voices at save (meeting/roomSpeakers.ts). Off by
      *  default; needs a provider with diarization (Deepgram). */
     roomSpeakersEnabled?: boolean;
+    /** "About you": a few lines in the user's own words (role, team, what they
+     *  care about) that the meeting notes prompt reads, like Granola's bio.
+     *  At most 600 characters; empty = not used. */
+    userBio?: string;
     // Phase 6 — TelemetryService toggle. Defaults to true (local-only JSONL).
     // When false, no telemetry is written to disk and no sinks fire.
     telemetryEnabled?: boolean;

@@ -25,7 +25,8 @@ import { describeConnectionError, errorKindOf } from './httpRequest';
 import { checkSlackDraft, composeSlackDraft, isSlackWebhookUrl, postSlackWebhook, slackDraftMessage, testSlackWebhook } from './slack';
 import { NotionPartialPages, appendNotionBatches, buildNotionBlocks, createNotionPage, looksLikeNotionToken, normaliseNotionId, notionPageTitle, searchNotion, testNotion } from './notion';
 import { CRM_LABELS, CrmSendSession, crmCandidates, crmSendSummary, matchAttendees, normaliseEmail, normaliseSalesforceInstanceUrl, remainingRecords, sendCrmNote, testCrm, uniqueRecords, type CrmRecord } from './crm';
-import { ENRICHMENT_LABEL, enrichmentFacts, lookupAttendees, testEnrichment } from './enrichment';
+import { ENRICHMENT_LABEL, enrichmentFacts, lookupAttendees, lookupCompany, testEnrichment } from './enrichment';
+import { companyDomainForEmail, isFreeMailDomain } from '../organise/people';
 import { mcpClientSnippets, newMcpToken, randomMcpPort, startMcpServer, type MeetingSource, type RunningMcpServer } from './mcpServer';
 import { WritingStyleService, type StyleModelCall } from './writingStyle';
 import { applyFollowUpEdit, currentDraft, followUpSample } from './followUpEdit';
@@ -586,7 +587,29 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
             if (!personId) continue;
             for (const f of facts) if (store.addFact(personId, meetingId as string, f.kind, f.value, f.quote)) suggested++;
         }
-        const counts = { lookedUp: people.length, found, suggested };
+        // The attendees' companies: a one-paragraph description for the Companies
+        // page where it has none yet (never over the user's own text). The user's
+        // own domain is left out: those are colleagues, not a company to describe.
+        let companies = 0;
+        if (!error) {
+            const selfDomain = companyDomainForEmail(selfIdentity().email);
+            const domains = new Set<string>();
+            for (const c of candidates) {
+                const d = companyDomainForEmail(c.email);
+                if (d && d !== selfDomain && !isFreeMailDomain(d)) domains.add(d);
+            }
+            for (const domain of [...domains].slice(0, 10)) {
+                try {
+                    const existing = store.getCompany(domain);
+                    if (existing?.description) continue;
+                    const co = await lookupCompany(domain, { token });
+                    if (co.description && store.updateCompany(domain, { description: co.description, descriptionSource: 'clearbit', ...(co.name && !existing?.name ? { name: co.name } : {}) })) companies++;
+                } catch {
+                    break; // a company failure never undoes the people already suggested
+                }
+            }
+        }
+        const counts = { lookedUp: people.length, found, suggested, companies };
         if (error) return { ok: false, kind: error, message: describeConnectionError(error, ENRICHMENT_LABEL), ...counts };
         const message = suggested
             ? `Found ${found} of ${people.length} people in ${ENRICHMENT_LABEL}. ${suggested} ${suggested === 1 ? 'suggestion is' : 'suggestions are'} waiting on the People page for you to accept.`

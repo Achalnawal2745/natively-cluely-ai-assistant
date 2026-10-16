@@ -100,6 +100,25 @@ describe('suggestions', () => {
     });
 });
 
+describe('company description (round 5)', () => {
+    test('GET the company API by domain; name and description read; 404 is empty', async () => {
+        const { calls, fetchImpl } = recorder(() => json(200, { name: 'Acme Inc', description: 'Acme makes anvils for cartoon coyotes.' }));
+        const c = await en.lookupCompany('Acme.com', { token: 'k', fetchImpl });
+        assert.deepEqual(c, { domain: 'acme.com', name: 'Acme Inc', description: 'Acme makes anvils for cartoon coyotes.' });
+        assert.equal(calls[0].url, 'https://company.clearbit.com/v2/companies/find?domain=acme.com');
+        assert.equal(calls[0].headers.Authorization, 'Bearer k');
+        const { fetchImpl: nf } = recorder(() => json(404, {}));
+        assert.deepEqual(await en.lookupCompany('nobody.io', { token: 'k', fetchImpl: nf }), { domain: 'nobody.io' });
+    });
+    test('a bad domain is skipped without a request; the description is capped', async () => {
+        const { calls, fetchImpl } = recorder(() => json(200, {}));
+        assert.deepEqual(await en.lookupCompany('not a domain', { token: 'k', fetchImpl }), { domain: 'not a domain' });
+        assert.equal(calls.length, 0);
+        const long = en.parseEnrichedCompany({ description: 'x'.repeat(2000) }, 'a.io');
+        assert.ok(long.description.length <= 600);
+    });
+});
+
 describe('connections store', () => {
     const fakeSafe = () => ({ isEncryptionAvailable: () => true, encryptString: (s) => Buffer.from(`enc:${s}`), decryptString: (b) => b.toString('utf8').replace(/^enc:/, '') });
     test('the Clearbit key is saved like the other tokens and survives a reload', () => {

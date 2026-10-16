@@ -7275,6 +7275,8 @@ export class AppState {
         if (report.meetingKey) meta.callMeetingKey = report.meetingKey;
         if (report.participantCount !== null) meta.callParticipantCount = report.participantCount;
       }
+      // The app's own recording indicator, saved with the meeting (read-only).
+      if (report && report.recording !== null) liveMeta().callRecording = report.recording;
       // The meeting the window names, as a live meeting: SessionCalendarLinker
       // links the event whose link is this one, whatever else overlaps it.
       liveMeetings.set(DESKTOP_CALL_LIVE_SOURCE, report?.meetingKey ? [{

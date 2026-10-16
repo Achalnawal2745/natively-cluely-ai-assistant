@@ -22,9 +22,9 @@ import { buildQuickActionTurn, responseLanguageIsPinned, type QuickActionContext
  * (promptSystemV2 ACTIONS: catch_me_up, define, sound_smart); otherwise the
  * short prompts below, written for this feature.
  */
-export type LiveHelperAction = 'catch_me_up' | 'define' | 'sound_smart';
+export type LiveHelperAction = 'catch_me_up' | 'define' | 'sound_smart' | 'follow_up_questions';
 
-export const LIVE_HELPER_ACTIONS: readonly LiveHelperAction[] = ['catch_me_up', 'define', 'sound_smart'];
+export const LIVE_HELPER_ACTIONS: readonly LiveHelperAction[] = ['catch_me_up', 'define', 'sound_smart', 'follow_up_questions'];
 
 export function isLiveHelperAction(value: unknown): value is LiveHelperAction {
     return typeof value === 'string' && (LIVE_HELPER_ACTIONS as readonly string[]).includes(value);
@@ -52,11 +52,12 @@ export function catchUpWindowSeconds(nowMs: number, lastInteractionMs?: number |
 export const LIVE_HELPER_WINDOW_SECONDS: Record<Exclude<LiveHelperAction, 'catch_me_up'>, number> = {
     define: 120,
     sound_smart: 180,
+    follow_up_questions: 240,
 };
 
 /** Where each helper's words appear in the overlay: Recap's card or Clarify's line. */
 export function liveHelperDisplayKind(action: LiveHelperAction): 'recap' | 'clarify' {
-    return action === 'sound_smart' ? 'clarify' : 'recap';
+    return action === 'sound_smart' || action === 'follow_up_questions' ? 'clarify' : 'recap';
 }
 
 /** What the overlay says when there is nothing to work from. */
@@ -64,10 +65,13 @@ export const LIVE_HELPER_EMPTY: Record<LiveHelperAction, string> = {
     catch_me_up: "Nothing was said in the last few minutes, so you haven't missed anything.",
     define: 'There is nothing in the conversation yet to explain.',
     sound_smart: 'There is no conversation yet to build on. Try again once people are talking.',
+    follow_up_questions: 'There is no conversation yet to ask about. Try again once people are talking.',
 };
 
 // Used when the v2 prompt system is off. Natively's own wording.
 const LEGACY_PROMPTS: Record<LiveHelperAction, string> = {
+    follow_up_questions: `You suggest follow-up questions during a live conversation.
+Read the last few minutes of the transcript and give the two or three most useful questions the user could ask next: ones that clear up something vague, pin down an owner or a date, or surface a risk nobody has named. One line each, in the words the user would actually say. No preamble, no numbering commentary, nothing invented.`,
     catch_me_up: `You help someone who looked away from a live conversation for a few minutes and wants to rejoin it.
 Read only the transcript you are given. Say what they missed, in this order when present: the topic now on the table, anything decided, anything asked of them or waiting on them.
 Write at most four short lines, each starting with its label ("Now:", "Decided:", "Asked of you:", "Also:"). Keep names, numbers and dates exactly as said. If nothing of substance was said, say that in one line.
@@ -82,6 +86,8 @@ Never generic praise, never a summary of the conversation, and nothing the trans
 
 /** The system prompt for one helper: v2 when on, the prompts above otherwise. */
 export function liveHelperSystemPrompt(action: LiveHelperAction, promptTier: string | undefined): string {
+    // The v2 prompt system has no action for follow-up questions; its own prompt applies on every tier.
+    if (action === 'follow_up_questions') return LEGACY_PROMPTS[action];
     return resolveV2SystemPrompt({ action, tier: v2TierForPromptTier(promptTier) }) ?? LEGACY_PROMPTS[action];
 }
 
@@ -115,4 +121,5 @@ const LEGACY_TASK_LINE: Record<LiveHelperAction, string> = {
     catch_me_up: 'Task: tell me what I missed in the transcript above.',
     define: 'Task: explain the most recent unfamiliar term in the transcript above.',
     sound_smart: 'Task: give me one specific point or question I could say next.',
+    follow_up_questions: 'Task: give me the two or three most useful follow-up questions I could ask now, one per line.',
 };

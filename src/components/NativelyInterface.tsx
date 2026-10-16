@@ -8136,6 +8136,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     'follow_up:rephrase': 'Rephrase',
     'live:catch_me_up': 'What did I miss?',
     'live:define': 'Define',
+    'live:follow_up_questions': 'Follow-up questions',
     'live:sound_smart': 'Sound smart',
   };
 
@@ -12426,6 +12427,9 @@ Provide only the answer, nothing else.`;
                         </button>
                         <button onClick={() => handleLiveHelper('sound_smart')} className={chipClass} style={appearance.chipStyle}>
                           <Quote className="w-3 h-3 opacity-70" /> {t('Sound smart')}
+                        </button>
+                        <button onClick={() => handleLiveHelper('follow_up_questions')} className={chipClass} style={appearance.chipStyle}>
+                          <Quote className="w-3 h-3 opacity-70" /> {t('Follow-up questions')}
                         </button>
                       </div>
                       {measureRow('recap', recapRowMeasureRef)}

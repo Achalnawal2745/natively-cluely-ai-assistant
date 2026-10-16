@@ -545,7 +545,7 @@ interface ElectronAPI {
     userRequest?: string,
   ) => Promise<{ refined: string | null; intent: string }>;
   generateRecap: () => Promise<{ summary: string | null }>;
-  generateLiveHelper: (action: 'catch_me_up' | 'define' | 'sound_smart', opts?: { sinceMs?: number }) => Promise<{ text: string | null }>;
+  generateLiveHelper: (action: 'catch_me_up' | 'define' | 'sound_smart' | 'follow_up_questions', opts?: { sinceMs?: number }) => Promise<{ text: string | null }>;
   submitManualQuestion: (question: string) => Promise<{ answer: string | null; question: string }>;
   getIntelligenceContext: () => Promise<{
     context: string;
@@ -1982,6 +1982,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // In-app recovery: resets the active local-Whisper model + per-channel
   // overrides back to the safe fallback. See electron/ipcHandlers.ts handler.
   localWhisperResetToDefault: () => ipcRenderer.invoke('local-whisper-reset-to-default'),
+  userBioGet: () => ipcRenderer.invoke('user-bio-get'),
+  userBioSet: (bio: string) => ipcRenderer.invoke('user-bio-set', bio),
+  liveNotesShortenLine: (line: string) => ipcRenderer.invoke('live-notes:shorten-line', line),
+  liveNotesAttachImage: () => ipcRenderer.invoke('live-notes:attach-image'),
   roomSpeakersGet: () => ipcRenderer.invoke('room-speakers-get'),
   roomSpeakersSet: (enabled: boolean) => ipcRenderer.invoke('room-speakers-set', enabled),
   localWhisperGetChannelConfig: () => ipcRenderer.invoke('local-whisper-get-channel-config'),
@@ -2228,7 +2232,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('generate-follow-up', intent, userRequest),
   generateFollowUpQuestions: () => ipcRenderer.invoke('generate-follow-up-questions'),
   generateRecap: () => ipcRenderer.invoke('generate-recap'),
-  generateLiveHelper: (action: 'catch_me_up' | 'define' | 'sound_smart', opts?: { sinceMs?: number }) =>
+  generateLiveHelper: (action: 'catch_me_up' | 'define' | 'sound_smart' | 'follow_up_questions', opts?: { sinceMs?: number }) =>
     ipcRenderer.invoke('generate-live-helper', action, opts),
   submitManualQuestion: (question: string) =>
     ipcRenderer.invoke('submit-manual-question', question),

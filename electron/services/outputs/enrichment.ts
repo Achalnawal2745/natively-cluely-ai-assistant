@@ -90,6 +90,34 @@ export async function testEnrichment(o: CallOpts): Promise<void> {
     }
 }
 
+const COMPANY_API = 'https://company.clearbit.com/v2/companies/find';
+const DESCRIPTION_MAX = 600;
+
+export interface EnrichedCompany { domain: string; name?: string; description?: string }
+
+/** Clearbit's company record → name and one-paragraph description. */
+export function parseEnrichedCompany(data: any, domain: string): EnrichedCompany {
+    const out: EnrichedCompany = { domain };
+    const name = oneLine(data?.name, VALUE_MAX);
+    const description = oneLine(data?.description, DESCRIPTION_MAX);
+    if (name) out.name = name;
+    if (description) out.description = description;
+    return out;
+}
+
+/** One company by domain; 404 is "not in the directory" (an empty result). */
+export async function lookupCompany(domain: string, o: CallOpts): Promise<EnrichedCompany> {
+    const clean = String(domain ?? '').trim().toLowerCase();
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(clean)) return { domain: clean };
+    try {
+        const res = await httpRequest(`${COMPANY_API}?domain=${encodeURIComponent(clean)}`, { headers: bearer(o.token), fetchImpl: o.fetchImpl, signal: o.signal });
+        return parseEnrichedCompany(res.data, clean);
+    } catch (err) {
+        if (errorKindOf(err) === 'not_found') return { domain: clean };
+        throw err;
+    }
+}
+
 export interface SuggestedFact { kind: 'title' | 'company'; value: string; quote: string }
 
 /**

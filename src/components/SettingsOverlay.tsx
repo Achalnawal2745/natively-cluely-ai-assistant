@@ -21,6 +21,7 @@ import { HelpSettings } from './settings/HelpSettings';
 import { AIProvidersSettings, AIP_CSS, AipModelList, AipPassedCheck } from './settings/AIProvidersSettings';
 import { SpeechDictionarySettings } from './settings/SpeechDictionarySettings';
 import { RoomSpeakersSettings } from './settings/RoomSpeakersSettings';
+import { AboutYouSettings } from './settings/AboutYouSettings';
 import { PlansSettings } from './settings/PlansSettings';
 import { PhoneMirrorSettings } from './settings/PhoneMirrorSettings';
 import { RetrievalSettings } from './settings/RetrievalSettings';
@@ -4641,7 +4642,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                             )}
 
                             {activeTab === 'intelligence' && (
-                                <IntelligenceSettings />
+                                <>
+                                    <AboutYouSettings />
+                                    <IntelligenceSettings />
+                                </>
                             )}
 
                             {activeTab === 'help' && (

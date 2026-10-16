@@ -88,4 +88,4 @@ export interface AssistSender {
 }
 
 /** The overlay's live helpers (electron/llm/liveHelpers.ts). */
-export type LiveHelperAction = 'catch_me_up' | 'define' | 'sound_smart';
+export type LiveHelperAction = 'catch_me_up' | 'define' | 'sound_smart' | 'follow_up_questions';

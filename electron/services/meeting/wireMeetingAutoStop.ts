@@ -140,6 +140,8 @@ export function createMeetingAutoStop(deps: MeetingAutoStopDeps): MeetingAutoSto
                 clearInterval: deps.clearInterval,
             }, {
                 inactivityMs: minutes * 60_000,
+                // A meeting under 3 minutes old never ends by the release or model layers (Granola's rule).
+                minMeetingMs: 3 * 60_000,
                 inactivityEnabled: !ctx.undetectable,
             });
             detector.start();

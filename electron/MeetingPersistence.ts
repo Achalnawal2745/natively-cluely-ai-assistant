@@ -293,6 +293,11 @@ function formatDuration(durationMs: number): string {
  * exactly as before for users without a dictionary.
  */
 /** The notes' SHARED SCREENS block for a meeting's saved descriptions; undefined for none. */
+function attachedImagesBlockFor(raw: unknown): string | undefined {
+    const { formatAttachedImagesBlock } = require('./services/meeting/meetingNotesContext') as typeof import('./services/meeting/meetingNotesContext');
+    return formatAttachedImagesBlock(raw) || undefined;
+}
+
 function sharedScreensBlockFor(raw: unknown): string | undefined {
     let timeZone: string | undefined;
     try { timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { /* UTC */ }
@@ -316,6 +321,10 @@ type ProcessMetadata = {
     callRoster?: { participants: string[]; spans: Array<{ name: string; start: number; end: number }>; count?: number };
     /** The user's name as the Zoom / Teams window showed it: names "Me" when the calendar gives no name. */
     callSelfName?: string;
+    /** Whether the meeting app showed itself recording the call (read-only, callFacts.recordingFromTree). */
+    callRecording?: boolean;
+    /** Pictures the user attached to their notes during the meeting, each described for the notes. */
+    attachedImages?: Array<{ path: string; name?: string; description: string; at: number }>;
     /** What others shared on screen, described (ScreenShareContext): context for the notes. */
     sharedScreens?: import('./services/meeting/ScreenShareContext').SharedScreenEntry[];
     /** The user's own notes typed during the meeting; the notes are built around them when present. */
@@ -585,20 +594,25 @@ export class MeetingPersistence {
      * mode) and the "Profile and history" provider scope is not turned off, the
      * same gates the live answers use. Undefined otherwise or with no résumé.
      */
-    protected profileForNotes(): { role?: string; company?: string } | undefined {
+    protected profileForNotes(): { role?: string; company?: string; bio?: string } | undefined {
         try {
             const { SettingsManager } = require('./services/SettingsManager');
             const sm = SettingsManager.getInstance();
             const scopes = sm.get('providerDataScopes') as ProviderDataScopePolicy | undefined;
             if (scopes?.profile_history === false || scopes?.post_call_summary === false) return undefined;
+            // "About you" (Settings): the user's own words, used whenever set, with
+            // or without a résumé profile; the profile below adds role and company.
+            const bioRaw = sm.get('userBio');
+            const bio = typeof bioRaw === 'string' ? bioRaw.replace(/\s+/g, ' ').trim().slice(0, 600) : '';
+            const withBio = (p: { role?: string; company?: string } | undefined) => (bio ? { ...(p ?? {}), bio } : p);
             const orchestrator = (this.llmHelper as any)?.getKnowledgeOrchestrator?.();
             const on = typeof orchestrator?.isKnowledgeMode === 'function' ? orchestrator.isKnowledgeMode() : sm.get('knowledgeMode') === true;
-            if (!on) return undefined;
+            if (!on) return withBio(undefined);
             const profile = orchestrator?.getProfileData?.();
             const latest = Array.isArray(profile?.experience) ? profile.experience[0] : undefined;
             const role = typeof latest?.role === 'string' ? latest.role.trim() : '';
             const company = typeof latest?.company === 'string' ? latest.company.trim() : '';
-            return role || company ? { ...(role ? { role } : {}), ...(company ? { company } : {}) } : undefined;
+            return withBio(role || company ? { ...(role ? { role } : {}), ...(company ? { company } : {}) } : undefined);
         } catch {
             return undefined;
         }
@@ -1132,6 +1146,7 @@ export class MeetingPersistence {
             vocabulary: notesInputs?.vocabulary,
             // What others shared on screen ("Snapshot shared screens"), described.
             sharedScreensBlock: notesInputs ? sharedScreensBlockFor(metadata?.sharedScreens) : undefined,
+            attachedImagesBlock: notesInputs ? attachedImagesBlockFor(metadata?.attachedImages) : undefined,
         };
 
         try {

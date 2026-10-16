@@ -77,12 +77,67 @@ const NotesWindow: React.FC = () => {
     };
 
     const hoverWash = isLight ? 'hover:bg-black/[0.05]' : 'hover:bg-white/[0.06]';
+    const [working, setWorking] = useState<'shorten' | 'attach' | null>(null);
+    const [attached, setAttached] = useState(0);
+
+    // "Shorten": the line under the caret, tightened by the user's model; the
+    // line is replaced only when main's check says it adds nothing (see
+    // services/meeting/noteLineShortener.ts).
+    const shortenLine = async () => {
+        const el = areaRef.current;
+        if (!el || working) return;
+        const value = el.value;
+        const caret = el.selectionStart ?? value.length;
+        const start = value.lastIndexOf('\n', caret - 1) + 1;
+        const endIdx = value.indexOf('\n', caret);
+        const end = endIdx === -1 ? value.length : endIdx;
+        const line = value.slice(start, end);
+        if (line.trim().length < 12) return;
+        setWorking('shorten');
+        try {
+            const res = await window.electronAPI?.liveNotesShortenLine?.(line);
+            const next = res?.text;
+            if (next && next !== line && areaRef.current && areaRef.current.value === value) {
+                commit(value.slice(0, start) + next + value.slice(end));
+                requestAnimationFrame(() => {
+                    if (areaRef.current) areaRef.current.selectionStart = areaRef.current.selectionEnd = start + next.length;
+                });
+            }
+        } finally {
+            setWorking(null);
+        }
+    };
+
+    // "Attach image": a picture (a whiteboard, a slide photo) kept with the
+    // meeting and described for the notes, like a shared screen.
+    const attachImage = async () => {
+        if (working) return;
+        setWorking('attach');
+        try {
+            const res = await window.electronAPI?.liveNotesAttachImage?.();
+            if (res?.count !== undefined) setAttached(res.count);
+        } finally {
+            setWorking(null);
+        }
+    };
+    const headerBtn = `h-7 px-2 rounded-md inline-flex items-center text-[11.5px] font-medium text-text-tertiary hover:text-text-primary transition-colors disabled:opacity-40 ${hoverWash}`;
 
     return (
         <div className="h-screen w-screen flex flex-col bg-bg-elevated text-text-primary overflow-hidden">
             {/* The header is the window's drag handle (frameless on both platforms). */}
             <div className="drag-region h-9 shrink-0 flex items-center justify-between pl-3.5 pr-1.5">
                 <span className="text-[12px] font-medium text-text-secondary">Notes</span>
+                <div className="flex items-center gap-0.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                    {phase === 'live' && (
+                        <>
+                            <button type="button" className={headerBtn} onClick={() => void shortenLine()} disabled={!!working} title="Tighten the line under the cursor">
+                                {working === 'shorten' ? 'Shortening…' : 'Shorten'}
+                            </button>
+                            <button type="button" className={headerBtn} onClick={() => void attachImage()} disabled={!!working} title="Add a picture to these notes">
+                                {working === 'attach' ? 'Adding…' : attached > 0 ? `Images (${attached})` : 'Attach image'}
+                            </button>
+                        </>
+                    )}
                 <button
                     type="button"
                     aria-label="Close"
@@ -92,6 +147,7 @@ const NotesWindow: React.FC = () => {
                 >
                     <X className="w-3.5 h-3.5" strokeWidth={2} />
                 </button>
+                </div>
             </div>
             {lastTime.recap?.recap && lastTime.recap.recap.bullets.length > 0 && (
                 <div className={`shrink-0 mx-3.5 mb-2 px-3 py-2.5 rounded-lg ${isLight ? 'bg-black/[0.04]' : 'bg-white/[0.05]'}`}>

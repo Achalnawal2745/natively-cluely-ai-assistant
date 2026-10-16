@@ -719,7 +719,7 @@ export class OrganiseStore {
     });
   }
 
-  updateCompany(domain: string, patch: { name?: unknown; description?: unknown; descriptionSource?: 'user' | 'drafted'; notes?: unknown }): boolean {
+  updateCompany(domain: string, patch: { name?: unknown; description?: unknown; descriptionSource?: 'user' | 'drafted' | 'clearbit'; notes?: unknown }): boolean {
     const d = typeof domain === 'string' ? domain.trim().toLowerCase() : '';
     if (!d || !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(d)) return false;
     return this.guard('updateCompany', false, () => {
