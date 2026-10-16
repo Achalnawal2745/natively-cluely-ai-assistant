@@ -151,14 +151,50 @@ export function currentRecoveryPlan(source: SttSource, ctx: RecoveryContext): Re
 }
 
 /**
+ * Keep only the stand-ins that can transcribe the user's configured language,
+ * so a non-English meeting is never handed to an English-only transcriber
+ * (which would return wrong words rather than a gap). Defensive: any failure to
+ * read settings or the catalogue returns the list unchanged, so this can only
+ * ever narrow on solid information, never make failover worse than before.
+ */
+function languageCapableCandidates(source: SttSource, ids: string[]): string[] {
+    try {
+        const { CredentialsManager } = require('../services/CredentialsManager');
+        const { SettingsManager } = require('../services/SettingsManager');
+        const { candidatesForLanguage } = require('./sttLanguageSupport');
+        const { isSttModelProvider, isEnglishOnlySttModel } = require('./sttModelCatalog');
+        const cm = CredentialsManager.getInstance();
+        const sm = SettingsManager.getInstance();
+        return candidatesForLanguage(ids, cm.getSttLanguage?.(), {
+            modelFor: (id: string) => (isSttModelProvider(id) ? cm.getSttModel?.(id) : undefined),
+            isEnglishOnlyModel: (id: string, model: string | undefined) =>
+                isSttModelProvider(id) && typeof model === 'string' ? isEnglishOnlySttModel(id, model) : false,
+            localModelLanguageKeys: (id: string) => {
+                if (id !== 'local-whisper') return null;
+                const modelId = localModelId(source, sm);
+                if (!modelId) return null;
+                try {
+                    const { getLocalModelLanguageSupport } = require('./whisper/modelLanguageSupport');
+                    return new Set<string>(getLocalModelLanguageSupport(modelId).allowedLanguageKeys);
+                } catch { return null; }
+            },
+        });
+    } catch {
+        return ids;
+    }
+}
+
+/**
  * Live stand-ins for a channel whose provider is down (sttFailover.ts): the
- * recovery plan without the failing provider itself, so the same privacy rule
- * holds (local-only transcription never reaches a cloud provider).
+ * recovery plan without the failing provider itself (so the same privacy rule
+ * holds — local-only transcription never reaches a cloud provider), and
+ * without any that cannot do the meeting's language.
  */
 export function failoverCandidates(source: SttSource, ctx: RecoveryContext): string[] {
-    return currentRecoveryPlan(source, ctx)
+    const ids = currentRecoveryPlan(source, ctx)
         .filter((entry) => entry.kind !== 'same-provider' && entry.id !== ctx.effectiveProvider)
         .map((entry) => entry.id);
+    return languageCapableCandidates(source, ids);
 }
 
 /** Transcribers for one recovery of `source`, in the order the plan allows. */
