@@ -2,6 +2,9 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CalendarCheck } from 'lucide-react';
 import { useT, useLanguage } from '../../i18n';
 import calendarBackdrop from '../../UI_comp/calendar.jpg';
+import demoFaceMaya from '../../assets/demo-faces/maya.webp';
+import demoFaceRavi from '../../assets/demo-faces/ravi.webp';
+import demoFaceDaniel from '../../assets/demo-faces/daniel.webp';
 import ConnectCalendarButton from './ConnectCalendarButton';
 import { reconcileStack, settleEntering, dropLeft, arrivalSteps, padStack, isSlotKey, type StackEntry } from './bannerStack.mjs';
 import './UpcomingCalendarCard.css';
@@ -583,18 +586,23 @@ const CalendarHeading: React.FC<{ line1: string; line2: string; reveal?: boolean
 };
 
 /**
- * Before linking: a sample meeting where yours will be, the one the classic
- * backdrop (calender.png) had painted in (a Q2 roadmap review, two faces), now
- * drawn as ONE of the linked state's own banners, in the front banner's
- * place, so a sign-in swaps the sample for the real thing in place. One, not
- * a deck: the cards behind it crowded Connect calendar and competed with it.
- * The title is the
- * short form, which fits beside the tile whole. Its time is the next 4:30 pm,
- * so it never reads as a meeting that has passed. Decorative: hidden from screen readers, never under the pointer (no
- * pops), faces without photos (nothing is fetched for sample people), and it
- * leaves with the heading.
+ * Before linking: a sample meeting where yours will be, drawn as the classic
+ * backdrop (calender.png, removed in 5a28cca0) painted it: a rounded navy
+ * glass card with the tops of two more stacked behind it. The title over
+ * "Today · 4:30 – 5:15 pm" on the left; on the right three people's photos
+ * with "+2" under them. Only the sample looks like this; a linked calendar gets
+ * the deck of pill banners. Its time is the next 4:30 pm, so it never reads as
+ * a meeting that has passed. Decorative: hidden from screen readers and never
+ * under the pointer. The photos are free stock portraits bundled with the app
+ * (src/assets/demo-faces/SOURCES.md), so nothing is fetched.
  */
-const DEMO_ATTENDEES: CalendarAttendee[] = [{ email: '', name: 'Maya Reyes' }, { email: '', name: 'Ravi Lal' }];
+const DEMO_ATTENDEES: CalendarAttendee[] = [
+    { email: '', name: 'Maya Reyes', photoUrl: demoFaceMaya },
+    { email: '', name: 'Ravi Lal', photoUrl: demoFaceRavi },
+    { email: '', name: 'Daniel Ortiz', photoUrl: demoFaceDaniel },
+];
+/** People on the invite beyond the faces shown: the "+2". */
+const DEMO_MORE_ATTENDEES = 2;
 const demoMeeting = (title: string, now: number): CalendarMeeting => {
     const start = new Date(now);
     start.setHours(16, 30, 0, 0);
@@ -603,11 +611,39 @@ const demoMeeting = (title: string, now: number): CalendarMeeting => {
 };
 const DemoMeetingStack: React.FC<{ hiding: boolean }> = ({ hiding }) => {
     const t = useT();
+    const { lang } = useLanguage();
     const [now] = useState(() => Date.now());
+    const meeting = demoMeeting(t('Q2 Product Roadmap Review'), now);
+    const when = meetingWhen(meeting, now, lang);
+    const range = rangeOf(new Date(meeting.startTime), new Date(meeting.endTime!));
     return (
         <div className={`cal-demo cal-link-exit${hiding ? ' is-hiding' : ''}`} aria-hidden="true">
-            <div className="t-stack cal-stack h-[44px]">
-                <div data-depth={0} className="t-stack-banner"><MeetingBanner meeting={demoMeeting(t('Q2 Roadmap Review'), now)} now={now} /></div>
+            <div className="cal-classic">
+                <span className="cal-classic-peek cal-classic-peek--back" />
+                <span className="cal-classic-peek cal-classic-peek--mid" />
+                <div className="cal-classic-card">
+                    <div className="min-w-0 flex-1 flex flex-col gap-[5px]">
+                        <h4 className="cal-classic-title truncate">{meeting.title}</h4>
+                        <span className="cal-classic-when tabular-nums truncate">
+                            {when.lead && (
+                                <>
+                                    {when.lead}
+                                    {/* Real spaces, as in the deck's time line. */}
+                                    {' '}<span className="cal-classic-dot" aria-hidden>·</span>{' '}
+                                </>
+                            )}
+                            {range}
+                        </span>
+                    </div>
+                    <div className="cal-classic-people">
+                        <span className="flex -space-x-[7px]">
+                            {DEMO_ATTENDEES.map((a, ai) => (
+                                <AttendeeAvatar key={a.name} attendee={a} identity={a.name || String(ai)} z={DEMO_ATTENDEES.length - ai + 1} />
+                            ))}
+                        </span>
+                        <span className="cal-classic-more tabular-nums">+{DEMO_MORE_ATTENDEES}</span>
+                    </div>
+                </div>
             </div>
         </div>
     );

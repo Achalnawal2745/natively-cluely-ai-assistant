@@ -310,17 +310,101 @@
 .cal-stack-header .t-stagger-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ─── Sample meeting (not linked: DemoMeetingStack) ──────────────────────────
-   One banner of the linked deck, at rest, in the front banner's place: 14px
-   in (px-3.5), 12px off the bottom (pb-3). It never pops, so it takes no
-   pointer. */
+   The classic stacked card, 14px in from the sides and sitting low: its
+   bottom runs 8px past the card's edge, which clips it. It never pops, so it
+   takes no pointer. */
 .cal-demo {
   position: absolute;
   z-index: 0;
   left: 14px;
   right: 14px;
-  bottom: 12px;
+  bottom: -8px;
   pointer-events: none;
   text-align: left;
+}
+/* The classic card (DemoMeetingStack), as the old painted backdrop drew it
+   (calender.png, removed in 5a28cca0): navy glass, a teal glow rising from
+   the bottom, a bluer right end, the time in steel blue, light cyan faces
+   ringed in white, and the tops of two more cards stacked behind it, each
+   with a light rim. Colours and proportions measured from that picture. A
+   linked calendar's meetings keep the deck of indigo pills. */
+/* The stack sits on the card's bottom edge: no gap under it, and the front
+   card's lower corners square against the edge, like the cards behind. */
+.cal-classic {
+  position: relative;
+}
+.cal-classic-card,
+.cal-classic-peek {
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+.cal-classic-card {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px 15px 14px;
+  border-radius: 12px 12px 0 0;
+  background:
+    radial-gradient(52% 165% at 67% 118%, rgba(14, 98, 114, 0.98), rgba(14, 98, 114, 0) 80%),
+    radial-gradient(20% 75% at 74% 52%, rgba(28, 82, 122, 0.60), rgba(28, 82, 122, 0) 100%),
+    radial-gradient(40% 120% at 28% 130%, rgba(16, 50, 72, 0.60), rgba(16, 50, 72, 0) 100%),
+    radial-gradient(34% 130% at 100% 55%, rgba(44, 60, 124, 0.97), rgba(44, 60, 124, 0) 85%),
+    linear-gradient(180deg, rgb(35, 52, 82) 0%, rgb(24, 40, 68) 50%, rgb(16, 22, 50) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(150, 160, 195, 0.55),
+    inset 1px 0 0 rgba(150, 165, 205, 0.16),
+    inset -1px 0 0 rgba(150, 165, 205, 0.16),
+    0 10px 24px -12px rgba(4, 8, 30, 0.8);
+  text-shadow: 0 1px 2px rgba(8, 14, 40, 0.35);
+}
+/* The cards behind: only their tops show, each narrower, with its own rim. */
+.cal-classic-peek {
+  position: absolute;
+  height: 24px;
+  border-radius: 12px 12px 0 0;
+  box-shadow:
+    inset 0 1px 0 rgba(150, 160, 200, 0.55),
+    inset 1px 0 0 rgba(150, 160, 200, 0.14),
+    inset -1px 0 0 rgba(150, 160, 200, 0.14);
+}
+.cal-classic-peek--mid { z-index: 1; top: -4px; left: 10px; right: 10px; background: rgb(41, 48, 88); }
+.cal-classic-peek--back { z-index: 0; top: -8px; left: 19px; right: 19px; background: rgb(45, 49, 100); }
+.cal-classic-title {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  color: rgb(242, 246, 249);
+}
+.cal-classic-when {
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1;
+  color: #6fb6dc;
+}
+.cal-classic-dot { margin: 0 1px; opacity: 0.6; }
+/* The people, at the right end: three photos over a "+2" for the rest. */
+.cal-classic-people {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+.cal-classic-more {
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  color: rgba(214, 228, 245, 0.7);
+}
+.cal-classic .cal-face {
+  width: 20px;
+  height: 20px;
+  font-size: 7.5px;
+  box-shadow: 0 0 0 1.5px rgba(244, 251, 255, 0.9);
+  background: linear-gradient(160deg, #96dcf2, #78c6e4);
 }
 
 /* ─── Faces (AttendeeAvatar) ─────────────────────────────────────────────────
