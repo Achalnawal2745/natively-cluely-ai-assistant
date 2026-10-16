@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import type { WritingSampleInfo, WritingStyleStatus } from '../../../src/types/meetingOutputs';
+import { writeFileAtomicSync } from './atomicFile';
 
 export const WRITING_STYLE_FILE = 'writing_style.json';
 export const MAX_SAMPLES = 30;
@@ -248,10 +249,7 @@ export class WritingStyleService {
     private write(data: StyleFile): void {
         this.cache = data;
         try {
-            fs.mkdirSync(this.opts.dir, { recursive: true });
-            const tmp = `${this.file}.tmp`;
-            fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
-            fs.renameSync(tmp, this.file);
+            writeFileAtomicSync(this.file, JSON.stringify(data), { mode: 0o600 });
         } catch (e: any) {
             console.warn('[WritingStyle] Could not save:', e?.code || 'write failed');
         }

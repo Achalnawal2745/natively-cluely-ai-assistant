@@ -16,6 +16,7 @@ import type { ProviderDataScopePolicy } from '../llm/ProviderRouter';
 import { isSpokenSavedLine } from '../intelligence/savedTranscriptOrigin';
 import { buildSummaryTextForSearch } from './summaryTextForSearch';
 import { CHUNK_BACKFILL_KEYS, SUMMARY_BACKFILL_KEYS, finishBackfillWalk, hasBackfillRearm, takeBackfillRearm } from './backfillRearm';
+import { runObservedMeetingDelete } from '../db/meetingDeleteObservers';
 
 /**
  * A bare `for await` over an LLM stream blocks forever if the provider hangs
@@ -675,7 +676,9 @@ export class RAGManager {
         // 3. Clean up transient meeting row if it was a live session
         try {
             if (meetingId === 'live-meeting-current') {
-                this.db.prepare('DELETE FROM meetings WHERE id = ?').run(meetingId);
+                // Through meetingDeleteObservers like every other meetings delete,
+                // so nothing that follows a meeting out is skipped here.
+                runObservedMeetingDelete({ ids: [meetingId] }, () => this.db.prepare('DELETE FROM meetings WHERE id = ?').run(meetingId), (r) => r.changes > 0);
             }
         } catch (e) {
             console.warn('[RAGManager] Failed to delete transient meeting row', e);

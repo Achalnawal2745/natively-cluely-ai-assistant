@@ -105,9 +105,22 @@ export interface WritingSampleInfo {
     at: number;
 }
 
+/** A meeting's public link, as the renderer sees it. The token that turns it off never crosses. */
+export interface ShareLinkInfo {
+    url: string;
+    createdAt: number;
+    includeTranscript: boolean;
+}
+
 export interface MeetingOutputsApi {
     exportPdf: (meetingId: string) => Promise<OutputResult & { canceled?: boolean; fileName?: string }>;
     exportHtml: (meetingId: string, opts: { includeTranscript: boolean }) => Promise<OutputResult & { canceled?: boolean; fileName?: string }>;
+    /** The meeting's link, when it has one. */
+    getShareLink: (meetingId: string) => Promise<OutputResult & { link?: ShareLinkInfo }>;
+    /** Makes the link (or hands back the one that exists) and puts it on the clipboard. */
+    createShareLink: (meetingId: string, opts: { includeTranscript: boolean }) => Promise<OutputResult & { link?: ShareLinkInfo }>;
+    /** Stop sharing: the page answers "no longer shared" from then on. */
+    revokeShareLink: (meetingId: string) => Promise<OutputResult>;
 
     getConnections: () => Promise<ConnectionsStatus>;
     addSlackWebhook: (label: string, url: string) => Promise<OutputResult & { webhook?: SlackWebhookInfo }>;

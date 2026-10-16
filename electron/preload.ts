@@ -2289,6 +2289,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   meetingOutputs: {
     exportPdf: (meetingId) => ipcRenderer.invoke('outputs:export-pdf', meetingId),
     exportHtml: (meetingId, opts) => ipcRenderer.invoke('outputs:export-html', meetingId, opts),
+    getShareLink: (meetingId) => ipcRenderer.invoke('outputs:share-link-get', meetingId),
+    createShareLink: (meetingId, opts) => ipcRenderer.invoke('outputs:share-link-create', meetingId, opts),
+    revokeShareLink: (meetingId) => ipcRenderer.invoke('outputs:share-link-revoke', meetingId),
     getConnections: () => ipcRenderer.invoke('outputs:get-connections'),
     addSlackWebhook: (label, url) => ipcRenderer.invoke('outputs:slack-add', label, url),
     removeSlackWebhook: (id) => ipcRenderer.invoke('outputs:slack-remove', id),

@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import type { CrmService, EnrichmentService, NotionParentInfo, SlackWebhookInfo } from '../../../src/types/meetingOutputs';
+import { writeFileAtomicSync } from './atomicFile';
 
 export const CONNECTIONS_FILE = 'connections.enc';
 
@@ -121,10 +122,7 @@ export class ConnectionsStore {
         this.cache = sanitize(next);
         if (!this.isPersistent()) return false;
         try {
-            fs.mkdirSync(this.deps.userDataDir, { recursive: true });
-            const tmp = `${this.file}.tmp`;
-            fs.writeFileSync(tmp, this.deps.safeStorage.encryptString(JSON.stringify(this.cache)), { mode: 0o600 });
-            fs.renameSync(tmp, this.file);
+            writeFileAtomicSync(this.file, this.deps.safeStorage.encryptString(JSON.stringify(this.cache)), { mode: 0o600 });
             return true;
         } catch {
             console.warn('[Connections] Could not save connections; kept for this session.');

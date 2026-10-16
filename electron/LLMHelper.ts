@@ -1,3 +1,4 @@
+import { nativelyApiBase } from './services/nativelyApiBase'
 import { GoogleGenAI, ThinkingLevel } from "@google/genai"
 import Groq from "groq-sdk"
 import OpenAI from "openai"
@@ -91,7 +92,7 @@ import type {
   DirectAssistSelection,
 } from './direct-assist/types';
 const execAsync = promisify(exec);
-const NATIVELY_API_URL = (process.env.NATIVELY_API_URL || 'https://api.natively.software').replace(/\/+$/, '');
+const NATIVELY_API_URL = nativelyApiBase();
 
 function nowMs(): number {
   try {

@@ -196,6 +196,7 @@ import {
   type DirectAssistRequestInput,
   type DirectAssistStreamEvent,
 } from './direct-assist';
+import { nativelyApiBase } from './services/nativelyApiBase';
 
 type DirectAssistSource = 'typed' | 'stt' | 'screenshot';
 
@@ -7252,6 +7253,8 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle('delete-meeting', async (_, id: string) => {
+    // A shared meeting's link goes off with it: DatabaseManager.deleteMeeting
+    // tells meetingDeleteObservers, which share links observe (outputsIpc).
     return DatabaseManager.getInstance().deleteMeeting(id);
   });
 
@@ -11868,7 +11871,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   // of the app that could not be pointed at a local server. That is exactly the
   // surface where "does the UI show what the server enforces?" needs answering
   // before a release, not after.
-  const NATIVELY_API_BASE = (process.env.NATIVELY_API_URL || 'https://api.natively.software').replace(/\/+$/, '');
+  const NATIVELY_API_BASE = nativelyApiBase();
   // The plan catalog. Unauthenticated and identical for every user, so it is
   // cached per PROCESS rather than per key, and for far longer than usage —
   // allowances change on a deploy, not on a request.

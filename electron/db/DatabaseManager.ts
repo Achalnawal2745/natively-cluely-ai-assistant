@@ -11,6 +11,7 @@ import { encodeSavedOrigin, decodeSavedOrigin } from '../intelligence/savedTrans
 import { parseVecTableName, readPendingVecRebuilds, writePendingVecRebuilds, type PendingVecRebuild } from './vecRebuildPending';
 import { prepareVecRowWriter } from './vecRowWrite';
 import { ensureOrganiseSchema, ORGANISE_TABLES } from './organiseSchema';
+import { runObservedMeetingDelete } from './meetingDeleteObservers';
 import type { ActionItem, DecisionItem, FollowUpDraft, MeetingSummaryGenerationMeta, MeetingSummaryModeMeta, MeetingSummarySectionV3, NoteBlock, PersonMention, QuestionItem, RiskItem, SourceQualityMeta, SpeakerLabelMap, SummaryStatus, TimelineItem } from '../services/meeting/types';
 
 // Interfaces for our data objects
@@ -4666,10 +4667,13 @@ export class DatabaseManager {
             // no transaction a failure of the parent DELETE left the vectors gone and
             // the meeting present. This was inert only while R-01 meant nothing was
             // ever deleted; fixing R-01 makes it reachable.
-            const info = this.db.transaction((meetingId: string) => {
+            // meetingDeleteObservers: features that follow a meeting out (its share
+            // link goes off) hear of it before, and settle once the delete held.
+            const removeMeeting = this.db.transaction((meetingId: string) => {
                 this.deleteVectorsForMeeting(meetingId);
                 return this.db!.prepare('DELETE FROM meetings WHERE id = ?').run(meetingId);
-            })(id);
+            });
+            const info = runObservedMeetingDelete({ ids: [id] }, () => removeMeeting(id), (result) => result.changes > 0);
             console.log(`[DatabaseManager] Deleted meeting ${id}. Changes: ${info.changes}`);
             return info.changes > 0;
         } catch (error) {
@@ -4781,7 +4785,9 @@ export class DatabaseManager {
             // Clear all tables atomically (order matters due to foreign keys,
             // but SQLite handles cascades). Using a transaction ensures we never
             // end up in a half-cleared state if one statement fails.
-            this.db.transaction(() => {
+            // meetingDeleteObservers hear 'all' before, and settle once it held
+            // (every share link goes off), or are told it did not.
+            const wipe = this.db.transaction(() => {
                 // F-705: vec0 virtual tables take no part in FK cascades, so a
                 // full wipe has to clear them explicitly too — otherwise
                 // "clear all data" left every embedding vector on disk.
@@ -4803,7 +4809,8 @@ export class DatabaseManager {
                 for (const table of ORGANISE_TABLES) {
                     try { this.db!.exec(`DELETE FROM ${table}`); } catch (_) { /* table may not exist */ }
                 }
-            })();
+            });
+            runObservedMeetingDelete('all', () => wipe(), () => true);
 
             console.log('[DatabaseManager] All data cleared from database.');
             return true;

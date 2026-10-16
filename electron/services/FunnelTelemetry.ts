@@ -40,8 +40,9 @@ import { tagCheckoutUrl, viaWebsiteCheckout } from '../../src/lib/funnel/checkou
 import { createInstallRegistrar, type InstallRegistrar } from '../../src/lib/funnel/funnelInstall.mjs';
 import { getAppSessionId, usageFlagEnabled } from './UsageOutbox';
 import { SettingsManager } from './SettingsManager';
+import { nativelyApiBase } from './nativelyApiBase';
 
-const NATIVELY_API_URL = (process.env.NATIVELY_API_URL || 'https://api.natively.software').replace(/\/+$/, '');
+const NATIVELY_API_URL = nativelyApiBase();
 const DISPATCH_INTERVAL_MS = 30_000;
 // Nothing leaves, and the registration puzzle does not start, until the app
 // has been up this long: launch belongs to the user.
