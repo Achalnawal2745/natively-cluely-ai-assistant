@@ -14195,6 +14195,12 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { text: null };
     }
   });
+  // Follow the meeting app's microphone (Settings › Audio). Takes effect at the next meeting.
+  safeHandle('follow-mic-device-get', async () => ({ enabled: SettingsManager.getInstance().get('followMeetingAppMicDevice') === true }));
+  safeHandle('follow-mic-device-set', async (_, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') return { success: false, error: 'invalid' };
+    return SettingsManager.getInstance().set('followMeetingAppMicDevice', enabled) ? { success: true } : { success: false, error: 'settings_store_degraded' };
+  });
   safeHandle('room-speakers-get', async () => ({ enabled: SettingsManager.getInstance().get('roomSpeakersEnabled') === true }));
   safeHandle('room-speakers-set', async (_, enabled: unknown) => {
     if (typeof enabled !== 'boolean') return { success: false, error: 'invalid' };

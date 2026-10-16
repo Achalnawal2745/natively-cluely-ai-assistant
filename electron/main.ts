@@ -5320,6 +5320,40 @@ export class AppState {
     }
   }
 
+  /**
+   * Follow the meeting app's microphone (Settings › Audio, off by default):
+   * when the user has NOT pinned an input device, and a call app is capturing
+   * from a named device, capture from the same one. Returns the device id to
+   * open, which is `requested` unchanged whenever the feature is off, a device
+   * is pinned, the OS does not name the app's device (macOS < 14, Windows), or
+   * the app's device is not one we can open. Our own capture only; one shot at
+   * meeting start. REQUIRES physical verification: that a CoreAudio device name
+   * opens as the same cpal device.
+   */
+  private followedInputDeviceId(requested?: string | null): string | null | undefined {
+    try {
+      if (SettingsManager.getInstance().get('followMeetingAppMicDevice') !== true) return requested;
+      const norm = this.normalizeDeviceId(requested);
+      const userPinned = !!norm && norm.toLowerCase() !== 'default';
+      if (userPinned) return requested;
+      const { meetingAppInputDevice, deviceToFollow } = require('./services/meetingDetection/followMicDevice') as typeof import('./services/meetingDetection/followMicDevice');
+      const micUsers = (loadNativeModule() as any)?.getMicUsers?.() ?? null;
+      const target = meetingAppInputDevice(process.platform, micUsers, { pid: process.pid, execPath: process.execPath });
+      if (!target) return requested;
+      // Only a device we actually enumerate as an input, matched by name.
+      const known = AudioDevices.getInputDevices().some((d) => d.id.toLowerCase() === target.toLowerCase() || d.name.toLowerCase() === target.toLowerCase());
+      const follow = deviceToFollow({ enabled: true, userPinned: false, currentDeviceId: norm ?? 'default', target });
+      if (follow && known) {
+        console.log(`[Main] Following the meeting app's microphone: "${target}"`);
+        return target;
+      }
+      return requested;
+    } catch (e: any) {
+      console.warn('[Main] follow-mic-device skipped:', e?.message);
+      return requested;
+    }
+  }
+
   private async reconfigureAudio(inputDeviceId?: string | null, outputDeviceId?: string | null): Promise<void> {
     console.log(`[Main] Reconfiguring Audio: Input=${inputDeviceId}, Output=${outputDeviceId}`);
 
@@ -7115,7 +7149,9 @@ export class AppState {
         if (!this._ambientChatEnabled) {
           // Check for audio configuration preference
           if (metadata?.audio) {
-            await this.reconfigureAudio(metadata.audio.inputDeviceId, metadata.audio.outputDeviceId);
+            // Follow the meeting app's microphone when the setting is on and no device is pinned (no-op otherwise).
+            const followedInput = this.followedInputDeviceId(metadata.audio.inputDeviceId);
+            await this.reconfigureAudio(followedInput, metadata.audio.outputDeviceId);
             if (!isCurrentMeeting()) {
               abortStaleAudioInit();
               return;

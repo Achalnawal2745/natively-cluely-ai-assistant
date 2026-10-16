@@ -45,6 +45,13 @@ export interface DetectInput {
     platform: string;
     /** null: this OS can't say who holds the microphone. */
     micUsers: ProcessRef[] | null;
+    /**
+     * Fallback for macOS before 14, where there is no per-process microphone
+     * list (micUsers is null): true when the default input device is being
+     * captured by something (meeting_signals.input_in_use). With it, a known
+     * meeting app that has a window up is taken as the call.
+     */
+    inputInUse?: boolean;
     /** Called at most once, only when a title is needed. */
     windows: () => WindowRef[] | null;
     live: LiveMeeting[];
@@ -71,7 +78,26 @@ export function detectMeeting(input: DetectInput): Detection | null {
     if (input.micUsers === null) {
         // No microphone information: a meeting tab with the call's sound playing.
         const audible = live.find((m) => m.via === 'browser' && m.audible);
-        return audible ? tabDetection(audible) : null;
+        if (audible) return tabDetection(audible);
+        // macOS before 14: no per-process list, but the OS can still say the
+        // microphone is live. If it is, and a known meeting app has a window up,
+        // that app is the call (a weaker signal than holding the mic by pid).
+        if (input.inputInUse) {
+            for (const w of windows()) {
+                const app = appOfProcess(platform, { pid: w.pid, path: w.path });
+                if (app && (app.kind === 'meeting' || app.kind === 'messaging')) {
+                    const title = meetingNameOfTitle(app.name, w.title);
+                    return {
+                        id: `app:${app.name}`,
+                        app: app.name,
+                        via: 'app',
+                        ...(title ? { title } : {}),
+                        ...(app.kind === 'messaging' ? { messaging: true as const } : {}),
+                    };
+                }
+            }
+        }
+        return null;
     }
 
     const holders = input.micUsers

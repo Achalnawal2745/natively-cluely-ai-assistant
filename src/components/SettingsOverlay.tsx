@@ -21,6 +21,7 @@ import { HelpSettings } from './settings/HelpSettings';
 import { AIProvidersSettings, AIP_CSS, AipModelList, AipPassedCheck } from './settings/AIProvidersSettings';
 import { SpeechDictionarySettings } from './settings/SpeechDictionarySettings';
 import { RoomSpeakersSettings } from './settings/RoomSpeakersSettings';
+import { FollowMicDeviceSettings } from './settings/FollowMicDeviceSettings';
 import { AboutYouSettings } from './settings/AboutYouSettings';
 import { PlansSettings } from './settings/PlansSettings';
 import { PhoneMirrorSettings } from './settings/PhoneMirrorSettings';
@@ -4337,6 +4338,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                     {/* ── Dictionary Section ── */}
                                     <SpeechDictionarySettings sttProvider={sttProvider} />
                                     <RoomSpeakersSettings sttProvider={sttProvider} />
+                                    <FollowMicDeviceSettings />
 
                                     {/* ── Audio Configuration Section ── */}
                                     <div>

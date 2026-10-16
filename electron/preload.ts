@@ -1986,6 +1986,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   userBioSet: (bio: string) => ipcRenderer.invoke('user-bio-set', bio),
   liveNotesShortenLine: (line: string) => ipcRenderer.invoke('live-notes:shorten-line', line),
   liveNotesAttachImage: () => ipcRenderer.invoke('live-notes:attach-image'),
+  followMicDeviceGet: () => ipcRenderer.invoke('follow-mic-device-get'),
+  followMicDeviceSet: (enabled: boolean) => ipcRenderer.invoke('follow-mic-device-set', enabled),
   roomSpeakersGet: () => ipcRenderer.invoke('room-speakers-get'),
   roomSpeakersSet: (enabled: boolean) => ipcRenderer.invoke('room-speakers-set', enabled),
   localWhisperGetChannelConfig: () => ipcRenderer.invoke('local-whisper-get-channel-config'),

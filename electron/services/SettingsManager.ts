@@ -178,6 +178,10 @@ export interface AppSettings {
      *  channel and split its voices at save (meeting/roomSpeakers.ts). Off by
      *  default; needs a provider with diarization (Deepgram). */
     roomSpeakersEnabled?: boolean;
+    /** Follow the meeting app's microphone: capture from the device Zoom/Teams/
+     *  the browser is using, when the user has not pinned one. Off by default;
+     *  macOS 14+ only (the OS names the app's device there). */
+    followMeetingAppMicDevice?: boolean;
     /** "About you": a few lines in the user's own words (role, team, what they
      *  care about) that the meeting notes prompt reads, like Granola's bio.
      *  At most 600 characters; empty = not used. */

@@ -33,6 +33,8 @@ export interface MeetingStartRequest {
 export interface NativeSignals {
     getMicUsers?: () => ProcessRef[] | null;
     getVisibleWindows?: () => Array<{ pid: number; owner: string; title: string; path?: string }> | null;
+    /** macOS < 14 fallback: whether the default input is being captured (meeting_signals.input_in_use). */
+    inputInUse?: () => boolean | null;
 }
 
 export interface OsNotification {
@@ -124,6 +126,7 @@ export function wireMeetingDetection(deps: MeetingDetectionDeps): MeetingDetecto
             platform: deps.platform,
             micUsers: deps.native?.getMicUsers ? deps.native.getMicUsers() ?? null : null,
             windows: () => deps.native?.getVisibleWindows?.() ?? null,
+            ...(deps.native?.inputInUse ? { inputInUse: deps.native.inputInUse() ?? false } : {}),
             live: live.list(),
             self: deps.self,
         }),

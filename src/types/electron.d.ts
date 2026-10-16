@@ -173,6 +173,9 @@ export interface ElectronAPI {
   liveNotesShortenLine?: (line: string) => Promise<{ text: string | null }>
   /** The notes window's "Attach image": picks a picture, keeps it with the meeting, describes it for the notes. */
   liveNotesAttachImage?: () => Promise<{ count: number; message?: string }>
+  /** Follow the meeting app's microphone (capture from the device Zoom/Teams/the browser uses). */
+  followMicDeviceGet?: () => Promise<{ enabled: boolean }>
+  followMicDeviceSet?: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
   roomSpeakersGet?: () => Promise<{ enabled: boolean }>
   roomSpeakersSet?: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
   localWhisperGetChannelConfig?: () => Promise<{
