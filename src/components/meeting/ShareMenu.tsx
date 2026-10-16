@@ -126,6 +126,17 @@ export const ShareMenu: React.FC<{ meetingId: string; disabled?: boolean; hasTra
         { key: 'slack', label: t('Send to Slack'), icon: <Hash size={14} />, run: () => setDialog('slack') },
         { key: 'notion', label: t('Send to Notion'), icon: <BookOpen size={14} />, run: () => setDialog('notion') },
         { key: 'crm', label: t('Send to CRM'), icon: <Contact size={14} />, run: () => setDialog('crm') },
+        // Only once a directory key is saved: looks the attendees up and files
+        // title / company suggestions on the People page. Nothing is applied here.
+        ...(conn?.clearbit?.connected ? [{
+            key: 'enrich',
+            label: t('Look up attendees'),
+            icon: <Contact size={14} />,
+            run: () => {
+                const failed = t('The lookup did not finish. Try again.');
+                void api()?.enrichAttendees(meetingId).then((r) => showMessage(r?.message || failed)).catch(() => showMessage(failed));
+            },
+        }] : []),
     ];
 
     return (

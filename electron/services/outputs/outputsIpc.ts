@@ -12,7 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { AppState } from '../../main';
 import type {
-    ConnectionsStatus, CrmMatchPreview, CrmService, McpServerStatus, NotionParentInfo, OutputResult,
+    ConnectionsStatus, CrmMatchPreview, CrmService, EnrichmentService, McpServerStatus, NotionParentInfo, OutputResult,
 } from '../../../src/types/meetingOutputs';
 import { ConnectionsStore } from './connectionsStore';
 import { buildNotesDocument, type NotesDocument } from './notesDocument';
@@ -22,6 +22,7 @@ import { describeConnectionError, errorKindOf } from './httpRequest';
 import { checkSlackDraft, composeSlackDraft, isSlackWebhookUrl, postSlackWebhook, slackDraftMessage, testSlackWebhook } from './slack';
 import { NotionPartialPages, appendNotionBatches, buildNotionBlocks, createNotionPage, looksLikeNotionToken, normaliseNotionId, notionPageTitle, searchNotion, testNotion } from './notion';
 import { CRM_LABELS, CrmSendSession, crmCandidates, crmSendSummary, matchAttendees, normaliseEmail, normaliseSalesforceInstanceUrl, remainingRecords, sendCrmNote, testCrm, uniqueRecords, type CrmRecord } from './crm';
+import { ENRICHMENT_LABEL, enrichmentFacts, lookupAttendees, testEnrichment } from './enrichment';
 import { mcpClientSnippets, newMcpToken, randomMcpPort, startMcpServer, type MeetingSource, type RunningMcpServer } from './mcpServer';
 import { WritingStyleService, type StyleModelCall } from './writingStyle';
 import { applyFollowUpEdit, currentDraft, followUpSample } from './followUpEdit';
@@ -30,8 +31,8 @@ import { nativePromptsBlocked } from '../stealthPromptGate';
 
 type SafeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => void;
 
-const SERVICE_LABEL: Record<'slack' | 'notion' | CrmService, string> = { slack: 'Slack', notion: 'Notion', ...CRM_LABELS };
-const TOKEN_SERVICES = ['notion', 'hubspot', 'attio', 'affinity', 'salesforce'] as const;
+const SERVICE_LABEL: Record<'slack' | 'notion' | CrmService | EnrichmentService, string> = { slack: 'Slack', notion: 'Notion', ...CRM_LABELS, clearbit: ENRICHMENT_LABEL };
+const TOKEN_SERVICES = ['notion', 'hubspot', 'attio', 'affinity', 'salesforce', 'clearbit'] as const;
 type TokenService = typeof TOKEN_SERVICES[number];
 const isTokenService = (v: unknown): v is TokenService => typeof v === 'string' && (TOKEN_SERVICES as readonly string[]).includes(v);
 const isCrm = (v: unknown): v is CrmService => v === 'hubspot' || v === 'attio' || v === 'affinity' || v === 'salesforce';
@@ -295,6 +296,7 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
             attio: { connected: !!s.attio?.token },
             affinity: { connected: !!s.affinity?.token },
             salesforce: { connected: !!s.salesforce?.token, ...(s.salesforce?.instanceUrl ? { instanceUrl: s.salesforce.instanceUrl } : {}) },
+            clearbit: { connected: !!s.clearbit?.token },
             mcp: mcpStatus(),
         };
     }));
@@ -333,6 +335,7 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
 
     const testToken = async (service: TokenService, token: string, instanceUrl?: string): Promise<void> => {
         if (service === 'notion') return testNotion({ token });
+        if (service === 'clearbit') return testEnrichment({ token });
         return testCrm(service, { token, ...(instanceUrl ? { instanceUrl } : {}) });
     };
     safeHandle('outputs:save-token', guard(FORBIDDEN, async (_e, service: unknown, token: unknown, instanceUrl: unknown) => {
@@ -456,6 +459,39 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
         }
         notionPartials.clear(mid);
         return { ok: true, url: pending.url };
+    }));
+
+    // Attendee enrichment: opt-in, on this call only, results become People-page suggestions.
+    safeHandle('outputs:enrich-attendees', guard(FORBIDDEN, async (_e, meetingId: unknown) => {
+        const token = getConnectionsStore().token('clearbit');
+        if (!token) return fail('not_connected', ENRICHMENT_LABEL);
+        const doc = loadDoc(meetingId);
+        if (!doc) return NO_MEETING;
+        const candidates = crmCandidates(doc.attendees, [selfIdentity().email || '']);
+        if (!candidates.length) return { ok: false, kind: 'invalid_input', message: 'This meeting has no attendee emails to look up. Link it to its calendar event first.' };
+        const { organiseStore } = require('../organise/organiseService') as typeof import('../organise/organiseService');
+        const store = organiseStore();
+        if (!store) return { ok: false, kind: 'unknown', message: 'The People list is not available right now.' };
+        const { people, error } = await lookupAttendees(candidates.map((c) => c.email), { token });
+        let found = 0;
+        let suggested = 0;
+        for (const p of people) {
+            const facts = enrichmentFacts(p);
+            if (!facts.length) continue;
+            found++;
+            const name = candidates.find((c) => c.email === p.email)?.name || p.name;
+            const personId = store.resolvePerson({ email: p.email, ...(name ? { name } : {}) });
+            if (!personId) continue;
+            for (const f of facts) if (store.addFact(personId, meetingId as string, f.kind, f.value, f.quote)) suggested++;
+        }
+        const counts = { lookedUp: people.length, found, suggested };
+        if (error) return { ok: false, kind: error, message: describeConnectionError(error, ENRICHMENT_LABEL), ...counts };
+        const message = suggested
+            ? `Found ${found} of ${people.length} people in ${ENRICHMENT_LABEL}. ${suggested} ${suggested === 1 ? 'suggestion is' : 'suggestions are'} waiting on the People page for you to accept.`
+            : found
+                ? `Found ${found} of ${people.length} people in ${ENRICHMENT_LABEL}; everything it knows is already on their People pages.`
+                : `None of the ${people.length} attendees are in ${ENRICHMENT_LABEL}.`;
+        return { ok: true, message, ...counts };
     }));
 
     // CRM

@@ -11,7 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import type { CrmService, NotionParentInfo, SlackWebhookInfo } from '../../../src/types/meetingOutputs';
+import type { CrmService, EnrichmentService, NotionParentInfo, SlackWebhookInfo } from '../../../src/types/meetingOutputs';
 
 export const CONNECTIONS_FILE = 'connections.enc';
 
@@ -23,6 +23,8 @@ export interface ConnectionSecrets {
     affinity?: { token: string };
     /** Salesforce needs the org's instance URL as well as the access token. */
     salesforce?: { token: string; instanceUrl: string };
+    /** Attendee enrichment directory (opt-in lookups of title and company by email). */
+    clearbit?: { token: string };
     /** The local MCP server: its bearer token, the port it keeps, and whether it is on. */
     mcp?: { token: string; port?: number; enabled?: boolean };
 }
@@ -62,7 +64,7 @@ function sanitize(raw: any): ConnectionSecrets {
                 : {}),
         };
     }
-    for (const k of ['hubspot', 'attio', 'affinity'] as const) {
+    for (const k of ['hubspot', 'attio', 'affinity', 'clearbit'] as const) {
         if (token(raw?.[k])) out[k] = { token: token(raw[k])! };
     }
     // Salesforce is kept only with BOTH a token and an https instance URL; the
@@ -146,11 +148,11 @@ export class ConnectionsStore {
         return this.read().slack.webhooks.find((w) => w.id === id)?.url ?? null;
     }
 
-    token(service: 'notion' | CrmService | 'mcp'): string | null {
+    token(service: 'notion' | CrmService | EnrichmentService | 'mcp'): string | null {
         return this.read()[service]?.token ?? null;
     }
 
-    setToken(service: 'notion' | CrmService | 'mcp', token: string): boolean {
+    setToken(service: 'notion' | CrmService | EnrichmentService | 'mcp', token: string): boolean {
         return this.update((n) => {
             if (service === 'notion') n.notion = { token, ...(n.notion?.parent && n.notion.token === token ? { parent: n.notion.parent } : {}) };
             else if (service === 'mcp') n.mcp = { ...(n.mcp || {}), token };
@@ -171,7 +173,7 @@ export class ConnectionsStore {
         return this.update((n) => { n.salesforce = { token, instanceUrl }; });
     }
 
-    clear(service: 'notion' | CrmService | 'mcp'): void {
+    clear(service: 'notion' | CrmService | EnrichmentService | 'mcp'): void {
         this.update((n) => { delete n[service]; });
     }
 

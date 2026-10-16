@@ -8,8 +8,10 @@
 /** The longest Slack draft Natively sends (the composer shows a counter against it). */
 export const SLACK_DRAFT_MAX_CHARS = 40_000;
 
-export type ConnectionService = 'slack' | 'notion' | 'hubspot' | 'attio' | 'affinity' | 'salesforce';
+export type ConnectionService = 'slack' | 'notion' | 'hubspot' | 'attio' | 'affinity' | 'salesforce' | 'clearbit';
 export type CrmService = 'hubspot' | 'attio' | 'affinity' | 'salesforce';
+/** Outside directories that suggest a title and company for an attendee. Opt-in; results are suggestions only. */
+export type EnrichmentService = 'clearbit';
 
 /** Why a connection call failed, in categories the UI words plainly. */
 export type ConnectionErrorKind =
@@ -68,6 +70,7 @@ export interface ConnectionsStatus {
     affinity: { connected: boolean };
     /** Salesforce also keeps the instance URL the user pasted, so the row can show it. */
     salesforce: { connected: boolean; instanceUrl?: string };
+    clearbit: { connected: boolean };
     mcp: McpServerStatus;
 }
 
@@ -111,9 +114,9 @@ export interface MeetingOutputsApi {
     removeSlackWebhook: (id: string) => Promise<OutputResult>;
     testSlackWebhook: (id: string) => Promise<OutputResult>;
     /** Salesforce passes its instance URL too; the other services ignore it. */
-    saveToken: (service: 'notion' | CrmService, token: string, instanceUrl?: string) => Promise<OutputResult>;
-    testConnection: (service: 'notion' | CrmService) => Promise<OutputResult>;
-    disconnect: (service: 'notion' | CrmService) => Promise<OutputResult>;
+    saveToken: (service: 'notion' | CrmService | EnrichmentService, token: string, instanceUrl?: string) => Promise<OutputResult>;
+    testConnection: (service: 'notion' | CrmService | EnrichmentService) => Promise<OutputResult>;
+    disconnect: (service: 'notion' | CrmService | EnrichmentService) => Promise<OutputResult>;
     searchNotion: (query: string) => Promise<OutputResult & { results?: NotionSearchResult[] }>;
     setNotionParent: (parent: NotionParentInfo) => Promise<OutputResult>;
 
@@ -129,6 +132,12 @@ export interface MeetingOutputsApi {
     resumeNotion: (meetingId: string) => Promise<OutputResult & { url?: string; partial?: boolean }>;
     previewCrm: (meetingId: string, service: CrmService) => Promise<CrmMatchPreview>;
     sendCrm: (meetingId: string, service: CrmService, emails: string[]) => Promise<OutputResult & { notesCreated?: number; /** People still without the note after a partial failure. */ remaining?: number }>;
+    /**
+     * Looks up this meeting's attendees in the connected directory and files a
+     * title / company for each as a SUGGESTION on the People page. Runs only on
+     * this call; nothing is applied until the user accepts a suggestion.
+     */
+    enrichAttendees: (meetingId: string) => Promise<OutputResult & { lookedUp?: number; found?: number; suggested?: number }>;
 
     setMcpEnabled: (enabled: boolean) => Promise<McpServerStatus>;
     resetMcpToken: () => Promise<McpServerStatus>;

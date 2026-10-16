@@ -20,7 +20,7 @@ import {
     useMotionReadyAfter, useSettingsTones,
 } from './SettingsRow';
 import type {
-    ConnectionsStatus, CrmService, MeetingOutputsApi, NotionSearchResult, OutputResult, WritingSampleInfo, WritingStyleStatus,
+    ConnectionsStatus, CrmService, EnrichmentService, MeetingOutputsApi, NotionSearchResult, OutputResult, WritingSampleInfo, WritingStyleStatus,
 } from '../../types/meetingOutputs';
 
 const api = (): MeetingOutputsApi | undefined => window.electronAPI?.meetingOutputs;
@@ -97,7 +97,7 @@ const BusyIcon: React.FC<{ busy: boolean; icon: React.ReactNode }> = ({ busy, ic
 
 // ── Token services: Notion and the CRMs ──────────────────────────────────
 
-const TOKEN_META: Record<'notion' | CrmService, { title: string; icon: React.ReactNode; blurb: string; tokenLabel: string; howTo: string }> = {
+const TOKEN_META: Record<'notion' | CrmService | EnrichmentService, { title: string; icon: React.ReactNode; blurb: string; tokenLabel: string; howTo: string }> = {
     notion: {
         title: 'Notion',
         icon: <BookOpen size={20} />,
@@ -133,10 +133,17 @@ const TOKEN_META: Record<'notion' | CrmService, { title: string; icon: React.Rea
         tokenLabel: 'Access token',
         howTo: 'Paste your Salesforce access token and your instance URL (from the Salesforce CLI, "sf org display", or a connected app). Access tokens expire, so paste a fresh one when logging stops working.',
     },
+    clearbit: {
+        title: 'Clearbit',
+        icon: <Contact size={20} />,
+        blurb: 'Suggest a title and company for the people you met, looked up by email.',
+        tokenLabel: 'API key',
+        howTo: 'In Clearbit, open your account settings and copy the secret API key. Natively looks people up only when you press "Look up attendees" on a meeting, and every result is a suggestion you accept on the People page.',
+    },
 };
 
 const TokenServiceRow: React.FC<{
-    service: 'notion' | CrmService;
+    service: 'notion' | CrmService | EnrichmentService;
     connected: boolean;
     description?: React.ReactNode;
     onChanged: () => void;
@@ -630,6 +637,7 @@ export const ConnectionsSettings: React.FC = () => {
                     <TokenServiceRow service="attio" connected={status.attio.connected} onChanged={() => void load()} />
                     <TokenServiceRow service="affinity" connected={status.affinity.connected} onChanged={() => void load()} />
                     <TokenServiceRow service="salesforce" connected={status.salesforce.connected} onChanged={() => void load()} />
+                    <TokenServiceRow service="clearbit" connected={status.clearbit.connected} onChanged={() => void load()} />
                     <SettingsFootnote icon={<KeyRound size={14} />}>
                         {t('Tokens and webhook addresses are kept in your system keychain and never shown again.')}
                     </SettingsFootnote>
