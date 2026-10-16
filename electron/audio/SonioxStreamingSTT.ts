@@ -56,6 +56,32 @@ export const SONIOX_ENDPOINT_TUNING = {
 // hangover (>= 500) + 1200 = 1700 ms. See realtimeSilenceTail.ts.
 export const SONIOX_SILENCE_TAIL_MS = 1200;
 
+/**
+ * What the socket's 'close' does next.
+ *  - 'backoff': reconnect on the backoff ladder (unexpected close, or a 429/5xx
+ *    that may repeat on every handshake, so never retried per chunk);
+ *  - 'lazy': stay active with no socket; the next audio chunk reconnects;
+ *  - 'inactive': the session is over.
+ *
+ * Soniox sends an error frame and then closes CLEANLY (1000). Reading every
+ * 1000 as deliberate switched the channel off for the rest of the meeting:
+ * write() drops every chunk once isActive is false, and nothing else restarts
+ * it. Live 2026-10-16 (France, natively_debug 15): a 408 after 20 s of a silent
+ * call left the interviewer side deaf. Auth, config and billing errors still
+ * end the session, so a bad key cannot reconnect on every chunk.
+ */
+export function sonioxCloseAction(
+    shouldReconnect: boolean,
+    code: number,
+    lastServerErrorCode: number | null,
+): 'backoff' | 'lazy' | 'inactive' {
+    if (!shouldReconnect) return 'inactive';
+    if (code !== 1000) return 'backoff';
+    if (lastServerErrorCode === 408) return 'lazy';   // idle timeout: no audio, nothing to transcribe
+    if (lastServerErrorCode === 429 || (lastServerErrorCode !== null && lastServerErrorCode >= 500 && lastServerErrorCode < 600)) return 'backoff';
+    return 'inactive';
+}
+
 export class SonioxStreamingSTT extends EventEmitter {
     private apiKey: string;
     private ws: WebSocket | null = null;
@@ -85,6 +111,10 @@ export class SonioxStreamingSTT extends EventEmitter {
 
     private buffer: Buffer[] = [];
     private isConnecting = false;
+    /** When an audio frame last went out on the socket (0 = none yet on this socket). */
+    private lastAudioSentAt = 0;
+    /** The last error frame's code on this socket, read by the close handler. */
+    private lastServerErrorCode: number | null = null;
     private readonly silenceTail = new RealtimeSilenceTail({
         tailMs: SONIOX_SILENCE_TAIL_MS,
         format: () => ({ sampleRate: this.sampleRate, channels: this.numChannels }),
@@ -342,6 +372,7 @@ export class SonioxStreamingSTT extends EventEmitter {
         }
 
         this.ws.send(chunk);
+        this.lastAudioSentAt = Date.now();
     }
 
     public finalize(): void {
@@ -398,6 +429,8 @@ export class SonioxStreamingSTT extends EventEmitter {
 
             this.reconnectAttempts = 0;
             this.reconnectExhaustedAt = null; // healthy again — clear the exhaustion marker
+            this.lastAudioSentAt = 0;
+            this.lastServerErrorCode = null;
             console.log('[SonioxStreaming] Connected, sending config...');
 
             // Send initial configuration as first message
@@ -433,6 +466,7 @@ export class SonioxStreamingSTT extends EventEmitter {
 
                 // Error from server
                 if (msg.error_code) {
+                    if (ws === this.ws) this.lastServerErrorCode = Number(msg.error_code) || null;
                     console.error(`[SonioxStreaming] Server error: ${msg.error_code} - ${msg.error_message}`);
                     this.emit('error', new Error(`Soniox: ${msg.error_code} - ${msg.error_message}`));
                     return;
@@ -523,9 +557,11 @@ export class SonioxStreamingSTT extends EventEmitter {
             this.clearKeepAlive();
             console.log(`[SonioxStreaming] Closed (code=${code}, reason=${reason.toString()})`);
 
-            // Auto-reconnect on unexpected close
-            if (this.shouldReconnect && code !== 1000) {
+            const action = sonioxCloseAction(this.shouldReconnect, code, this.lastServerErrorCode);
+            if (action === 'backoff') {
                 this.scheduleReconnect();
+            } else if (action === 'lazy') {
+                console.warn('[SonioxStreaming] Server closed after an idle timeout (408); reconnecting on next audio.');
             } else {
                 // If not reconnecting, mark session as truly inactive
                 this.isActive = false;
@@ -580,6 +616,14 @@ export class SonioxStreamingSTT extends EventEmitter {
             if (this.ws?.readyState === WebSocket.OPEN) {
                 try {
                     this.ws.ping();
+                    // A WebSocket ping does not count as activity to Soniox: with
+                    // no audio frames (a call that is silent at the start, so the
+                    // capture emits nothing) the session times out with 408 after
+                    // ~20 s. Its own control message keeps it open.
+                    // soniox.com/docs/stt/rt/connection-keepalive
+                    if (this.configSent && Date.now() - this.lastAudioSentAt >= KEEPALIVE_INTERVAL_MS) {
+                        this.ws.send(JSON.stringify({ type: 'keepalive' }));
+                    }
                 } catch {
                     // Ignore errors
                 }
