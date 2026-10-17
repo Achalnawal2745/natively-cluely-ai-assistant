@@ -6,8 +6,8 @@
  * holds for a headset, not for a room: everyone around the laptop lands on
  * the mic channel and the notes credit all of it to "Me". With the room
  * setting on, the mic channel is transcribed with provider diarization
- * (Deepgram today), so each mic line carries a provider voice id. This turns
- * those ids into speakers:
+ * (Deepgram, Soniox or Google: audio/sttDiarization.ts), so each mic line
+ * carries a provider voice id. This turns those ids into speakers:
  *
  *   - the voice with the most words on the mic channel is the user and stays
  *     "Me" (the user is the one who started the recording and usually talks
@@ -19,10 +19,22 @@
  *   - a voice under those thresholds is diarization flicker, not a person, and
  *     folds back into "Me"; so does every line without a voice id.
  *
+ * Providers number voices afresh on every connection (a reconnect), so an id
+ * may carry the connection it came from, `speaker_2@3`, and each connection
+ * is its own window. Voices cannot be matched from one window to the next:
+ * word counts cannot tell who is who (a colleague may talk most after a
+ * reconnect), and guessing would put the user's own words under someone
+ * else's name. So only the largest window, by words on the mic, is split; the
+ * lines of every other window stay the user's, as they were before this
+ * setting existed. Reconnects are rare, so that window is nearly always most
+ * of the meeting. With a single window this is exactly the rule above.
+ *
  * Pure and deterministic: no model call, no audio, no platform branches. The
  * live transcript is untouched (this runs at save), so there is no latency
  * cost; only the saved transcript and the notes see the split.
  */
+
+import { parseVoiceId } from '../../audio/sttDiarization';
 
 export interface RoomLineLike {
     speaker: string;
@@ -79,16 +91,29 @@ export function splitRoomSpeakers<T extends RoomLineLike>(lines: T[], opts: Room
     });
     if (perVoice.size < 2 || total === 0) return unchanged();
 
-    const dominant = [...perVoice.entries()].sort((a, b) => b[1].words - a[1].words || a[0].localeCompare(b[0]))[0][0];
+    // Only the largest connection window is split (see the header); a tie goes
+    // to the earlier connection.
+    const windowWords = new Map<string, number>();
+    for (const [id, v] of perVoice) {
+        const { epoch } = parseVoiceId(id);
+        windowWords.set(epoch, (windowWords.get(epoch) ?? 0) + v.words);
+    }
+    const [main, windowTotal] = [...windowWords.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], undefined, { numeric: true }))[0];
+    const voices = [...perVoice.entries()]
+        .filter(([id]) => parseVoiceId(id).epoch === main)
+        .sort((a, b) => b[1].words - a[1].words || a[0].localeCompare(b[0]));
+    if (voices.length < 2 || windowTotal === 0) return unchanged();
+    const dominant = voices[0][0];
 
     // Ids in use: the caller's, plus any speaker_N already on a line.
     const used = new Set<string>(opts.usedIds ?? []);
     for (const l of lines) if (l.speakerId && /^speaker_\d+$/.test(l.speakerId) && !MIC.test(l.speaker)) used.add(l.speakerId);
 
     const nameFor = new Map<string, string>();
-    for (const [id, v] of [...perVoice.entries()].sort((a, b) => b[1].words - a[1].words || a[0].localeCompare(b[0]))) {
+    for (const [id, v] of voices) {
         if (id === dominant) continue;
-        if (v.words / total < minShare || v.lines < minLines) continue;
+        if (v.words / windowTotal < minShare || v.lines < minLines) continue;
         const n = nextSpeakerNumber(used);
         used.add(`speaker_${n}`);
         nameFor.set(id, `Speaker ${n}`);

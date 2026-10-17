@@ -1088,7 +1088,7 @@ export class MeetingPersistence {
         }
         // People sharing the user's microphone (Settings, Audio): the mic channel
         // was transcribed with provider diarization, so its lines carry voice ids.
-        // The loudest voice stays "Me"; each other real voice becomes "Speaker N",
+        // The voice with the most words stays "Me"; each other real voice becomes "Speaker N",
         // numbered past the call's named people (meeting/roomSpeakers.ts). The
         // same lines are renamed in the notes' copy. Before the strip below,
         // which would drop the voice ids this reads.

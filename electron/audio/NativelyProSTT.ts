@@ -5,6 +5,7 @@ import { RECOGNITION_LANGUAGES, EnglishVariant } from '../config/languages';
 import { TRIAL_SENTINEL_KEY } from '../config/constants';
 import { streamingStttWsOptions } from './dnsHelpers';
 import { RealtimeSilenceTail } from './realtimeSilenceTail';
+import { nextVoiceEpoch, voiceIdFromLabel } from './sttDiarization';
 
 /**
  * Real-time silence guaranteed after the local VAD says speech ended.
@@ -99,6 +100,10 @@ export class NativelyProSTT extends EventEmitter {
     private apiKey: string;
     private channel: string;  // 'system' | 'mic' — disambiguates concurrent streams per key
     private ws: WebSocket | null = null;
+    // Voice labels (sttDiarization.ts): `speaker_labels: true` in the legacy
+    // auth frame; natively-api then asks Soniox for them and sends `speaker`
+    // and `speaker_epoch` (its upstream connection count) on each final.
+    private diarize = false;
     private isActive           = false;
     private isConnected        = false;
     private isConnecting       = false;
@@ -325,6 +330,29 @@ export class NativelyProSTT extends EventEmitter {
             this.closeUpstream();
             // Same 250ms gap pattern as setRecognitionLanguage to avoid the
             // server's concurrent_session_blocked race.
+            if (this.pendingConnectTimer) clearTimeout(this.pendingConnectTimer);
+            this.pendingConnectTimer = setTimeout(() => {
+                this.pendingConnectTimer = null;
+                if (this.isActive) this.connect();
+            }, 250);
+        }
+    }
+
+    /**
+     * Label voices on this stream (sttDiarization.ts). The flag rides in the
+     * auth frame, so a change once that frame is out reconnects, the same way
+     * and for the same reason as setSampleRate; before it, the frame picks it up.
+     */
+    public setDiarization(enabled: boolean): void {
+        if (this.diarize === enabled) return;
+        this.diarize = enabled;
+        console.log(`[NativelyProSTT:${this.channel}] Diarization ${enabled ? 'enabled' : 'disabled'}`);
+        const socket = this.ws;
+        const preHandshake = !socket || socket.readyState === WebSocket.CONNECTING;
+        if (this.isActive && !preHandshake) {
+            this.reconnectAttempts = 0;
+            this.intentionalClose  = true;
+            this.closeUpstream();
             if (this.pendingConnectTimer) clearTimeout(this.pendingConnectTimer);
             this.pendingConnectTimer = setTimeout(() => {
                 this.pendingConnectTimer = null;
@@ -568,6 +596,9 @@ export class NativelyProSTT extends EventEmitter {
         // IPv4-only CNAME chains and caps the TLS+upgrade handshake at 15s.
         // See dnsHelpers.ts for the full why.
         const ws = new WebSocket(connectUrl, streamingStttWsOptions() as any);
+        // Voice numbers restart on a new socket, as on the relay's own upstream
+        // reconnects: this socket's lines carry its own window number.
+        const socketEpoch = nextVoiceEpoch();
         this.ws = ws;
 
         // CRITICAL: every handler below captures `ws` locally and gates on
@@ -720,26 +751,25 @@ export class NativelyProSTT extends EventEmitter {
                             kind: this.target ? this.kindForUrl(connectUrl) : 'railway',
                         });
                     }
-                    // Speaker label, when the relay sends one. The app's PRIMARY
-                    // speaker separation is physical — mic and system audio are
-                    // two devices and two sessions — and nothing here changes
-                    // that. This is the second-order case that separation cannot
-                    // reach: several voices INSIDE the meeting-audio channel (a
-                    // panel, a colleague answering a colleague, a two-speaker
-                    // video). Soniox stt-rt-v5 can label them per token, so if
-                    // the relay ever forwards the tag — the same way it already
-                    // forwards per-token `language` — Auto Answer's judge picks
-                    // it up with no further client work. Absent field → absent
-                    // label → today's behaviour exactly.
-                    const speakerId = typeof msg.speaker === 'string' ? msg.speaker
-                        : typeof msg.speaker === 'number' ? `speaker_${msg.speaker}`
-                        : typeof msg.speaker_id === 'string' ? msg.speaker_id
-                        : undefined;
+                    // Voice label, when the relay sends one: natively-api asks
+                    // Soniox for labels when this socket's auth frame said
+                    // `speaker_labels: true` (setDiarization), and sends
+                    // `speaker` ("1", "2") with `speaker_epoch`, its upstream
+                    // connection count. Both counts go into voiceEpoch, so a
+                    // reconnect on either side starts a new window
+                    // (sttDiarization.withVoiceEpoch). The PRIMARY speaker
+                    // separation stays physical (mic and system audio are two
+                    // sessions); this is the case it cannot reach, several
+                    // voices on one channel. Absent field, absent label:
+                    // today's behaviour exactly.
+                    const speakerId = voiceIdFromLabel(msg.speaker)
+                        ?? (typeof msg.speaker_id === 'string' && msg.speaker_id ? msg.speaker_id : undefined);
+                    const upstream = Number.isInteger(msg.speaker_epoch) && msg.speaker_epoch >= 0 && msg.speaker_epoch < 1000 ? msg.speaker_epoch : 0;
                     this.emit('transcript', {
                         text:       msg.text,
                         isFinal:    msg.is_final    ?? false,
                         confidence: msg.confidence  ?? 1.0,
-                        ...(speakerId ? { speakerId } : {}),
+                        ...(speakerId ? { speakerId, voiceEpoch: socketEpoch * 1000 + upstream } : {}),
                     });
                 }
             } catch (err) {
@@ -1067,6 +1097,10 @@ export class NativelyProSTT extends EventEmitter {
             // boolean false opts out; a server that predates the flag ignores it.
             full_text:           false,
             ...this.contextTermsField(),
+            // Voice labels (setDiarization): only when asked. A server that
+            // predates the field ignores it, and the mic is then written as
+            // the user, as before.
+            ...(this.diarize ? { speaker_labels: true } : {}),
         };
         if (this.apiKey === TRIAL_SENTINEL_KEY) {
             try {
