@@ -63,7 +63,6 @@ export type PromptSystemV2Action =
     | 'follow_up_questions'
     | 'recap'
     | 'code_hint'
-    | 'title'
     | 'summary_json'
     | 'followup_email'
     // The overlay's live helpers (2026-10-15, llm/liveHelpers.ts).
@@ -463,10 +462,6 @@ Summarize only what actually occurred. Use this order when present: discussion, 
 Give the smallest useful nudge for the current blocker. If the user asks for a hint, do not reveal the full solution. If they ask to debug, identify the faulty line or condition and explain the fix. If they ask for a full solution, follow the coding contract. Honor requests such as code only, complexity only, dry run only, or explanation only — an explicit format request overrides the default shape.
 </active_action>`,
 
-    title: `<active_action name="title">
-Return only a specific title of three to six words. No quotation marks and no ending punctuation.
-</active_action>`,
-
     summary_json: `<active_action name="summary_json">
 Return only valid JSON matching this exact shape:
 {"summary":"string","keyPoints":["string"],"actionItems":["string"],"decisions":["string"],"risks":["string"]}
@@ -552,7 +547,7 @@ const MODE_SPEAKER: Record<PromptSystemV2Mode, { speaker: string; never: string 
 /** Actions whose output is informational: the action's shape wins over the
  *  mode's spoken role voice. A recap in sales mode is still a recap. */
 const INFORMATIONAL_ACTIONS: ReadonlySet<PromptSystemV2Action> = new Set([
-    'recap', 'summary_json', 'title', 'follow_up_questions', 'followup_email', 'catch_me_up', 'define',
+    'recap', 'summary_json', 'follow_up_questions', 'followup_email', 'catch_me_up', 'define',
 ]);
 
 /** Targeted overlays for the (mode, action) collisions the benchmark measured. */
@@ -904,7 +899,7 @@ function chatLayoutBlock(input: BuildSystemPromptV2Input, tier: PromptTierV2): s
 // Actions whose output is not an answer to the turn's question. A diagram
 // contract on these would put a Mermaid block into a title or a JSON summary.
 const NO_DIAGRAM_ACTIONS: ReadonlySet<PromptSystemV2Action> = new Set([
-    'title', 'summary_json', 'followup_email', 'follow_up_questions', 'clarify', 'catch_me_up', 'define', 'sound_smart',
+    'summary_json', 'followup_email', 'follow_up_questions', 'clarify', 'catch_me_up', 'define', 'sound_smart',
 ]);
 
 // System-design diagram contract (2026-10-01). One shared text

@@ -12,6 +12,7 @@
 // Pure. No Electron, no database, no platform branches.
 
 import type { MeetingModeSectionInput } from './types';
+import { MEETING_TITLE_RULE } from './MeetingSummaryV3';
 import { headingBudgetForTranscript, renderNotesPromptContext, userNoteHeadings, type NotesPromptContext } from './meetingNotesContext';
 
 const BASE_RULES = `RULES:
@@ -25,6 +26,9 @@ const BASE_RULES = `RULES:
 
 STYLE: Calm, neutral, professional, skim-friendly. Short bullets, no sub-bullets.`;
 
+// Naming the meeting rides in the notes reply: no title call afterwards.
+const TITLE_SHAPE = `"title": "the meeting's name"`;
+const TITLE_RULE_LINE = `- ${MEETING_TITLE_RULE}.`;
 const OVERVIEW_SHAPE = `"overview": "one solid paragraph compressing the ENTIRE meeting without losing anything important - purpose, what was discussed, key outcomes, and where things landed"`;
 
 export interface V2FallbackPromptParams {
@@ -57,6 +61,7 @@ export function buildV2FallbackPrompts(params: V2FallbackPromptParams): { summar
     const summaryPrompt = `You are a silent meeting note-taker. Extract structured notes from the conversation transcript below.
 ${params.modeContextBlock || ''}${contextPart}
 ${BASE_RULES}
+${TITLE_RULE_LINE}
 
 SECTIONS TO FILL (extract only what is present in the transcript):
 ${sectionList}
@@ -64,6 +69,7 @@ ${sectionList}
 Return ONLY valid JSON — no markdown fences, no comments, no extra keys. Each section value is an array of concise factual bullet strings taken directly from the conversation. Use [] if a section has no relevant content.
 
 {
+  ${TITLE_SHAPE},
   ${OVERVIEW_SHAPE},
   "sections": {
 ${sectionKeys}
@@ -81,11 +87,13 @@ ${sectionKeys}
   const summaryPrompt = `You are a silent meeting summarizer. Convert this conversation into concise internal meeting notes.
 ${contextPart}
 ${BASE_RULES}
+${TITLE_RULE_LINE}
 - Notes are as long as the meeting warrants: a short call gets short notes.
 ${headingRule}
 
 Return ONLY valid JSON (no markdown code blocks):
 {
+  ${TITLE_SHAPE},
   ${OVERVIEW_SHAPE},
   "keyPoints": ["${keyPointRange(budget)} specific bullets - each = one concrete topic or point discussed"],
   "sections": [{ "title": "short heading", "bullets": ["specific bullet"] }],
@@ -144,6 +152,9 @@ export function parseV2SummaryResponse(raw: string, modeNoteSections: MeetingMod
     ? parsed.overview
     : (typeof parsed.summary === 'string' ? parsed.summary : (Array.isArray(parsed.summary) ? stringList(parsed.summary).join(' ') : ''));
   const overview = String(overviewRaw || '').trim();
+  // Unvetted; MeetingPersistence vets it. Absent when the model gave none.
+  const title = typeof parsed.title === 'string' ? parsed.title.replace(/\s+/g, ' ').trim() : '';
+  const titlePart = title ? { title } : {};
 
   if (modeNoteSections.length > 0 && parsed.sections && typeof parsed.sections === 'object') {
     // Template order, every template section present (empty when the model had nothing).
@@ -154,6 +165,7 @@ export function parseV2SummaryResponse(raw: string, modeNoteSections: MeetingMod
       for (const [k, v] of Object.entries(parsed.sections)) byTitle.set(k, stringList(v));
     }
     return {
+      ...titlePart,
       overview,
       actionItems: [],
       keyPoints: [],
@@ -164,6 +176,7 @@ export function parseV2SummaryResponse(raw: string, modeNoteSections: MeetingMod
   const sections = freeFormSections(parsed.sections);
   const decisions = stringList(parsed.decisions);
   return {
+    ...titlePart,
     overview,
     keyPoints: stringList(parsed.keyPoints),
     actionItems: stringList(parsed.actionItems),

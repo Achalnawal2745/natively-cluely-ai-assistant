@@ -9,7 +9,7 @@ import { GROQ_SUMMARY_JSON_PROMPT } from './llm';
 import { buildPostCallEnhancements } from './services/post-call/PostCallWorkflow';
 import { MeetingContextAssembler } from './services/meeting/MeetingContextAssembler';
 import { followUpRedraftPlan } from './services/meeting/FollowUpDraftGenerator';
-import { cleanMeetingTitle, isAnswerFragmentTitle, isAnswerShapedGeneration } from './services/meeting/MeetingSummaryV3';
+import { MEETING_TITLE_MAX_CHARS, cleanMeetingTitle, firstSentenceOf, fitTitleLength, isAnswerFragmentTitle, isAnswerShapedGeneration, isEmptySessionTitle, isNarrationTitle, isQuestionTitle } from './services/meeting/MeetingSummaryV3';
 import { NOTE_CALL_TIMEOUT_MS } from './services/meeting/generateStructured';
 import type { MeetingSummaryTelemetryMeta } from './services/meeting/types';
 import { TranscriptNormalizer } from './services/meeting/TranscriptNormalizer';
@@ -30,47 +30,75 @@ import { getUserDictionary } from './audio/userDictionary';
 import { isArchivableNotes } from './services/meeting/notesVersions';
 const crypto = require('crypto');
 
-/** Longest a derived fallback title may be, before word-boundary truncation. */
-const DERIVED_TITLE_MAX_CHARS = 60;
+/** Longest a derived fallback title may be: the same bound as a generated one. */
+const DERIVED_TITLE_MAX_CHARS = MEETING_TITLE_MAX_CHARS;
+/** Fewest distinct 4+ letter note words a title's grounding is judged against. */
+const GROUNDING_MIN_CORPUS_WORDS = 12;
 
-/** Collapse one note string into a title-length name: first sentence, trailing
- *  punctuation dropped, truncated on a word boundary, first letter capitalised.
+// How a note line opens when it narrates rather than names: a speaker label
+// ("Evin: HackerRank was not flagging anything") or a description of the session
+// ("A very short session in which Evin asked…"). Both were saved as real titles.
+const NOTE_SPEAKER_LABEL_RE = /^[\p{L}][\p{L}.' -]{0,30}:\s+(?=\S)/u;
+const NOTE_SESSION_PREAMBLE_RE = /^(?:(?:a|an|this|the)\s+(?:(?:very|short|brief|quick)\s+)*(?:session|meeting|call|conversation|chat)\s+(?:in which|where|that)\s+|in (?:this|the) (?:session|meeting|call|conversation),?\s+)/i;
+
+/** Collapse one note string into a title: the speaker label and session preamble
+ *  dropped, first sentence only, cut on a whole phrase within 50 characters
+ *  (fitTitleLength), first letter capitalised.
  *  Deliberately NOT routed through cleanMeetingTitle / isAnswerFragmentTitle /
- *  isAnswerShapedGeneration: those guards judge MODEL output ("did it name the
- *  meeting or answer it"), and a note sentence is answer-shaped by construction.
- *  This text is grounded by definition — it IS the notes. */
+ *  isAnswerShapedGeneration as a whole: those guards judge MODEL output ("did it
+ *  name the meeting or answer it"), and a note sentence is answer-shaped by
+ *  construction. Only the shapes that are never a name apply: narration, a
+ *  question, a description of an empty session. */
 function shortenToTitleLength(value: string): string {
-    const collapsed = String(value || '').replace(/\s+/g, ' ').replace(/^["'`\s]+|["'`\s]+$/g, '').trim();
+    let collapsed = String(value || '').replace(/\s+/g, ' ').replace(/^["'`\s]+|["'`\s]+$/g, '').trim();
+    collapsed = collapsed.replace(NOTE_SPEAKER_LABEL_RE, '').replace(NOTE_SESSION_PREAMBLE_RE, '').trim();
     if (!collapsed) return '';
-    const firstSentence = (collapsed.match(/^[^.!?]+[.!?]?/) || [collapsed])[0];
-    let out = firstSentence.replace(/[\s.,;:!?]+$/, '');
-    if (out.length > DERIVED_TITLE_MAX_CHARS) {
-        const cut = out.slice(0, DERIVED_TITLE_MAX_CHARS);
-        const lastSpace = cut.lastIndexOf(' ');
-        out = (lastSpace > 20 ? cut.slice(0, lastSpace) : cut).replace(/[\s.,;:!?]+$/, '');
-    }
-    if (!out) return '';
+    const firstSentence = firstSentenceOf(collapsed);
+    // A note that narrates ("The user asked the assistant…"), says the session was
+    // empty, or asks a question is not a name; the caller moves on to the next note
+    // (or keeps the default title).
+    if (isNarrationTitle(firstSentence) || isEmptySessionTitle(firstSentence) || isQuestionTitle(firstSentence)) return '';
+    // The character bound is the binding one here: a note phrase is not prose to
+    // be stopped at eight words, and the word cap would cut it short of 50.
+    const out = fitTitleLength(firstSentence.replace(/[\s.,;:!?]+$/, ''), DERIVED_TITLE_MAX_CHARS, DERIVED_TITLE_MAX_CHARS);
+    // The cut can leave a narrating head of a longer sentence ("Evin said …").
+    if (!out || isNarrationTitle(out)) return '';
     return out.charAt(0).toUpperCase() + out.slice(1);
+}
+
+/** Topics as a readable list that fits the title: "Onboarding, pilot and
+ *  security review". Drops topics from the end until it fits; a single topic
+ *  that is itself too long is cut on a whole phrase. A topic that only says the
+ *  session was empty is left out, and the others still make the title. */
+function topicsTitle(allTopics: string[]): string {
+    const topics = allTopics.filter(t => !isEmptySessionTitle(t) && !isQuestionTitle(t) && !isNarrationTitle(t));
+    for (let n = Math.min(3, topics.length); n >= 1; n--) {
+        const chosen = topics.slice(0, n);
+        const joined = n === 1 ? chosen[0] : `${chosen.slice(0, -1).join(', ')} and ${chosen[n - 1]}`;
+        if (joined.length <= DERIVED_TITLE_MAX_CHARS) return joined.charAt(0).toUpperCase() + joined.slice(1);
+    }
+    return shortenToTitleLength(topics[0] || '');
 }
 
 /**
  * Deterministic, llm-free title derived from the notes already in hand.
  *
- * Priority topics -> takeaways (tldr, else keyPoints) -> overview: topics are the
- * shortest naming material and read most like a title; the takeaway/overview tiers are
- * sentences, so only their first clause survives. Returns null only when every tier is
- * empty — the one case where "no title" is the honest answer.
+ * Tier order: topics (the meeting's subjects, already short noun phrases, so they
+ * read most like a title), then the first takeaway, then the overview. Takeaways and
+ * the overview are sentences, so only their first phrase survives. Returns null when
+ * every tier is empty, or only says the session was empty or asks a question: the
+ * meeting then keeps its default title rather than a description of its emptiness.
  */
 function deriveDeterministicTitle(parts: { topics: string[]; takeaways: string[]; overview: string }): string | null {
-    const topics = parts.topics.map(t => String(t || '').trim()).filter(Boolean);
+    const topics = parts.topics.map(t => String(t || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
     if (topics.length > 0) {
-        const joined = topics.slice(0, 3).map(t => t.charAt(0).toUpperCase() + t.slice(1)).join(', ');
-        const fromTopics = shortenToTitleLength(joined);
+        const fromTopics = topicsTitle(topics);
         if (fromTopics) return fromTopics;
     }
-    const firstTakeaway = parts.takeaways.map(t => String(t || '').trim()).find(Boolean);
-    if (firstTakeaway) {
-        const fromTakeaway = shortenToTitleLength(firstTakeaway);
+    // The first takeaway that makes a name: one that only says the session was
+    // empty, or asks a question, gives way to the next.
+    for (const takeaway of parts.takeaways.map(t => String(t || '').trim()).filter(Boolean)) {
+        const fromTakeaway = shortenToTitleLength(takeaway);
         if (fromTakeaway) return fromTakeaway;
     }
     if (parts.overview) {
@@ -80,40 +108,7 @@ function deriveDeterministicTitle(parts: { topics: string[]; takeaways: string[]
     return null;
 }
 
-/**
- * Name the meeting from its FINISHED notes.
- *
- * This used to run before the summary, over the first 8000 chars of raw transcript — so on
- * a long meeting it named the intro rather than the meeting, and regeneration could never
- * fix a bad title because the old one was passed straight through. Feeding it the notes
- * also removes one raw-transcript egress point.
- *
- * Input priority (RC-9): `tldr` bullets + `topics` are the distilled "what mattered" and
- * give a 3-6 word naming task far less to wade through than the full overview paragraph.
- * Falls back tldr -> keyPoints -> overview because BOTH summary pipelines must work: the
- * legacy V2 path (still the fallback when V3 returns null) populates keyPoints/overview but
- * leaves tldr empty.
- *
- * Returns null — and makes NO llm call — ONLY when there is nothing groundable to name.
- * Every other failure (the model refusing with the no-action sentinel, answering the notes
- * instead of naming them, hallucinating an ungrounded title, or the call throwing) falls
- * back to a title DERIVED FROM THE NOTES with no second llm call — see
- * deriveDeterministicTitle. A real production meeting was saved unnamed because the model
- * returned "[[NO_ACTION]]", the grounding guard correctly rejected it, and null then meant
- * "no title" (2026-08-26). A meeting always needs a name, so null must mean "nothing to
- * name", never "generation misbehaved". A null return still means "keep the existing
- * title" — this must never block the notes from being saved.
- */
-export async function generateTitleFromSummary(
-    llmHelper: { generateMeetingSummary: (system: string, context: string, groq?: string, opts?: any) => Promise<string> },
-    summary: { title?: string; tldr?: string[]; keyPoints?: string[]; overview?: string; topics?: string[] },
-    // Who the meeting was with (meetingNotesContext.titleContextHint), 2026-10-15. Optional.
-    contextHint?: string,
-): Promise<string | null> {
-    return (await generateTitleFromSummaryWithSource(llmHelper, summary, contextHint)).title;
-}
-
-/** Where a generated title actually came from. `none` = nothing groundable to name. */
+/** Where a meeting's title came from. `none` = nothing groundable to name. */
 export type TitleSource = 'model' | 'fallback' | 'none';
 
 export interface GeneratedTitle {
@@ -122,73 +117,60 @@ export interface GeneratedTitle {
 }
 
 /**
- * generateTitleFromSummary with the provenance the caller sometimes needs.
+ * Name the meeting from the title its notes call wrote (2026-10-18).
  *
- * Since the deterministic fallback landed (2026-08-26) a refusal/throw/rejection no longer
- * returns null — it returns a NOTE-DERIVED title. That is right for the first save (a
- * meeting must have a name) but wrong for REGENERATION, where the mechanical title would
- * overwrite a perfectly good LLM one. Callers that must tell the two apart use this
- * function and `shouldReplaceTitleOnRegenerate`; everyone else keeps the plain wrapper.
+ * Naming used to be a model call of its own after the notes were written. Now the
+ * notes call that reads the whole meeting writes "title" in the same reply — the V3
+ * overview (SummaryPolisher.polishOverview), the short-session call or the V2
+ * fallback — so naming a meeting costs no request, and the name covers the whole
+ * meeting rather than its opening. This function only VETS that title: it never
+ * calls a model.
+ *
+ * Returns `none` ONLY when there is nothing groundable to name. Every other failure
+ * (no title in the reply, the no-action sentinel, an answer instead of a name, a name
+ * with nothing in common with the notes) falls back to a title DERIVED FROM THE NOTES
+ * — see deriveDeterministicTitle. A real production meeting was saved unnamed because
+ * the model returned "[[NO_ACTION]]" (2026-08-26): a meeting always needs a name, so
+ * `none` must mean "nothing to name", never "generation misbehaved". The source tells
+ * a REGENERATE apart from a first save (shouldReplaceTitleOnRegenerate).
+ *
+ * Fallback input priority (RC-9): topics, then tldr -> keyPoints -> overview, because
+ * BOTH summary pipelines must work: the legacy V2 path populates keyPoints/overview but
+ * leaves tldr empty.
  */
-export async function generateTitleFromSummaryWithSource(
-    llmHelper: { generateMeetingSummary: (system: string, context: string, groq?: string, opts?: any) => Promise<string> },
+export function vetProposedTitle(
+    proposed: string | null | undefined,
     summary: { title?: string; tldr?: string[]; keyPoints?: string[]; overview?: string; topics?: string[] },
-    contextHint?: string,
-): Promise<GeneratedTitle> {
+): GeneratedTitle {
     const asFallback = (t: string | null): GeneratedTitle => ({ title: t, source: t ? 'fallback' : 'none' });
     const clean = (arr?: string[]) => (arr || []).map(t => String(t || '').trim()).filter(Boolean);
     const overview = typeof summary.overview === 'string' ? summary.overview.trim() : '';
     const topics = clean(summary.topics).slice(0, 10);
 
-    // tldr -> keyPoints -> overview. Never combine tiers — the first non-empty source wins,
-    // keeping the naming task small.
+    // tldr -> keyPoints -> overview. Never combine tiers — the first non-empty source wins.
     let takeaways = clean(summary.tldr);
     if (takeaways.length === 0) takeaways = clean(summary.keyPoints);
 
     if (takeaways.length === 0 && !overview && topics.length === 0) return { title: null, source: 'none' };
 
-    // Deterministic safety net, computed BEFORE the call so every rejection path below
-    // has something to return. Costs nothing when the generated title is accepted.
     const fallbackTitle = deriveDeterministicTitle({ topics, takeaways, overview });
+    let generatedTitle = typeof proposed === 'string' ? proposed : '';
+    if (!generatedTitle.trim()) return asFallback(fallbackTitle);
 
-    let v2TitlePrompt: string | null = null;
     // Reuse the prompt system's OWN sentinel helpers rather than a local regex, so a
-    // change to NO_ACTION_SENTINEL can never leave this call site matching the old token.
+    // change to NO_ACTION_SENTINEL can never leave this check matching the old token.
     let isRefusal: ((text: string) => boolean) | null = null;
     let stripRefusal: ((text: string) => string) | null = null;
     try {
         const promptSystemV2 = require('./llm/promptSystemV2');
-        v2TitlePrompt = promptSystemV2.resolveV2SystemPrompt({ action: 'title', tier: 'cloud', activeMode: null });
         if (typeof promptSystemV2.shouldSuppressModelOutput === 'function') isRefusal = promptSystemV2.shouldSuppressModelOutput;
         if (typeof promptSystemV2.stripLeadingNoActionSentinel === 'function') stripRefusal = promptSystemV2.stripLeadingNoActionSentinel;
-    } catch { /* legacy fallback below */ }
-    const titlePrompt = v2TitlePrompt
-        ?? `Generate a concise 3-6 word title for this meeting context. Output ONLY the title text. Do not use quotes or conversational filler.`;
+    } catch { /* the shape guards below still run */ }
 
-    const context = [
-        takeaways.length ? `Key takeaways:\n${takeaways.map(t => `- ${t}`).join('\n')}` : (overview ? `Overview:\n${overview}` : ''),
-        topics.length ? `Topics: ${topics.join(', ')}` : '',
-        // Background only: the grounding check below still reads the notes alone,
-        // so a title built from the invite and nothing in the notes is rejected.
-        typeof contextHint === 'string' && contextHint.trim() ? contextHint.trim().slice(0, 400) : '',
-    ].filter(Boolean).join('\n\n');
-
-    let generatedTitle = '';
-    try {
-        // Timeout only — deliberately NOT routed to purpose:'extraction'. Naming a
-        // meeting is a writing task, not the benchmarked structured-extraction route.
-        generatedTitle = await llmHelper.generateMeetingSummary(titlePrompt, context, titlePrompt, { timeoutMs: NOTE_CALL_TIMEOUT_MS });
-    } catch (e) {
-        console.warn('[MeetingPersistence] Title generation failed (non-fatal):', (e as Error)?.message);
-        return asFallback(fallbackTitle);
-    }
-
-    // REFUSAL, not a bad title. The title prompt tells the model the sentinel is invalid
-    // here (silenceGateBlock's non-'assist' branch), but production saw it returned anyway.
-    // Detect it explicitly: routed through the guards below it reads as "ungrounded", which
-    // is what sent the first investigation of this failure down the wrong path.
+    // REFUSAL, not a bad title. Detect it explicitly: routed through the guards below it
+    // reads as "ungrounded", which sent the first investigation of this down the wrong path.
     if (isRefusal?.(generatedTitle)) {
-        console.warn('[MeetingPersistence] Title generation refused with the no-action sentinel — using the note-derived fallback.');
+        console.warn('[MeetingPersistence] Title refused with the no-action sentinel — using the note-derived fallback.');
         return asFallback(fallbackTitle);
     }
     // Misfire shape: sentinel followed by a real title. Keep the title, drop the sentinel.
@@ -196,7 +178,10 @@ export async function generateTitleFromSummaryWithSource(
 
     const cleanedTitle = cleanMeetingTitle(generatedTitle);
     if (!cleanedTitle) return asFallback(fallbackTitle);
-    if (isAnswerFragmentTitle(cleanedTitle) || isAnswerShapedGeneration(generatedTitle)) {
+    // The reply is judged as written too: the clamp can cut "A very short session in
+    // which Evin asked…" down to a shape the checks no longer recognise.
+    const asWritten = generatedTitle.split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? '';
+    if (isAnswerFragmentTitle(cleanedTitle) || isAnswerShapedGeneration(generatedTitle) || isAnswerFragmentTitle(asWritten)) {
         console.warn(`[MeetingPersistence] Generated title rejected as answer fragment: "${cleanedTitle}"`);
         return asFallback(fallbackTitle);
     }
@@ -220,10 +205,16 @@ export async function generateTitleFromSummaryWithSource(
             overview,
             typeof summary.title === 'string' ? summary.title : '',
         ].join(' ').toLowerCase().split(/\W+/).filter(w => w.length >= 4);
-        if (corpus.length > 0) {
-            const corpusSet = new Set(corpus);
+        const corpusSet = new Set(corpus);
+        // Too few words to judge by: a short session's notes ("Evin said hello and
+        // the call ended") rarely repeat the word its name uses ('Quick greeting'),
+        // and that name is exactly what the title rule asks for.
+        if (corpusSet.size >= GROUNDING_MIN_CORPUS_WORDS) {
+            // Word forms count as the same word: "greeting" is grounded by "greeted".
+            const stem = (w: string) => w.slice(0, 5);
+            const corpusStems = new Set([...corpusSet].map(stem));
             let overlap = 0;
-            for (const t of titleTokens) if (corpusSet.has(t)) overlap++;
+            for (const t of titleTokens) if (corpusSet.has(t) || corpusStems.has(stem(t))) overlap++;
             // Require ≥1 overlapping meaningful word. A title with ZERO overlap with the
             // notes it was generated from is ungrounded/hallucinated — drop it in favour
             // of the note-derived fallback rather than saving it silently.
@@ -234,6 +225,7 @@ export async function generateTitleFromSummaryWithSource(
         }
         // No usable corpus (sparse summary) — accept the title rather than drop it,
         // matching FollowUpDraftGenerator's validatedSubject behaviour for the same case.
+        // A short session's few words count as sparse too.
     }
 
     return { title: cleanedTitle, source: 'model' };
@@ -1150,9 +1142,9 @@ export class MeetingPersistence {
         };
 
         try {
-            // Title generation (Task 9) moves to AFTER the notes exist — see
-            // generateTitleFromSummary's doc comment. It is called once summaryData is
-            // final, below, whichever pipeline (V3 or legacy V2) produced it.
+            // The title is named by the notes call itself (vetProposedTitle) and vetted
+            // once summaryData is final, below, whichever pipeline produced it.
+            let proposedTitle: string | undefined;
 
             // Load template note sections for the mode that was active when meeting stopped.
             // BUG-MODE-BLEEDING fix: use the snapshotted mode, not getActiveMode() which may
@@ -1258,17 +1250,16 @@ export class MeetingPersistence {
             // transcript LINES, so three lines of greeting ran the full pipeline —
             // an extraction call, two polish calls and a title call — and saved
             // 6.5 KB of notes about "hi". Below the minimum (see
-            // shortSessionNotes.ts) the notes are written by ONE small call, and
-            // the title is derived from them without a model call.
+            // shortSessionNotes.ts) the notes and the title are written by ONE
+            // small call.
             let shortSession = false;
-            let shortSessionNotesWritten = false;
             if (data.transcript.length > 2 && postCallSummaryAllowed) {
                 try {
                     const sized = new TranscriptNormalizer().normalize(llmTranscript as any);
                     shortSession = isShortSession(sized);
                     if (shortSession) {
                         const { lines, words } = countHumanContent(sized);
-                        console.log(`[MeetingPersistence] Short session (${lines} lines, ${words} words) — one small notes call, no polish, no title call.`);
+                        console.log(`[MeetingPersistence] Short session (${lines} lines, ${words} words) — one small notes call, no polish.`);
                         DatabaseManager.getInstance().updateSummaryStatus(meetingId, 'queued');
                         const shortPrompt = buildShortSessionPrompt(notesContextFromParams(notesContextParams));
                         const raw = sized.text
@@ -1277,8 +1268,8 @@ export class MeetingPersistence {
                         const notes = parseShortSessionNotes(raw);
                         if (notes) {
                             summaryData = { overview: notes.overview, keyPoints: notes.keyPoints, actionItems: notes.actionItems };
+                            proposedTitle = notes.title;
                             generationSucceeded = true;
-                            shortSessionNotesWritten = true;
                         }
                     }
                 } catch (shortErr: any) {
@@ -1322,6 +1313,7 @@ export class MeetingPersistence {
                 });
                 v3SummaryMeta = assembled.meta;
                 if (assembled.summary) {
+                    proposedTitle = assembled.proposedTitle;
                     const v3 = assembled.summary;
                     summaryData = {
                         schemaVersion: 3,
@@ -1392,7 +1384,10 @@ export class MeetingPersistence {
                         if (modeNoteSections.length > 0 && !Array.isArray(parsed.sections)) {
                             console.warn('[MeetingPersistence] Mode sections expected but LLM did not return "sections" key. Falling back to generic.');
                         }
-                        summaryData = parsed;
+                        // The reply's title is a proposal, vetted below; it is not a note field.
+                        const { title: v2Title, ...v2Notes } = parsed;
+                        proposedTitle = v2Title;
+                        summaryData = v2Notes;
                         generationSucceeded = v2NotesHaveContent(summaryData);
                     } else {
                         console.error('[MeetingPersistence] Failed to parse summary JSON', { responseLength: generatedSummary.length });
@@ -1406,18 +1401,14 @@ export class MeetingPersistence {
                 console.log("Transcript too short for summary generation.");
             }
 
-            // Generate Title from the FINISHED notes (Task 9) — only if not set by
-            // calendar/user and summary scope allows transcript LLM use. summaryData
-            // carries tldr/topics for the V3 path or keyPoints/overview for the legacy
-            // V2 fallback; generateTitleFromSummary handles both shapes. A rejected or
-            // failed title leaves `title` at its existing default — never blocks saving.
+            // Name the meeting from the FINISHED notes (Task 9) — only if not set by
+            // calendar/user and summary scope allows transcript LLM use. The notes call
+            // already wrote a title in its reply (V3 overview, short session or V2
+            // fallback); vetProposedTitle checks it and otherwise derives one from the
+            // notes. No model call here. A meeting with nothing to name keeps its
+            // existing default — never blocks saving.
             if ((!metadata || !metadata.title) && postCallSummaryAllowed) {
-                const generatedTitle = shortSessionNotesWritten
-                    // Short session: name it from the notes just written. No model call.
-                    ? deriveDeterministicTitle({ topics: [], takeaways: summaryData.keyPoints || [], overview: summaryData.overview || '' })
-                    : shortSession
-                        ? null
-                        : await generateTitleFromSummary(this.llmHelper, summaryData, notesInputs?.titleHint);
+                const generatedTitle = vetProposedTitle(proposedTitle, summaryData).title;
                 if (generatedTitle) {
                     title = generatedTitle;
                     if (summaryData && summaryData.schemaVersion === 3) summaryData.title = generatedTitle;
@@ -2018,11 +2009,12 @@ export class MeetingPersistence {
             // notes; fall back to the existing v3.title when nothing groundable comes
             // back. replaceDetailedSummary's own user_titled CASE WHEN still protects a
             // manual rename regardless of what we pass here.
-            // A refusal/timeout now yields a NOTE-DERIVED fallback rather than null, so an
+            // The overview call named the meeting in its reply (no title call). A missing
+            // or rejected name yields a NOTE-DERIVED fallback rather than null, so an
             // unguarded assignment would overwrite a good existing title with the mechanical
             // one. shouldReplaceTitleOnRegenerate lets a model-generated title through and
             // holds a fallback back unless the current title is empty/placeholder.
-            const regenerated = await generateTitleFromSummaryWithSource(this.llmHelper, v3, regenInputs?.titleHint);
+            const regenerated = vetProposedTitle(assembled.proposedTitle, v3);
             // First NON-PLACEHOLDER of [fresh summary title, DB row title]: the reducer
             // fills v3.title with 'Meeting Notes' when the meeting has no name, so a
             // first-non-EMPTY read would hide a good DB title behind that placeholder.

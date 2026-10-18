@@ -2877,7 +2877,7 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                     <div className="max-w-4xl mx-auto px-8 pt-8 pb-8">
                     {/* Meta Info & Actions Row */}
                     <div className="flex items-start justify-between mb-6">
-                        <div className="w-full pr-4">
+                        <div className="w-full min-w-0 pr-4">
                             {/* Date formatting could be improved to use meeting.date if it's an ISO string */}
                             <div className="text-xs text-text-tertiary font-medium mb-1">
                                 {new Date(meeting.date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
@@ -2897,9 +2897,10 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                 so the real title lands without moving the tabs. */}
                             {/* The title rides the same handoff as the body (see
                                 handoffExit/handoffEnter) rather than snapping from bar to
-                                text. Only the OUTGOING layer is taken out of flow, so a
-                                long title still sizes this box for itself — a fixed height
-                                here would clip the two-line case. */}
+                                text. Only the OUTGOING layer is taken out of flow, so the
+                                title still sizes this box for itself. The title is one line
+                                (2026-10-18): a generated one is at most 50 characters, and a
+                                longer calendar or typed one ends in an ellipsis. */}
                             <div className="relative">
                                 <AnimatePresence initial={false} mode="popLayout">
                                     {isSummaryGenerating ? (
@@ -2912,12 +2913,14 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                             <SkeletonLine w={260} h={22} tone="strong" />
                                         </motion.div>
                                     ) : (
-                                        <motion.div key="title" {...(() => { const r = revealLead(); return { className: r.cls.trim() || undefined, style: r.style }; })()}>
+                                        // The whole name on hover: a calendar or typed title can be
+                                        // longer than the line and ends in an ellipsis.
+                                        <motion.div key="title" title={plainMeetingTitle(meeting.title)} {...(() => { const r = revealLead(); return { className: r.cls.trim() || undefined, style: r.style }; })()}>
                                             <EditableTextBlock
                                                 initialValue={plainMeetingTitle(meeting.title)}
                                                 onSave={handleTitleSave}
                                                 tagName="h1"
-                                                className="text-3xl font-bold text-text-primary tracking-tight -ml-2 px-2 py-1 rounded-md transition-colors"
+                                                className="text-3xl font-bold text-text-primary tracking-tight -ml-2 px-2 py-1 rounded-md transition-colors truncate"
                                                 multiline={false}
                                             />
                                         </motion.div>
