@@ -1,27 +1,30 @@
-// The meeting page's Share menu: Export PDF, Share as file (one self-contained
-// HTML page), and Send to Slack, Notion or a CRM. It sits beside Copy and looks
-// like it (quiet text, no card); the menu is the tone menu's dropdown.
+// The meeting page's Share menu: Copy (the tab you are on, as text), File (a
+// PDF), Link, then Slack, Notion or a CRM. Copy was its own button beside Share
+// until the owner folded it in (2026-10-17); the HTML "Share as file" went the
+// same day, and the labels were cut to one word. Quiet text, no card; the menu
+// is the tone menu's dropdown.
 //
 // Nothing leaves the computer until the user presses Send in a destination's
 // dialog. Slack opens on an editable draft; a CRM shows who matched first.
-// Connections are made in Settings › Connections, which a dialog links to when
+// Connections are made in Settings › Connectors, which a dialog links to when
 // a destination is not set up yet.
 
 import React, { useEffect, useId, useRef, useState } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { BookOpen, Check, Contact, ExternalLink, FileCode, FileDown, Hash, Link2, Loader2, Share } from 'lucide-react';
+import { Check, Contact, Copy, ExternalLink, FileDown, Link2, Loader2, Share } from 'lucide-react';
 import { useT } from '../../i18n';
 import { useResolvedTheme } from '../../hooks/useResolvedTheme';
 import { SettingsSwitch } from '../settings/SettingsRow';
-import type { ConnectionsStatus, CrmMatchPreview, CrmService, MeetingOutputsApi, ShareLinkInfo } from '../../types/meetingOutputs';
-import { crmSendable, notionResultView, shareLinkView, slackDraftStatus, type ShareLinkReadState } from './outputsView';
+import { ConnectorMark } from '../settings/ConnectorMark';
+import type { ConnectionsStatus, CrmMatchPreview, CrmService, MeetingOutputsApi } from '../../types/meetingOutputs';
+import { crmSendable, notionResultView, slackDraftStatus } from './outputsView';
 
 const api = (): MeetingOutputsApi | undefined => window.electronAPI?.meetingOutputs;
 const MENU_CLOSE_MS = 150;
 const DIALOG_LAYER = 400;
-const CRM_NAMES: Record<CrmService, string> = { hubspot: 'HubSpot', attio: 'Attio', affinity: 'Affinity', salesforce: 'Salesforce' };
+const CRM_NAMES: Record<CrmService, string> = { hubspot: 'HubSpot', attio: 'Attio', affinity: 'Affinity', salesforce: 'Salesforce', pipedrive: 'Pipedrive' };
 
-type DialogKind = 'html' | 'link' | 'slack' | 'notion' | 'crm' | 'message';
+type DialogKind = 'slack' | 'notion' | 'crm' | 'message';
 
 const BTN = 'px-3 py-1.5 rounded-md text-xs font-medium border border-border-subtle bg-bg-input hover:bg-bg-elevated text-text-primary transition-colors flex items-center gap-1.5 disabled:opacity-50';
 const FIELD_LABEL = 'text-xs font-medium text-text-secondary uppercase tracking-wide block';
@@ -49,17 +52,24 @@ function SlackPreview({ text }: { text: string }) {
     return <div className="text-[13px] leading-relaxed text-text-secondary">{lines.map(render)}</div>;
 }
 
-export const ShareMenu: React.FC<{ meetingId: string; disabled?: boolean; hasTranscript: boolean }> = ({ meetingId, disabled, hasTranscript }) => {
+export const ShareMenu: React.FC<{
+    meetingId: string;
+    disabled?: boolean;
+    hasTranscript: boolean;
+    /** Copies the tab the user is on; resolves true once it is on the clipboard. */
+    onCopy: () => Promise<boolean>;
+}> = ({ meetingId, disabled, hasTranscript, onCopy }) => {
     const t = useT();
     const isLight = useResolvedTheme() === 'light';
     const [open, setOpen] = useState(false);
     const [closing, setClosing] = useState(false);
     const [saved, setSaved] = useState<string | null>(null);
-    const [busy, setBusy] = useState<null | 'pdf'>(null);
+    const [busy, setBusy] = useState<null | 'pdf' | 'link'>(null);
     const [dialog, setDialog] = useState<DialogKind | null>(null);
     const [message, setMessage] = useState<string>('');
     const [conn, setConn] = useState<ConnectionsStatus | null>(null);
     const rootRef = useRef<HTMLDivElement>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
     const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
     const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -67,7 +77,11 @@ export const ShareMenu: React.FC<{ meetingId: string; disabled?: boolean; hasTra
 
     useEffect(() => () => { clearTimeout(closeTimer.current); clearTimeout(savedTimer.current); }, []);
 
-    const openMenu = () => {
+    // Opened from the keyboard, the first item takes focus (and shows it); opened
+    // with the pointer, the menu itself does, so no row is lit until hovered.
+    const viaKeyboard = useRef(false);
+    const openMenu = (fromKeyboard: boolean) => {
+        viaKeyboard.current = fromKeyboard;
         clearTimeout(closeTimer.current);
         setClosing(false);
         setOpen(true);
@@ -82,7 +96,8 @@ export const ShareMenu: React.FC<{ meetingId: string; disabled?: boolean; hasTra
     };
     useEffect(() => {
         if (!open) return;
-        itemRefs.current[0]?.focus({ preventScroll: true });
+        if (viaKeyboard.current) itemRefs.current[0]?.focus({ preventScroll: true });
+        else menuRef.current?.focus({ preventScroll: true });
         const onDown = (e: MouseEvent) => { if (rootRef.current && !rootRef.current.contains(e.target as Node)) close(false); };
         document.addEventListener('mousedown', onDown);
         return () => document.removeEventListener('mousedown', onDown);
@@ -108,7 +123,7 @@ export const ShareMenu: React.FC<{ meetingId: string; disabled?: boolean; hasTra
     const showMessage = (text: string) => { setMessage(text); setDialog('message'); };
     // A destination dialog reads the connections fresh, so one set up a moment ago in Settings shows.
     useEffect(() => {
-        if (!dialog || dialog === 'message' || dialog === 'html') return;
+        if (!dialog || dialog === 'message') return;
         void api()?.getConnections().then((c) => c && setConn(c)).catch(() => {});
     }, [dialog]);
 
@@ -120,15 +135,43 @@ export const ShareMenu: React.FC<{ meetingId: string; disabled?: boolean; hasTra
         else if (!res?.canceled) showMessage(res?.message || t('The PDF could not be made. Try again.'));
     };
 
-    const items: Array<{ key: string; label: string; icon: React.ReactNode; run: () => void }> = [
-        { key: 'pdf', label: t('Export PDF'), icon: <FileDown size={14} />, run: () => void exportPdf() },
-        { key: 'html', label: t('Share as file'), icon: <FileCode size={14} />, run: () => setDialog('html') },
-        { key: 'link', label: t('Share as link'), icon: <Link2 size={14} />, run: () => setDialog('link') },
-        { key: 'slack', label: t('Send to Slack'), icon: <Hash size={14} />, run: () => setDialog('slack') },
-        { key: 'notion', label: t('Send to Notion'), icon: <BookOpen size={14} />, run: () => setDialog('notion') },
-        { key: 'crm', label: t('Send to CRM'), icon: <Contact size={14} />, run: () => setDialog('crm') },
+    const copy = async () => {
+        if (await onCopy().catch(() => false)) flashSaved(t('Copied'));
+    };
+
+    // Link (owner, 2026-10-18: no card, "it says copied"): makes the link, or hands
+    // back the one the meeting already has, and puts it on the clipboard. Main never
+    // makes a second link for a meeting, nor one while its record is unreadable.
+    const shareLink = async () => {
+        setBusy('link');
+        const res = await api()?.createShareLink(meetingId, { includeTranscript: true }).catch(() => undefined);
+        setBusy(null);
+        if (!res?.ok || !res.link) { showMessage(res?.message || t('The link could not be made. Try again.')); return; }
+        const url = res.link.url;
+        const p = navigator.clipboard?.writeText(url);
+        if (!p) { showMessage(`${t('The link could not be copied. Here it is:')} ${url}`); return; }
+        p.then(() => flashSaved(t('Copied'))).catch(() => showMessage(`${t('The link could not be copied. Here it is:')} ${url}`));
+    };
+
+    // One column: Copy (the tab you are on), File (a PDF) and Link, a rule, then
+    // the destinations under their own logos, so no "Send to" is needed. The CRM
+    // row is the connected CRM by name (the one the CRM dialog opens on), or
+    // "CRM" while none is.
+    const crm = (['hubspot', 'attio', 'affinity', 'salesforce', 'pipedrive'] as CrmService[]).find((sv) => conn?.[sv]?.connected);
+    type Item = { key: string; label: string; icon: React.ReactNode; run: () => void; brand?: boolean };
+    const keep: Item[] = [
+        { key: 'copy', label: t('Copy'), icon: <Copy size={14} />, run: () => void copy() },
+        { key: 'pdf', label: t('File'), icon: <FileDown size={14} />, run: () => void exportPdf() },
+        { key: 'link', label: t('Link'), icon: <Link2 size={14} />, run: () => void shareLink() },
+    ];
+    const send: Item[] = [
+        { key: 'slack', label: 'Slack', icon: <ConnectorMark id="slack" size={14} />, brand: true, run: () => setDialog('slack') },
+        { key: 'notion', label: 'Notion', icon: <ConnectorMark id="notion" size={14} />, brand: true, run: () => setDialog('notion') },
+        crm
+            ? { key: 'crm', label: CRM_NAMES[crm], icon: <ConnectorMark id={crm} size={14} />, brand: true, run: () => setDialog('crm') }
+            : { key: 'crm', label: 'CRM', icon: <Contact size={14} />, run: () => setDialog('crm') },
         // Only once a directory key is saved: looks the attendees up and files
-        // title / company suggestions on the People page. Nothing is applied here.
+        // title / company suggestions. Nothing is applied here.
         ...(conn?.clearbit?.connected ? [{
             key: 'enrich',
             label: t('Look up attendees'),
@@ -139,20 +182,52 @@ export const ShareMenu: React.FC<{ meetingId: string; disabled?: boolean; hasTra
             },
         }] : []),
     ];
+    // Styled from its neighbours (owner, 2026-10-17: "visually disconnected"). It
+    // borrows the notes tab switcher's language: grey --text-secondary labels that
+    // turn --text-primary when lit, and the switcher's well grey (--bg-item-surface)
+    // as the lit row. The surface is the tinted --bg-elevated near-white, never pure
+    // white. Sized to the header it hangs from (owner: 36px rows read "very big"):
+    // 12px labels like the Share trigger, 14px icons, 28px rows like the Calendar
+    // chip's menu beside it; concentric 11px / 7px corners over a 4px inset.
+    // Hovering a row focuses it, so the pointer and the keyboard share one lit row.
+    const lit = isLight
+        ? 'focus:bg-bg-item-surface focus:text-text-primary'
+        : 'focus:bg-bg-item-surface focus:text-[#E9E9E9]';
+    let flat = 0;
+    const itemButton = (item: Item) => {
+        const at = flat++;
+        return (
+            <button
+                key={item.key}
+                ref={(el) => { itemRefs.current[at] = el; }}
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={() => { close(true); item.run(); }}
+                onMouseEnter={(e) => e.currentTarget.focus({ preventScroll: true })}
+                className={`group w-full h-7 flex items-center gap-2 pl-2 pr-3 rounded-[7px] text-left text-[12px] font-medium text-text-secondary outline-none focus:outline-none transition-colors duration-[120ms] ${lit}`}
+            >
+                {/* One icon style: logos are drawn in the same grey as the line icons;
+                    an icon steps up one grey with its row. */}
+                <span className={`w-3.5 shrink-0 flex justify-center text-text-tertiary group-focus:text-text-secondary transition-colors duration-[120ms]${item.brand ? ' grayscale opacity-70 group-focus:opacity-100' : ''}`}>{item.icon}</span>
+                <span className="whitespace-nowrap">{item.label}</span>
+            </button>
+        );
+    };
 
     return (
         <div ref={rootRef} className="relative shrink-0">
             <button
                 type="button"
-                disabled={disabled || busy === 'pdf'}
-                onClick={() => (open ? close(false) : openMenu())}
-                onKeyDown={(e) => { if (e.key === 'ArrowDown' && !open) { e.preventDefault(); openMenu(); } }}
+                disabled={disabled || busy !== null}
+                onClick={(e) => (open ? close(false) : openMenu(e.detail === 0))}
+                onKeyDown={(e) => { if (e.key === 'ArrowDown' && !open) { e.preventDefault(); openMenu(true); } }}
                 aria-haspopup="menu"
                 aria-expanded={open}
                 aria-controls={menuId}
                 className="flex items-center gap-2 text-xs font-medium text-text-secondary hover:text-text-primary transition-[color,opacity] disabled:opacity-40 disabled:cursor-default disabled:hover:text-text-secondary"
             >
-                {busy === 'pdf' ? (
+                {busy ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" size={14} aria-hidden="true" />
                 ) : (
                     <span className="t-icon-swap w-3.5 h-3.5" data-state={saved ? 'b' : 'a'} aria-hidden="true">
@@ -163,37 +238,30 @@ export const ShareMenu: React.FC<{ meetingId: string; disabled?: boolean; hasTra
                 <span className="grid">
                     <span aria-hidden="true" className="invisible col-start-1 row-start-1">{t('Share')}</span>
                     <span aria-hidden="true" className="invisible col-start-1 row-start-1">{t('Saved')}</span>
+                    <span aria-hidden="true" className="invisible col-start-1 row-start-1">{t('Copied')}</span>
                     <span className="col-start-1 row-start-1">{saved || t('Share')}</span>
                 </span>
             </button>
             <div
+                ref={menuRef}
                 id={menuId}
                 role="menu"
+                tabIndex={-1}
                 data-origin="top-right"
                 inert={!open}
                 onKeyDown={onMenuKeyDown}
-                className={`t-dropdown${open ? ' is-open' : closing ? ' is-closing' : ''} absolute right-0 top-full mt-1 z-50 w-max min-w-[180px] p-[3px] rounded-lg border ${isLight
-                    ? 'bg-white border-black/[0.08] shadow-[0_6px_20px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.06)]'
-                    : 'bg-[#1C1C1F] border-white/[0.08] shadow-[0_6px_20px_rgba(0,0,0,0.5),0_1px_2px_rgba(0,0,0,0.3)]'}`}
+                // Leaving the menu with the pointer unlights the row it was on.
+                onMouseLeave={() => menuRef.current?.focus({ preventScroll: true })}
+                // Hangs mt-2 under the trigger like the Calendar chip's menu beside it.
+                // 110px wide (owner); the longest label, a connected "Salesforce", still fits.
+                // Dark keeps the app's popover surface: --bg-elevated there is the page itself.
+                className={`t-dropdown${open ? ' is-open' : closing ? ' is-closing' : ''} absolute right-[-4px] top-full mt-2 z-50 w-[110px] p-1 rounded-[11px] border outline-none ${isLight
+                    ? 'bg-bg-elevated border-border-subtle shadow-[0_10px_32px_-6px_rgba(28,28,40,0.12),0_1px_2px_rgba(28,28,40,0.04)]'
+                    : 'bg-[#1C1C1F] border-white/[0.08] shadow-[0_10px_32px_-6px_rgba(0,0,0,0.55),0_1px_2px_rgba(0,0,0,0.3)]'}`}
             >
-                {items.map((item, i) => (
-                    <React.Fragment key={item.key}>
-                        {i === 2 && <div role="separator" className={`my-[3px] h-px ${isLight ? 'bg-black/[0.06]' : 'bg-white/[0.06]'}`} />}
-                        <button
-                            ref={(el) => { itemRefs.current[i] = el; }}
-                            type="button"
-                            role="menuitem"
-                            tabIndex={-1}
-                            onClick={() => { close(true); item.run(); }}
-                            className={`w-full h-[28px] flex items-center gap-2 px-2.5 rounded-[5px] text-left text-[12px] font-medium text-text-secondary hover:text-text-primary focus-visible:text-text-primary focus-visible:outline-none transition-colors ${isLight
-                                ? 'hover:bg-black/[0.05] focus-visible:bg-black/[0.05]'
-                                : 'hover:bg-white/[0.06] focus-visible:bg-white/[0.06]'}`}
-                        >
-                            <span className="opacity-80">{item.icon}</span>
-                            <span>{item.label}</span>
-                        </button>
-                    </React.Fragment>
-                ))}
+                {keep.map(itemButton)}
+                <div role="separator" className={`mx-2 my-1 h-px ${isLight ? 'bg-black/[0.06]' : 'bg-white/[0.08]'}`} />
+                {send.map(itemButton)}
             </div>
 
             <OutputDialog
@@ -203,7 +271,6 @@ export const ShareMenu: React.FC<{ meetingId: string; disabled?: boolean; hasTra
                 conn={conn}
                 message={message}
                 onClose={() => setDialog(null)}
-                onSaved={() => flashSaved(t('Saved'))}
             />
         </div>
     );
@@ -242,13 +309,13 @@ const NotConnected: React.FC<{ service: string; onClose: () => void }> = ({ serv
     const t = useT();
     return (
         <div className="space-y-3">
-            <p className="text-xs leading-relaxed text-text-secondary">{t(`Connect ${service} in Settings, Connections first. Nothing is sent until you press Send.`)}</p>
+            <p className="text-xs leading-relaxed text-text-secondary">{t(`Connect ${service} in Settings, Connectors first. Nothing is sent until you press Send.`)}</p>
             <button
                 type="button"
                 className={BTN}
                 onClick={() => { onClose(); void window.electronAPI?.openSettingsTab?.('connections'); }}
             >
-                {t('Open Connections')}
+                {t('Open Connectors')}
             </button>
         </div>
     );
@@ -261,19 +328,15 @@ const OutputDialog: React.FC<{
     conn: ConnectionsStatus | null;
     message: string;
     onClose: () => void;
-    onSaved: () => void;
-}> = ({ kind, meetingId, hasTranscript, conn, message, onClose, onSaved }) => {
+}> = ({ kind, meetingId, hasTranscript, conn, message, onClose }) => {
     const t = useT();
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [done, setDone] = useState<string | null>(null);
-    const [includeTranscript, setIncludeTranscript] = useState(false);
+    // The transcript always goes with the notes (owner, 2026-10-17: "include it
+    // regardless"); a meeting without one sends none.
+    const includeTranscript = true;
     const [includeActions, setIncludeActions] = useState(true);
-    // Share as link: the meeting's link, read when the dialog opens.
-    const [link, setLink] = useState<ShareLinkInfo | null>(null);
-    const [linkRead, setLinkRead] = useState<ShareLinkReadState>('reading');
-    const [linkReadTry, setLinkReadTry] = useState(0);
-    const [copied, setCopied] = useState(false);
     // Slack
     const [webhookId, setWebhookId] = useState('');
     const [draft, setDraft] = useState('');
@@ -287,44 +350,17 @@ const OutputDialog: React.FC<{
     const [matches, setMatches] = useState<CrmMatchPreview | null>(null);
     const [chosen, setChosen] = useState<Set<string>>(new Set());
 
-    const crmConnected = (['hubspot', 'attio', 'affinity', 'salesforce'] as CrmService[]).filter((s) => conn?.[s]?.connected);
+    const crmConnected = (['hubspot', 'attio', 'affinity', 'salesforce', 'pipedrive'] as CrmService[]).filter((s) => conn?.[s]?.connected);
 
     // Reset on every open.
     useEffect(() => {
         if (!kind) return;
         setBusy(false); setError(null); setDone(null); setPreview(false); setPageUrl(undefined); setPartialPage(null); setMatches(null); setChosen(new Set());
-        setIncludeTranscript(false); setIncludeActions(true);
-        setLink(null); setLinkRead('reading'); setCopied(false);
+        setIncludeActions(true);
         if (kind === 'slack') setWebhookId(conn?.slack.webhooks[0]?.id || '');
         if (kind === 'crm') setCrm(crmConnected[0] || null);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [kind]);
-
-    // Share as link: whether this meeting already has one. Every way the read
-    // can end (an answer, a refusal, an error, no bridge) ends the wait.
-    useEffect(() => {
-        if (kind !== 'link') return;
-        let live = true;
-        const failedRead = (message?: string) => {
-            if (!live) return;
-            setLinkRead('failed');
-            setError(message || t('Natively could not check whether this meeting is shared. Try again.'));
-        };
-        const pending = api()?.getShareLink(meetingId);
-        if (!pending) {
-            failedRead(t('Share links are not available in this window.'));
-            return () => { live = false; };
-        }
-        pending.then((res) => {
-            if (!live) return;
-            if (!res?.ok) { failedRead(res?.message); return; }
-            setError(null);
-            setLink(res.link || null);
-            setLinkRead('read');
-        }).catch(() => failedRead());
-        return () => { live = false; };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [kind, linkReadTry]);
 
     // Connections can arrive after the dialog opened (read fresh on open): pick the
     // first channel / CRM then, unless the user already chose one that still exists.
@@ -391,102 +427,6 @@ const OutputDialog: React.FC<{
         return (
             <DialogShell open title={t('Could not finish')} onClose={onClose} footer={closeBtn(t('Close'))}>
                 <p className="text-xs leading-relaxed text-text-secondary">{message}</p>
-            </DialogShell>
-        );
-    }
-
-    if (kind === 'link') {
-        const view = shareLinkView(linkRead, link);
-        const copy = (text: string) => {
-            const p = navigator.clipboard?.writeText(text);
-            if (!p) return;
-            p.then(() => { setCopied(true); setError(null); }).catch(() => setError(t('The link could not be copied. Select it and copy it yourself.')));
-        };
-        const createLink = () => void run(async () => {
-            const res = await api()?.createShareLink(meetingId, { includeTranscript });
-            if (res?.ok && res.link) { setLink(res.link); setCopied(true); setDone(t('Link copied.')); }
-            else setError(res?.message || t('The link could not be made. Try again.'));
-        });
-        const stopSharing = () => void run(async () => {
-            const res = await api()?.revokeShareLink(meetingId);
-            if (res?.ok) { setLink(null); setCopied(false); setDone(t('The link is off. Anyone who opens it now sees that these notes are no longer shared.')); }
-            else setError(res?.message || t('The link could not be turned off. Try again.'));
-        });
-        return (
-            <DialogShell
-                open
-                title={t('Share as link')}
-                onClose={onClose}
-                busy={busy}
-                footer={view.state === 'shared'
-                    ? <>
-                        <button type="button" className={BTN} onClick={stopSharing} disabled={busy}>{t('Stop sharing')}</button>
-                        <button type="button" className={BTN} onClick={() => copy(link!.url)} disabled={busy}>{copied ? <Check size={12} className="text-emerald-500" /> : null}{copied ? t('Copied') : t('Copy link')}</button>
-                        {closeBtn(t('Done'))}
-                    </>
-                    : view.state === 'none'
-                        ? <>{closeBtn()}{primary(t('Create link'), createLink)}</>
-                        : view.state === 'failed'
-                            // Whether a link exists is unknown, so no Create link: a second public link must not be made by accident.
-                            ? <>{closeBtn(t('Close'))}{primary(t('Try again'), () => { setError(null); setLinkRead('reading'); setLinkReadTry((n) => n + 1); })}</>
-                            : closeBtn(done ? t('Done') : t('Cancel'))}
-            >
-                {view.state === 'shared' ? (
-                    <div className="space-y-3">
-                        <p className="text-xs leading-relaxed text-text-secondary">
-                            {link!.includeTranscript
-                                ? t('Anyone with this link can read the notes, action items and transcript.')
-                                : t('Anyone with this link can read the notes and action items.')}
-                        </p>
-                        <input
-                            readOnly
-                            value={link!.url}
-                            onFocus={(e) => e.currentTarget.select()}
-                            aria-label={t('Share link')}
-                            className="w-full rounded-lg border border-border-subtle bg-bg-input px-3 py-2 text-xs text-text-primary font-mono focus:outline-none"
-                        />
-                        <ErrorLine text={error} />
-                        <DoneLine text={done} />
-                    </div>
-                ) : view.state === 'none' ? (
-                    <div>
-                        <p className="text-xs leading-relaxed text-text-secondary">{t('A page on heynatively.com with the notes and action items. Anyone with the link can read it, until you stop sharing.')}</p>
-                        {hasTranscript && (
-                            <Row label={t('Include the transcript')}>
-                                <SettingsSwitch checked={includeTranscript} onChange={() => setIncludeTranscript((v) => !v)} label={t('Include the transcript')} disabled={busy} />
-                            </Row>
-                        )}
-                        <ErrorLine text={error} />
-                        <DoneLine text={done} />
-                    </div>
-                ) : view.state === 'failed' ? (
-                    <ErrorLine text={error} />
-                ) : (
-                    <p className="text-xs leading-relaxed text-text-secondary">{t('One moment.')}</p>
-                )}
-            </DialogShell>
-        );
-    }
-
-    if (kind === 'html') {
-        return (
-            <DialogShell
-                open
-                title={t('Share as file')}
-                onClose={onClose}
-                busy={busy}
-                footer={<>{closeBtn()}{primary(t('Save file'), () => void run(async () => {
-                    const res = await api()?.exportHtml(meetingId, { includeTranscript });
-                    if (res?.ok) { onSaved(); onClose(); } else if (!res?.canceled) setError(res?.message || t('The file could not be saved.'));
-                }))}</>}
-            >
-                <p className="text-xs leading-relaxed text-text-secondary">{t('One web page with the notes and action items. It opens in any browser and needs nothing else.')}</p>
-                {hasTranscript && (
-                    <Row label={t('Include the transcript')}>
-                        <SettingsSwitch checked={includeTranscript} onChange={() => setIncludeTranscript((v) => !v)} label={t('Include the transcript')} />
-                    </Row>
-                )}
-                <ErrorLine text={error} />
             </DialogShell>
         );
     }
@@ -584,19 +524,14 @@ const OutputDialog: React.FC<{
             >
                 {!n?.connected ? <NotConnected service="Notion" onClose={onClose} /> : !n.parent ? (
                     <div className="space-y-3">
-                        <p className="text-xs leading-relaxed text-text-secondary">{t('Pick where Notion pages go in Settings, Connections.')}</p>
-                        <button type="button" className={BTN} onClick={() => { onClose(); void window.electronAPI?.openSettingsTab?.('connections'); }}>{t('Open Connections')}</button>
+                        <p className="text-xs leading-relaxed text-text-secondary">{t('Pick where Notion pages go in Settings, Connectors.')}</p>
+                        <button type="button" className={BTN} onClick={() => { onClose(); void window.electronAPI?.openSettingsTab?.('connections'); }}>{t('Open Connectors')}</button>
                     </div>
                 ) : (
                     <div>
                         <p className="text-xs leading-relaxed text-text-secondary">
-                            {t('A new page with the notes and action items, in')} <span className="font-medium text-text-primary">{n.parent.title}</span>.
+                            {hasTranscript ? t('A new page with the notes, action items and transcript, in') : t('A new page with the notes and action items, in')} <span className="font-medium text-text-primary">{n.parent.title}</span>.
                         </p>
-                        {hasTranscript && (
-                            <Row label={t('Include the transcript')}>
-                                <SettingsSwitch checked={includeTranscript} onChange={() => setIncludeTranscript((v) => !v)} label={t('Include the transcript')} disabled={busy || !!done} />
-                            </Row>
-                        )}
                         {partialPage && <p role="alert" className="mt-3 text-xs leading-relaxed text-text-secondary">{partialPage.message}</p>}
                         <ErrorLine text={error} />
                         <DoneLine text={done} />

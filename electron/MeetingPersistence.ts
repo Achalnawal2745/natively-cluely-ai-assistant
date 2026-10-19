@@ -8,7 +8,6 @@ import { DatabaseManager, Meeting } from './db/DatabaseManager';
 import { GROQ_SUMMARY_JSON_PROMPT } from './llm';
 import { buildPostCallEnhancements } from './services/post-call/PostCallWorkflow';
 import { MeetingContextAssembler } from './services/meeting/MeetingContextAssembler';
-import { followUpRedraftPlan } from './services/meeting/FollowUpDraftGenerator';
 import { MEETING_TITLE_MAX_CHARS, cleanMeetingTitle, firstSentenceOf, fitTitleLength, isAnswerFragmentTitle, isAnswerShapedGeneration, isEmptySessionTitle, isNarrationTitle, isQuestionTitle } from './services/meeting/MeetingSummaryV3';
 import { NOTE_CALL_TIMEOUT_MS } from './services/meeting/generateStructured';
 import type { MeetingSummaryTelemetryMeta } from './services/meeting/types';
@@ -629,7 +628,22 @@ export class MeetingPersistence {
      * into, and (when the notes may be written) the titles and companies people
      * stated, kept as suggestions. Never awaited by the save; never throws.
      */
-    protected organiseAfterSave(input: Omit<import('./services/organise/organiseService').AfterSaveInput, 'call'>): void {
+    /**
+     * Settings › Connectors: the meeting's notes are ready, so webhooks, Zapier
+     * and the user's automatic-send rules may send them (connectorsDeliveryIpc).
+     * Nothing goes anywhere without a rule or endpoint the user made. Never throws.
+     */
+    protected connectorsNotesReady(meetingId: string): void {
+        try {
+            const { connectorsDelivery } = require('./services/outputs/connectorsDeliveryIpc') as typeof import('./services/outputs/connectorsDeliveryIpc');
+            void connectorsDelivery.notesReady(meetingId);
+        } catch (e: any) {
+            console.warn('[MeetingPersistence] connectors step skipped:', e?.message);
+        }
+    }
+
+    /** `afterOrganised` runs once the folder rules have placed the meeting, whether or not they did anything. */
+    protected organiseAfterSave(input: Omit<import('./services/organise/organiseService').AfterSaveInput, 'call'>, afterOrganised?: () => void): void {
         try {
             const { afterMeetingSaved } = require('./services/organise/organiseService') as typeof import('./services/organise/organiseService');
             void afterMeetingSaved({
@@ -640,9 +654,10 @@ export class MeetingPersistence {
                 if (r.folders.length || r.facts) {
                     try { require('electron').BrowserWindow.getAllWindows().forEach((w: any) => w.webContents.send('meetings-updated')); } catch { /* a closed window is not a failure */ }
                 }
-            }).catch(() => { /* logged inside */ });
+            }).catch(() => { /* logged inside */ }).finally(() => afterOrganised?.());
         } catch (e: any) {
             console.warn('[MeetingPersistence] organise step skipped:', e?.message);
+            afterOrganised?.();
         }
     }
 
@@ -1427,13 +1442,16 @@ export class MeetingPersistence {
                     actionItemsStructured: Array.isArray(summaryData.actionItemsStructured) && summaryData.actionItemsStructured.length > 0
                         ? summaryData.actionItemsStructured
                         : postCallEnhancements.actionItemsStructured,
-                    // No follow-up draft: V3 notes offer Generate, and a saved template
-                    // draft would hide that button. The V2 branch below keeps its
-                    // deterministic draft — V2 has no on-demand route.
+                    // No follow-up draft: it is written only when the user asks
+                    // (the meeting page's Follow-up email button).
                 }
                 : {
                     ...summaryData,
                     ...postCallEnhancements,
+                    // Older notes too: their follow-up waits for the button
+                    // (regenerateFollowUpDraft takes them), so the template draft
+                    // the post-call workflow builds is not saved.
+                    followUpDraft: undefined,
                 };
 
             // MEETING MEMORY V2 (Phase 8 wiring, behind meeting_memory_v2_enabled):
@@ -1555,7 +1573,8 @@ export class MeetingPersistence {
                 speakerLabels: summaryData?.speakerLabels,
                 userNotes: metadata?.userNotes,
                 allowModel: postCallSummaryAllowed,
-            });
+            // After the folder rules, so a connector rule for one folder sees this meeting in it.
+            }, generationSucceeded ? () => this.connectorsNotesReady(meetingId) : undefined);
 
             // HINDSIGHT POST-MEETING RETAIN (Phase 13 wiring, behind
             // hindsight_post_meeting_retain_enabled). After the meeting is persisted
@@ -1860,7 +1879,7 @@ export class MeetingPersistence {
      *
      * Honors providerDataScopes.post_call_summary — if denied, returns false (no cloud call).
      */
-    public async regenerateSavedMeeting(meetingId: string, opts?: { templateType?: string; modeId?: string; tone?: 'professional' | 'warm' | 'concise' | 'friendly'; userNotes?: string; vocabulary?: string[] }): Promise<boolean> {
+    public async regenerateSavedMeeting(meetingId: string, opts?: { templateType?: string; modeId?: string; tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style'; userNotes?: string; vocabulary?: string[] }): Promise<boolean> {
         const db = DatabaseManager.getInstance();
         const details = db.getMeetingDetails(meetingId);
         if (!details || !Array.isArray(details.transcript) || details.transcript.length < 3) return false;
@@ -1965,10 +1984,10 @@ export class MeetingPersistence {
         });
 
         db.updateSummaryStatus(meetingId, 'queued');
-        // The follow-up draft is on demand: re-draft it against the new notes only when
-        // the user already asked for one, in the tone they last chose. Otherwise the
-        // notes come back with Generate, as they do after a meeting.
-        const followUpPlan = followUpRedraftPlan((details.detailedSummary as any)?.followUpDraft);
+        // No follow-up is written here: one is written only when the user asks for it
+        // (the meeting page's Follow-up email button, regenerateFollowUpDraft). A
+        // follow-up the meeting already has is kept as it is (buildV3DetailedSummary);
+        // Reset in the follow-up sheet writes it again from the new notes.
 
         try {
             const startedMs = Date.now();
@@ -1987,10 +2006,7 @@ export class MeetingPersistence {
                 },
                 startedAtMs: startedMs,
                 startedAtIso: new Date(startedMs).toISOString(),
-                generateFollowUpDraft: followUpPlan.redraft && isIntelligenceFlagEnabled('followUpDraftV2'),
                 polishSummary: isIntelligenceFlagEnabled('meetingSummaryLlmPolish'),
-                followUpTone: opts?.tone ?? followUpPlan.tone,
-                followUpSenderName: followUpPlan.redraft ? followUpSenderFirstName() : undefined,
                 onStatusUpdate: status => db.updateSummaryStatus(meetingId, status),
                 meetingContextBlock: regenInputs?.meetingContextBlock,
                 lastTimeBlock: regenInputs?.lastTimeBlock,
@@ -2043,7 +2059,7 @@ export class MeetingPersistence {
             // in its own tab (bounded; DatabaseManager.archiveNotesVersion).
             if (isArchivableNotes(details.detailedSummary)) db.archiveNotesVersion(meetingId, details.detailedSummary);
             const ok = db.replaceDetailedSummary(meetingId, detailedSummary, { title: v3.title, summaryStatus: 'completed' });
-            if (ok) this.notifyNotesSaved(meetingId);
+            if (ok) { this.notifyNotesSaved(meetingId); this.connectorsNotesReady(meetingId); }
             try {
                 const wins = require('electron').BrowserWindow.getAllWindows();
                 wins.forEach((w: any) => w.webContents.send('meetings-updated'));
@@ -2061,11 +2077,12 @@ export class MeetingPersistence {
      * re-summarize). This is the ONLY place a draft is first written: meetings save
      * without one and the notes offer Generate, which lands here.
      */
-    public async regenerateFollowUpDraft(meetingId: string, tone?: 'professional' | 'warm' | 'concise' | 'friendly'): Promise<boolean> {
+    public async regenerateFollowUpDraft(meetingId: string, tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style'): Promise<boolean> {
         const db = DatabaseManager.getInstance();
         const details = db.getMeetingDetails(meetingId);
         const detailed = details?.detailedSummary as any;
-        if (!detailed || detailed.schemaVersion !== 3) return false;
+        // Older notes (before V3) get a follow-up too, written from their own fields.
+        if (!detailed || typeof detailed !== 'object') return false;
 
         let postCallSummaryAllowed = true;
         try {
@@ -2077,18 +2094,15 @@ export class MeetingPersistence {
 
         try {
             const { FollowUpDraftGenerator } = require('./services/meeting/FollowUpDraftGenerator');
-            // The user's own voice, when they kept samples and left it on. Derived (one
-            // model call) only when the samples changed since the cached profile.
-            // Off with the template draft (NATIVELY_FOLLOWUP_DRAFT_V2=0): no model call at all.
+            // Tone and voice: "Your style" (the samples of the mode this meeting ran
+            // under) unless a preset tone was picked. Off with the template draft
+            // (NATIVELY_FOLLOWUP_DRAFT_V2=0): no model call at all.
             const llmDraft = isIntelligenceFlagEnabled('followUpDraftV2');
-            let styleGuide: string | undefined;
-            try {
-                const { getWritingStyleService, styleModelCall } = require('./services/outputs/outputsIpc');
-                const { styleGuideForDraft } = require('./services/outputs/writingStyle');
-                styleGuide = await styleGuideForDraft(getWritingStyleService(), llmDraft, styleModelCall(this.llmHelper));
-            } catch { styleGuide = undefined; }
+            let styleModeId: string | undefined;
+            try { styleModeId = require('./services/outputs/outputsIpc').meetingStyleModeId(detailed); } catch { styleModeId = undefined; }
+            const voice = await followUpVoice(styleModeId, tone, styleGuideReader(llmDraft, this.llmHelper));
             const draft = await new FollowUpDraftGenerator(this.llmHelper).generate({
-                summary: {
+                summary: detailed.schemaVersion !== 3 ? followUpSourceFromLegacyNotes(detailed, details?.title) : {
                     title: detailed.title,
                     overview: detailed.overview || '',
                     tldr: detailed.tldr || [],
@@ -2104,9 +2118,9 @@ export class MeetingPersistence {
                     sections: detailed.sectionsV3 || detailed.sections || [],
                 },
                 mode: detailed.mode?.selectedTemplateType,
-                tone,
+                tone: voice.tone,
                 senderName: followUpSenderFirstName(),
-                styleGuide,
+                styleGuide: voice.styleGuide,
                 // NATIVELY_FOLLOWUP_DRAFT_V2=0 kill switch: the template draft, no LLM call.
                 deterministicOnly: !llmDraft,
             });
@@ -2122,6 +2136,62 @@ export class MeetingPersistence {
         }
     }
 }
+
+/**
+ * What a follow-up is written from, for notes saved before V3: key points stand
+ * in for the takeaways, the plain action items become items, and section
+ * bullets (plain strings there) take the V3 bullet shape. Exported for tests.
+ */
+export function followUpSourceFromLegacyNotes(detailed: any, meetingTitle?: string): {
+    title?: string; overview: string; tldr: string[]; actionItems: any[];
+    sections: Array<{ title: string; order: number; bullets: Array<{ text: string }> }>;
+} {
+    const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0) : []);
+    const structured = Array.isArray(detailed?.actionItemsStructured) ? detailed.actionItemsStructured : null;
+    return {
+        title: detailed?.title || meetingTitle,
+        overview: typeof detailed?.overview === 'string' ? detailed.overview : '',
+        tldr: strings(detailed?.keyPoints),
+        actionItems: structured ?? strings(detailed?.actionItems).map((text) => ({ text })),
+        sections: (Array.isArray(detailed?.sections) ? detailed.sections : [])
+            .filter((s: any) => s && typeof s.title === 'string' && Array.isArray(s.bullets))
+            .map((s: any, i: number) => ({
+                title: s.title,
+                order: i,
+                bullets: s.bullets
+                    .map((b: any) => (typeof b === 'string' ? { text: b } : { text: typeof b?.text === 'string' ? b.text : '' }))
+                    .filter((b: { text: string }) => b.text.trim().length > 0),
+            })),
+    };
+}
+
+/**
+ * The tone and voice a follow-up is drafted in. A preset tone (Professional, Warm,
+ * Concise, Friendly) drafts in that tone alone. Otherwise ('your_style', or no
+ * tone asked) the user's own voice from the mode's writing samples, derived (one
+ * model call) only when the samples changed; with no samples, or no recorded mode,
+ * no tone, so the generator uses the mode's default. Exported for tests.
+ */
+export async function followUpVoice(
+    modeId: string | undefined,
+    asked: FollowUpToneArg | undefined,
+    guideFor: (modeId: string) => Promise<string | undefined>,
+): Promise<{ tone?: FollowUpToneArg; styleGuide?: string }> {
+    if (asked && asked !== 'your_style') return { tone: asked };
+    let styleGuide: string | undefined;
+    try { styleGuide = modeId ? await guideFor(modeId) : undefined; } catch { styleGuide = undefined; }
+    return styleGuide ? { tone: 'your_style', styleGuide } : {};
+}
+
+/** The style guide of one mode's samples, for followUpVoice (outputs/writingStyle.ts). */
+function styleGuideReader(llmDraft: boolean, llmHelper: any): (modeId: string) => Promise<string | undefined> {
+    return async (modeId) => {
+        const { getWritingStyleService, styleModelCall } = require('./services/outputs/outputsIpc');
+        const { styleGuideForDraft } = require('./services/outputs/writingStyle');
+        return await styleGuideForDraft(getWritingStyleService(modeId), llmDraft, styleModelCall(llmHelper)) || undefined;
+    };
+}
+type FollowUpToneArg = 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style';
 
 /**
  * Which mode a Regenerate rebuilds the notes in. PRECEDENCE: an explicit mode id
@@ -2228,7 +2298,9 @@ function buildV3DetailedSummary(v3: import('./services/meeting/types').MeetingSu
         })),
         openQuestions: v3.openQuestions,
         risks: v3.risks,
-        followUpDraft: v3.followUpDraft,
+        // Regenerated notes keep the follow-up the meeting had (edited or not): none
+        // is written without the user asking.
+        followUpDraft: v3.followUpDraft ?? (prev && typeof prev === 'object' ? prev.followUpDraft : undefined),
         timeline: v3.timeline,
         people: v3.people,
         topics: v3.topics,

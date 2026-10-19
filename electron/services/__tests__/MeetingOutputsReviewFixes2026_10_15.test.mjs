@@ -115,7 +115,8 @@ describe('4. template draft makes no style call', () => {
     test('MeetingPersistence reads the flag once and uses it for both the profile and the draft', () => {
         const src = read('electron/MeetingPersistence.ts');
         assert.match(src, /const llmDraft = isIntelligenceFlagEnabled\('followUpDraftV2'\);/);
-        assert.match(src, /styleGuideForDraft\(getWritingStyleService\(\), llmDraft, styleModelCall\(this\.llmHelper\)\)/);
+        assert.match(src, /styleGuideForDraft\(getWritingStyleService\(modeId\), llmDraft, styleModelCall\(llmHelper\)\)/);
+        assert.match(src, /followUpVoice\(styleModeId, tone, styleGuideReader\(llmDraft, this\.llmHelper\)\)/);
         assert.match(src, /deterministicOnly: !llmDraft,/);
     });
 });
@@ -240,7 +241,7 @@ describe('8. People index past the first batch', () => {
         const ipc = read('electron/services/organise/organiseIpc.ts');
         assert.match(ipc, /if \(syncPeopleIndex\(store\) >= PEOPLE_INDEX_BATCH\) void indexRemainingPeopleInBackground\(store, broadcastPeopleIndexed\);/);
         assert.equal((ipc.match(/syncPeopleThenContinue\(store\);/g) || []).length, 2, 'People and Companies');
-        assert.match(read('src/components/organise/OrganiseLists.tsx'), /organise\?\.onPeopleIndexed\?\.\(\(\) => load\(\)\)/);
+        // The People and Companies lists that refreshed on it came off the launcher (2026-10-17).
         assert.match(read('electron/preload.ts'), /ipcRenderer\.on\('organise:people-indexed', subscription\)/);
     });
 });

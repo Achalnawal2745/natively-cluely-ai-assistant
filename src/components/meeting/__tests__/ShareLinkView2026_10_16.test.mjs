@@ -19,11 +19,9 @@ test('a read that failed offers no Create link: whether a link exists is unknown
     assert.deepEqual(v.shareLinkView('failed', { url: 'x', createdAt: 1, includeTranscript: false }), { state: 'failed' });
 });
 
-test('every way the read ends, ends the wait: refusal, rejection and a missing bridge are all handled', async () => {
+test('Link copies at once, with no card and no Unshare row (owner, 2026-10-18)', async () => {
     const { readFileSync } = await import('node:fs');
     const src = readFileSync(new URL('../ShareMenu.tsx', import.meta.url), 'utf8');
-    const effect = src.slice(src.indexOf('// Share as link: whether this meeting already has one.'), src.indexOf('// Connections can arrive after'));
-    assert.match(effect, /if \(!pending\)/, 'no bridge');
-    assert.match(effect, /\.catch\(\(\) => failedRead\(\)\)/, 'a rejected read');
-    assert.match(effect, /if \(!res\?\.ok\) \{ failedRead\(res\?\.message\)/, 'a refused read');
+    assert.match(src, /key: 'link', label: t\('Link'\), icon: <Link2 size=\{14\} \/>, run: \(\) => void shareLink\(\)/);
+    assert.doesNotMatch(src, /setDialog\('link'\)|revokeShareLink|'unshare'/);
 });

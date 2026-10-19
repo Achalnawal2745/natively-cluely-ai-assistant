@@ -14,6 +14,28 @@
   font-display: swap;
 }
 
+/* IBM Plex Serif Regular (SIL OFL 1.1, src/font/IBMPlexSerif/LICENSE-OFL.txt),
+   from @fontsource/ibm-plex-serif 5.3.0: the display serif for card headings
+   such as Connectors › MCP. Latin and Latin Extended only; other scripts fall
+   back through the font-plex-serif stack in tailwind.config.js. */
+@font-face {
+  font-family: 'IBM Plex Serif';
+  src: url('./font/IBMPlexSerif/ibm-plex-serif-latin-400-normal.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'IBM Plex Serif';
+  src: url('./font/IBMPlexSerif/ibm-plex-serif-latin-ext-400-normal.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -9843,25 +9865,6 @@ html[data-platform="linux"][data-window="launcher"] body {
 .mn-fu-gmail-room { display: inline-block; width: var(--mn-fu-gmail-room, 156px); height: 1px; }
 .mn-fu-gmail { position: absolute; right: 12px; bottom: calc(16px + (13px * 1.65) / 2 - 15px); }
 
-/* The follow-up draft's tone + Regenerate, in the notes' clear Liquid Glass.
-   The tone pill keeps its hover wash while its menu is open, so the open menu
-   reads as coming from it. Regenerate is the same glass as a 30px circle; its
-   arrows turn half a turn on hover (400ms, as before) and spin while the draft is
-   rewritten, when it stays lit rather than dimming (aria-busy), with the hover
-   wash, lens and press held off so it does not invite a second click. */
-.lg-button.lg-clear.lg-sm.mn-tone[aria-expanded='true'] { background-color: var(--lg-tint-hover); }
-.lg-button.lg-sm.mn-fu-regen { width: 30px; padding: 0; }
-.mn-fu-regen-turn { transition: transform 400ms cubic-bezier(0.23, 1, 0.32, 1); }
-@media (hover: hover) and (pointer: fine) {
-  .lg-button.mn-fu-regen:not([aria-busy='true']):hover .mn-fu-regen-turn { transform: rotate(-180deg); }
-}
-.lg-button.mn-fu-regen[aria-busy='true'] { cursor: default; }
-.lg-button.lg-clear.lg-sm.mn-fu-regen[aria-busy='true']:hover { background-color: var(--lg-clear-bg, rgba(255, 255, 255, .06)); }
-[data-theme='light'] .lg-button.lg-clear.lg-sm.mn-fu-regen[aria-busy='true']:hover { background-color: var(--lg-clear-bg-light, rgba(17, 17, 26, .04)); }
-.lg-button.mn-fu-regen[aria-busy='true']:hover .lg-lens { opacity: 0; }
-.lg-button.lg-sm.mn-fu-regen[aria-busy='true']:active { transform: none; }
-@media (prefers-reduced-motion: reduce) { .mn-fu-regen-turn { transition: none; } }
-
 /* The notes' action row (MeetingDetails NotesActions). While notes regenerate
    the buttons dim (LiquidGlassButton's :disabled rim, cap and label opacities);
    here that eases over 150 ms instead of snapping, both ways. Show evidence's
@@ -9955,6 +9958,39 @@ html[data-platform="linux"][data-window="launcher"] body {
 .mn-swap-out { animation: mn-swap-exit var(--text-swap-dur) var(--text-swap-ease) forwards; }
 .mn-swap-in  { animation: mn-swap-enter var(--text-swap-dur) var(--text-swap-ease) var(--text-swap-dur) backwards; }
 
+/* Settings › Connectors › MCP card (connectors/McpCard.tsx, Swap): the Turn
+   on/off label, the status line, step 1 and the setup hint change in place on
+   #04's order and values (old exits up, new rises from below; 4px, 2px blur,
+   ease-in-out). The exit is shortened to 120ms and the entry starts 70ms in, so
+   the two barely overlap and never read on top of each other. Keyframes, so the
+   swap runs on the compositor while the setup panel folds on the main thread.
+   The leaving copy is out of flow at the same width: --block fills its line
+   (wrapping text), the inline form is as wide as its text and never wraps. */
+.mcp-swap { display: inline-grid; position: relative; }
+.mcp-swap--block { display: grid; }
+.mcp-swap > * { grid-area: 1 / 1; min-width: 0; }
+.mcp-swap > .mcp-swap-out {
+  position: absolute; top: 0; left: 0;
+  pointer-events: none;
+  animation: mcp-swap-exit 120ms ease-in-out forwards;
+}
+.mcp-swap:not(.mcp-swap--block) > * { white-space: nowrap; }
+.mcp-swap--block > .mcp-swap-out { right: 0; }
+.mcp-swap-in { animation: mcp-swap-enter 150ms ease-in-out 70ms backwards; }
+@keyframes mcp-swap-exit {
+  to { opacity: 0; transform: translateY(-4px); filter: blur(2px); }
+}
+@keyframes mcp-swap-enter {
+  from { opacity: 0; transform: translateY(4px); filter: blur(2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* A plain cross-fade: no travel, no blur. */
+  .mcp-swap > .mcp-swap-out { animation: mcp-swap-fade-out 120ms linear forwards; }
+  .mcp-swap-in { animation: mcp-swap-fade-in 120ms linear backwards; }
+}
+@keyframes mcp-swap-fade-out { to { opacity: 0; } }
+@keyframes mcp-swap-fade-in { from { opacity: 0; } }
+
 /* The header's right slot: Generate before a draft exists, the tone +
    Regenerate group after. Both sit in one grid cell (so the header never
    changes height) and cross-fade with the icon swap's blur and timing, at
@@ -9995,6 +10031,160 @@ html[data-platform="linux"][data-window="launcher"] body {
   from { opacity: 0.5; filter: blur(2px); }
 }
 .mn-fu-body-in { animation: mn-fu-body-in 400ms ease-in-out; }
+
+/* ── Follow-up sheet (the header's Follow-up email button) ──
+   A modal, so it grows from its own centre rather than from the button:
+   opacity, scale 0.96 and an 8px rise on the strong ease-out, 250ms; it
+   leaves quicker and quieter than it came (150ms, to 0.98). The dim fades
+   with it. Inside, the rows (To, Subject, message, footer) rise one stagger
+   step apart, as the notes' t-stagger does, so the sheet reads as assembled
+   rather than switched on. A first draft lands the same way: "Writing…"
+   fades out, then Subject and the message rise in. scale and translate are
+   the individual transform properties, so the panel's own transform keeps it
+   centred. Radix waits for the closing animation before unmounting. */
+.mn-fu-sheet {
+  --fu-in: 250ms;
+  --fu-out: 150ms;
+  --fu-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --fu-step: 40ms;
+}
+/* The send: one pill in the Usage question's lavender glass (.lg-lavender,
+   the website's CTA; .lg-bubble-lavender is the same material), holding two
+   click areas: "Send with Gmail" and the ^ for every other way to send, no
+   line between them. The pill is a div, so its own padding goes and each half
+   pads itself. Light is .lg-lavender as it ships; dark takes
+   .lg-bubble-lavender's dark values (denser tint, quiet sheen, light label). */
+.lg-button.lg-sm.mn-fu-send { padding: 0; }
+.mn-fu-send .lg-content { height: 100%; gap: 0; }
+.mn-fu-send-main,
+.mn-fu-send-more {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+.mn-fu-send-main { gap: 7px; padding: 0 5px 0 13px; border-radius: 999px 0 0 999px; }
+.mn-fu-send-more { padding: 0 11px 0 5px; border-radius: 0 999px 999px 0; }
+/* No block lights up under the ^: the chevron itself moves. Hovered, it lifts
+   toward the menu it opens (or, open, dips toward closing it); pressed, it
+   squeezes; and the pill does not sink under a press on it. `translate` and
+   `scale` are the individual properties, so the inline scaleY flip keeps its
+   own transform. */
+.mn-fu-send-more svg {
+  transition:
+    transform var(--dropdown-close-dur) var(--dropdown-ease),
+    translate 220ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    scale 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.mn-fu-send-more[aria-expanded='true'] svg {
+  transition:
+    transform var(--dropdown-open-dur) var(--dropdown-ease),
+    translate 220ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    scale 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+@media (hover: hover) {
+  .mn-fu-send-more:not(:disabled):hover svg { translate: 0 -2px; }
+  .mn-fu-send-more[aria-expanded='true']:not(:disabled):hover svg { translate: 0 2px; }
+}
+.mn-fu-send-more:not(:disabled):active svg { scale: 0.85; }
+.lg-button.mn-fu-send:has(.mn-fu-send-more:active) { transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .mn-fu-send-more svg,
+  .mn-fu-send-more[aria-expanded='true'] svg { transition: none; }
+  .mn-fu-send-more:not(:disabled):hover svg,
+  .mn-fu-send-more[aria-expanded='true']:not(:disabled):hover svg { translate: none; }
+}
+/* The pill's own hover tint, which the re-tint's background shorthand would otherwise tie with. */
+@media (hover: hover) {
+  .lg-button.lg-lavender.mn-fu-send:not([aria-disabled='true']):hover { background-color: var(--lg-lav-hover); }
+}
+.mn-fu-send-main:disabled,
+.mn-fu-send-more:disabled { cursor: default; }
+.mn-fu-send-main:disabled > * { opacity: .5; }
+.mn-fu-send[aria-disabled='true'] { opacity: .5; }
+.mn-fu-send[aria-disabled='true']:active { transform: none; }
+.lg-button.lg-lavender.mn-fu-send {
+  --lg-lav-fg: #E6DDFD;
+  --lg-lav-hover: rgba(156, 111, 243, .40);
+  --lg-lav-rim: rgba(255, 255, 255, .22);
+  --lg-lav-under: rgba(0, 0, 0, .24);
+  --lg-lav-drop: transparent;
+  --lg-lav-glow: rgba(156, 111, 243, .30);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .12) 0, rgba(255, 255, 255, .03) 6px, rgba(255, 255, 255, 0) 100%),
+    rgba(156, 111, 243, .30);
+}
+[data-theme='light'] .lg-button.lg-lavender.mn-fu-send {
+  --lg-lav-fg: #3F2593;
+  --lg-lav-hover: rgba(156, 111, 243, .36);
+  --lg-lav-rim: rgba(255, 255, 255, .78);
+  --lg-lav-under: rgba(90, 43, 176, .14);
+  --lg-lav-drop: rgba(78, 46, 150, .10);
+  --lg-lav-glow: rgba(156, 111, 243, .55);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .42) 0%, rgba(255, 255, 255, .10) 18%, rgba(255, 255, 255, 0) 100%),
+    rgba(156, 111, 243, .24);
+}
+/* The toolbar's left side moves its glyphs, never a fill. The tone's ^ flips
+   to "v" while its menu is open and, hovered, lifts toward the menu (open:
+   dips toward closing it), as the send's ^; Regenerate's arrows turn half a
+   circle on hover. `translate` and `rotate` are their own properties, so the
+   inline flip and the spin while rewriting keep their transforms. */
+.mn-fu-tone-mark {
+  transition:
+    transform var(--dropdown-close-dur) var(--dropdown-ease),
+    translate 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.mn-fu-tone[aria-expanded='true'] .mn-fu-tone-mark {
+  transition:
+    transform var(--dropdown-open-dur) var(--dropdown-ease),
+    translate 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.mn-fu-turn { transition: rotate 450ms cubic-bezier(0.34, 1.4, 0.64, 1); }
+@media (hover: hover) {
+  .mn-fu-tone:not(:disabled):hover .mn-fu-tone-mark { translate: 0 -1.5px; }
+  .mn-fu-tone[aria-expanded='true']:not(:disabled):hover .mn-fu-tone-mark { translate: 0 1.5px; }
+  .mn-fu-tool:not(:disabled):hover .mn-fu-turn { rotate: 180deg; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mn-fu-tone-mark,
+  .mn-fu-tone[aria-expanded='true'] .mn-fu-tone-mark,
+  .mn-fu-turn { transition: none; }
+  .mn-fu-tone .mn-fu-tone-mark { translate: none !important; }
+  .mn-fu-tool .mn-fu-turn { rotate: none !important; }
+}
+@keyframes mn-fu-sheet-in { from { opacity: 0; scale: 0.96; translate: 0 8px; } }
+@keyframes mn-fu-sheet-out { to { opacity: 0; scale: 0.98; } }
+@keyframes mn-fu-fade-in { from { opacity: 0; } }
+@keyframes mn-fu-fade-out { to { opacity: 0; } }
+@keyframes mn-fu-rise { from { opacity: 0; translate: 0 6px; filter: blur(2px); } }
+@keyframes mn-fu-sink { to { opacity: 0; filter: blur(2px); } }
+.mn-fu-sheet[data-state='open'] { animation: mn-fu-sheet-in var(--fu-in) var(--fu-ease); }
+.mn-fu-sheet[data-state='closed'] { animation: mn-fu-sheet-out var(--fu-out) var(--fu-ease) forwards; }
+.mn-fu-dim[data-state='open'] { animation: mn-fu-fade-in 200ms cubic-bezier(0.23, 1, 0.32, 1); }
+.mn-fu-dim[data-state='closed'] { animation: mn-fu-fade-out 150ms cubic-bezier(0.23, 1, 0.32, 1) forwards; }
+.mn-fu-sheet[data-state='open'] .mn-fu-row {
+  animation: mn-fu-rise 300ms var(--fu-ease) both;
+  animation-delay: calc(60ms + var(--i, 0) * var(--fu-step));
+}
+.mn-fu-land {
+  animation: mn-fu-rise 350ms var(--fu-ease) both;
+  animation-delay: calc(var(--i, 0) * var(--fu-step));
+}
+.mn-fu-writing-out { animation: mn-fu-sink 150ms var(--fu-ease) forwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mn-fu-sheet[data-state='open'] { animation-name: mn-fu-fade-in; }
+  .mn-fu-sheet[data-state='closed'] { animation-name: mn-fu-fade-out; }
+  .mn-fu-sheet[data-state='open'] .mn-fu-row,
+  .mn-fu-land,
+  .mn-fu-writing-out { animation: none; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .mn-swap-out { display: none; }

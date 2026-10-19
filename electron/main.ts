@@ -10341,6 +10341,8 @@ if (process.env.THINKING_MATRIX === '1') {
   // model call (talking points) runs only on the user's button, through the
   // provider routing the notes use, and only when the notes may go there.
   configureAssistService({
+    // Gmail (Settings › Connectors): recent threads with the attendees, when connected and allowed. [] otherwise.
+    recentEmails: (emails) => require('./services/outputs/gmailIpc').gmailBriefContext(emails),
     loadMeetings: (sinceMs) => {
       try { return require('./db/DatabaseManager').DatabaseManager.getInstance().getMeetingsWithNotesSince(sinceMs, 400); } catch { return []; }
     },
@@ -11044,7 +11046,13 @@ if (process.env.THINKING_MATRIX === '1') {
   // returns. If one outlasts the bound the quit goes ahead anyway.
   let localEmbeddingQuitDrainStarted = false;
   const LOCAL_EMBEDDING_QUIT_DRAIN_MS = 5_000;
-  const ONNX_WORKER_QUIT_WAIT_MS = 3_000;
+  // A worker reads the stop request only once its current native call returns.
+  // Measured per call on an M4 (2026-10-14): Whisper Medium encoder ~4.3 s,
+  // Large v3 Turbo 8-11 s, both on 4 threads; slower machines take longer, and
+  // loading a large model is one call too. Quitting before it returns aborts
+  // the app, so the bound covers the slowest model this app offers. Idle
+  // workers exit in milliseconds, so an ordinary quit is not slowed.
+  const ONNX_WORKER_QUIT_WAIT_MS = 15_000;
   /** True when the quit was deferred; before-quit returns and re-runs on app.quit(). */
   const deferQuitForLocalEmbeddingDrain = (event: Electron.Event): boolean => {
     if (localEmbeddingQuitDrainStarted) return false;

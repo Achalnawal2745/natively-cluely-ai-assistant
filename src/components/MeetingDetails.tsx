@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useId, useMemo } from 'react';
 import { useT } from '../i18n';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
-import { ArrowLeft, Search, Mail, Link, ChevronDown, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, RefreshCw, Info, Eye, EyeOff, History, Pencil, X, ChevronRight, ChevronLeft, SquarePen, FileText, Columns2 } from 'lucide-react';
+import { ArrowLeft, Search, Mail, Link, ChevronDown, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, RefreshCw, Info, Eye, EyeOff, History, Pencil, X, ChevronRight, ChevronLeft, FileText, Columns2 } from 'lucide-react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { genMessageId } from '../utils/messageId';
 import { mapLanguageForPrism, isBlockCode } from '../utils/prismLanguage';
 import { registerPrismLanguages } from '../utils/registerPrismLanguages';
@@ -11,17 +12,17 @@ import GlassSurface from '../ui-components/GlassSurface';
 // .lg-bubble (the Usage tab's question bubble).
 // Imported here rather than left to arrive through Launcher's LiquidGlassBadge import.
 import '../ui-components/LiquidGlassButton.css';
-import { LiquidGlassButton } from '../ui-components/LiquidGlassButton';
+import { LiquidGlassButton, useLensTracking } from '../ui-components/LiquidGlassButton';
+import { isMac } from '../utils/platformUtils';
 import EditableTextBlock from './EditableTextBlock';
-import { OrganiseChip } from './organise/MeetingOrganiseMenu';
-import NativelyLogo from './icon.png';
+import { NativelyWordmark } from './NativelyWordmark';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import SyntaxHighlighter from 'react-syntax-highlighter/dist/esm/prism-light';
 import { vividDarkCodeTheme } from '../lib/codeTheme';
 import { splitGistLine } from '../lib/displayMarkup';
 import { splitIntoWordRuns } from '../lib/textRevealAnimation.mjs';
-import { followUpRecipients, recipientSummary, gmailComposeUrl } from '../lib/followUpRecipients.mjs';
+import { followUpRecipients, gmailComposeUrl, outlookComposeUrl } from '../lib/followUpRecipients.mjs';
 import { reflowFlattenedList, leadingItem, techniqueLabel, techniqueFromApproach, extractComplexity, isNotApplicable, splitTrailingAnswer, plainTitle, breakGluedLines, fixBoldSpacing, latexParensToDollars, stripLeadingReasoning, stripStrayGistLines, plainEmailText, plainMeetingTitle } from '../lib/codingAnswer.mjs';
 import { normalizeFinalizedMarkdownMath } from '../lib/streamingMarkdown';
 import { DiagramAwareMarkdown } from './diagram/DiagramAwareMarkdown';
@@ -741,13 +742,13 @@ const UsageInteraction: React.FC<{
                         </motion.div>
                     )}
                     {interaction.question && (<>
-                    {/* .lg-bubble (ui-components): the original Liquid Glass material on the
-                        Settings toggle's periwinkle blue (--toggle-on, lifted toward white in light
-                        mode), with nothing painted around it and no hover effect. Fill and
-                        foreground come from --bubble-user-* in index.css; the radius stays here.
-                        White text on the fill is 3.28:1 (2.35:1 in light mode) — an accepted AA
-                        shortfall, recorded in PeriwinkleContrastGuard.test.mjs. */}
-                    <motion.div {...enter({ x: 8 }, staggerDelay)} className="lg-bubble px-5 py-2.5 rounded-2xl rounded-tr-sm max-w-[80%] text-[15px] leading-relaxed select-text">
+                    {/* .lg-bubble.lg-bubble-lavender (ui-components): the website's question
+                        card in "The whole call, distilled" — lavender Liquid Glass, deep lavender
+                        semibold label, soft lavender glow. Its shape too: there 31px tall at 11px
+                        text, 14px side padding, corners 14/4/14/14; scaled by 15/11 here that is
+                        a 42px line, 19px padding, corners 19/5.5/19/19. Material and ink live in
+                        the CSS; the shape stays here. */}
+                    <motion.div {...enter({ x: 8 }, staggerDelay)} className="lg-bubble lg-bubble-lavender px-[19px] py-[9px] rounded-[19px] rounded-tr-[5.5px] max-w-[80%] text-[15px] font-semibold leading-relaxed select-text">
                         {interaction.question}
                     </motion.div>
                     {/* Same row as the answer's timestamp below (USAGE_TIME_ROW): equal
@@ -759,13 +760,13 @@ const UsageInteraction: React.FC<{
                 </div>
             )}
 
-            {/* AI answer — open canvas (no bubble): a small logo + name line, then the
-                body full width beneath it, then the hover-revealed timestamp. */}
+            {/* AI answer — open canvas (no bubble): the website's "natively" wordmark,
+                then the body full width beneath it, then the hover-revealed timestamp.
+                14px tall puts its x-height (7.8px) a touch over the 13px label it replaced. */}
             {interaction.answer && (
                 <motion.div {...enter({ y: 8 }, staggerDelay + 0.08)} className="group/a">
-                    <div className="mb-2 flex items-center gap-2 select-none">
-                        <img src={NativelyLogo} alt="" aria-hidden="true" className="w-4 h-4 object-contain force-black-icon opacity-60" />
-                        <span className="text-[13px] font-medium leading-none text-text-secondary">Natively</span>
+                    <div className="mb-2 flex items-center select-none">
+                        <NativelyWordmark height={14} className="block shrink-0 text-text-secondary" />
                     </div>
                     <div className="min-w-0">
                         <div className="text-text-secondary text-[15px] leading-relaxed max-w-none select-text">
@@ -864,10 +865,9 @@ const UsageImageViewer: React.FC<{
     );
 };
 
-type FollowUpTone = 'professional' | 'warm' | 'concise' | 'friendly';
-
-/** The dropdown snippet's --dropdown-close-dur (index.css, .mn-followup). */
-const TONE_MENU_CLOSE_MS = 150;
+// 'your_style': the user's own voice, from the writing samples of the mode the
+// meeting ran under. Offered (and the default) only when that mode has samples.
+type FollowUpTone = 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style';
 
 /**
  * The notes' actions, in the app's Liquid Glass (ui-components/design.md):
@@ -973,148 +973,6 @@ const NotesActions: React.FC<{
                     </motion.div>
                 )}
             </AnimatePresence>
-        </div>
-    );
-};
-
-// Tone picker for the follow-up draft. Picking a tone rewrites the draft in it.
-// Must be a named component (not an IIFE) so React can track its hooks stably.
-// Motion is transitions.dev's menu dropdown: the menu grows from the trigger's
-// top-right corner (it sits at the page's right edge) and closes quicker and
-// quieter than it opens, with .is-closing held for the close duration.
-const ToneDropdown: React.FC<{
-    followUpTone: FollowUpTone;
-    isRegeneratingFollowUp: boolean;
-    onSelect: (tone: FollowUpTone) => void;
-}> = ({ followUpTone, isRegeneratingFollowUp, onSelect }) => {
-    const t = useT();
-    const isLight = useResolvedTheme() === 'light';
-    const toneOptions: { value: FollowUpTone; label: string }[] = [
-        { value: 'professional', label: t('Professional') },
-        { value: 'warm',         label: t('Warm')         },
-        { value: 'concise',      label: t('Concise')      },
-        { value: 'friendly',     label: t('Friendly')     },
-    ];
-    const [open, setOpen] = useState(false);
-    const [closing, setClosing] = useState(false);
-    const rootRef = useRef<HTMLDivElement>(null);
-    // LiquidGlassButton keeps its own ref (the lens), so the trigger is found in the wrapper.
-    const trigger = () => rootRef.current?.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]') ?? null;
-    const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-    const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-    const menuId = useId();
-
-    const openMenu = () => {
-        clearTimeout(closeTimer.current);
-        setClosing(false);
-        setOpen(true);
-    };
-    // `refocus`: hand focus back to the trigger (Escape, a pick) rather than
-    // letting it fall to <body> when the menu goes inert.
-    const close = (refocus: boolean) => {
-        setOpen(false);
-        setClosing(true);
-        clearTimeout(closeTimer.current);
-        closeTimer.current = setTimeout(() => setClosing(false), TONE_MENU_CLOSE_MS);
-        if (refocus) trigger()?.focus({ preventScroll: true });
-    };
-    useEffect(() => () => clearTimeout(closeTimer.current), []);
-    // Opening moves focus onto the current tone, so the arrow keys work at once and
-    // the trigger's focus ring does not sit around it while the menu is up.
-    useEffect(() => {
-        if (!open) return;
-        const selected = toneOptions.findIndex(o => o.value === followUpTone);
-        itemRefs.current[Math.max(0, selected)]?.focus({ preventScroll: true });
-        const onDown = (e: MouseEvent) => {
-            if (rootRef.current && !rootRef.current.contains(e.target as Node)) close(false);
-        };
-        document.addEventListener('mousedown', onDown);
-        return () => document.removeEventListener('mousedown', onDown);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open]);
-
-    const onMenuKeyDown = (e: React.KeyboardEvent) => {
-        const items = itemRefs.current.filter(Boolean) as HTMLButtonElement[];
-        const at = items.indexOf(document.activeElement as HTMLButtonElement);
-        const go = (i: number) => { e.preventDefault(); items[(i + items.length) % items.length]?.focus(); };
-        if (e.key === 'ArrowDown') go(at + 1);
-        else if (e.key === 'ArrowUp') go(at - 1);
-        else if (e.key === 'Home') go(0);
-        else if (e.key === 'End') go(items.length - 1);
-        else if (e.key === 'Escape') { e.preventDefault(); close(true); }
-        else if (e.key === 'Tab') close(false);
-    };
-
-    return (
-        <div ref={rootRef} className="relative">
-            {/* The notes' clear Liquid Glass pill (ui-components/LiquidGlassButton), like
-                Regenerate and Show evidence; it holds its hover wash while the menu is
-                open (.mn-tone, index.css). */}
-            <LiquidGlassButton
-                variant="clear"
-                className="lg-sm mn-tone"
-                disabled={isRegeneratingFollowUp}
-                onClick={() => (open ? close(false) : openMenu())}
-                onKeyDown={(e) => { if (e.key === 'ArrowDown' && !open) { e.preventDefault(); openMenu(); } }}
-                aria-haspopup="menu"
-                aria-expanded={open}
-                aria-controls={menuId}
-            >
-                <span className="inline-flex items-center gap-1">
-                    {/* Every tone stacked invisibly in one cell: the trigger is always as wide
-                        as the longest label, so it never jumps on a pick and the menu under
-                        it can be exactly its width. */}
-                    <span className="grid text-center">
-                        {toneOptions.map(o => (
-                            <span key={o.value} aria-hidden="true" className="invisible col-start-1 row-start-1">{o.label}</span>
-                        ))}
-                        <span className="col-start-1 row-start-1">{toneOptions.find(o => o.value === followUpTone)?.label ?? t('Tone')}</span>
-                    </span>
-                    {/* Flips (scaleY) rather than turns, so the "v" becomes a "^" in place:
-                        with the menu's open (250ms), and its quicker close (150ms). */}
-                    <ChevronDown
-                        className="w-3 h-3 opacity-60"
-                        strokeWidth={2.5}
-                        style={{ transform: `scaleY(${open ? -1 : 1})`, transition: `transform ${open ? 'var(--dropdown-open-dur)' : 'var(--dropdown-close-dur)'} var(--dropdown-ease)` }}
-                    />
-                </span>
-            </LiquidGlassButton>
-            {/* Exactly the trigger's width (left-0 right-0 of its wrapper). Tone names are
-                centred, and each row's centre sits under the trigger's label, not the
-                menu's middle: the trigger's chevron (12px + 4px gap) pushes its label
-                8px left, so the rows pad 16px more on the right (pl-3 / pr-7). */}
-            <div
-                id={menuId}
-                role="menu"
-                data-origin="top-center"
-                inert={!open}
-                onKeyDown={onMenuKeyDown}
-                className={`t-dropdown${open ? ' is-open' : closing ? ' is-closing' : ''} absolute left-0 right-0 top-full mt-1 z-50 p-[3px] rounded-lg border ${isLight
-                    ? 'bg-white border-black/[0.08] shadow-[0_6px_20px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.06)]'
-                    : 'bg-[#1C1C1F] border-white/[0.08] shadow-[0_6px_20px_rgba(0,0,0,0.5),0_1px_2px_rgba(0,0,0,0.3)]'}`}
-            >
-                {toneOptions.map((opt, i) => {
-                    const selected = followUpTone === opt.value;
-                    return (
-                        <button
-                            key={opt.value}
-                            ref={(el) => { itemRefs.current[i] = el; }}
-                            type="button"
-                            role="menuitemradio"
-                            aria-checked={selected}
-                            tabIndex={-1}
-                            onClick={() => { close(true); if (!selected) onSelect(opt.value); }}
-                            className={`w-full h-[26px] flex items-center justify-center pl-3 pr-7 rounded-[5px] text-center text-[12px] font-medium focus-visible:outline-none transition-colors ${selected
-                                ? 'text-text-primary'
-                                : 'text-text-secondary hover:text-text-primary focus-visible:text-text-primary'} ${isLight
-                                ? 'hover:bg-black/[0.05] focus-visible:bg-black/[0.05]'
-                                : 'hover:bg-white/[0.06] focus-visible:bg-white/[0.06]'}`}
-                        >
-                            <span>{opt.label}</span>
-                        </button>
-                    );
-                })}
-            </div>
         </div>
     );
 };
@@ -1261,6 +1119,9 @@ const SUMMARY_IN_PROGRESS: ReadonlySet<string> = new Set<MeetingSummaryStatus>([
 /** Matches the Texts-reveal snippet's fixed 200ms `.is-hiding` fade (index.css). */
 const FOLLOW_UP_HIDE_MS = 200;
 
+/** The Follow-up email dialog's layer: ShareMenu's dialogs' 400, above the chat overlay's 300. */
+const FOLLOW_UP_DIALOG_LAYER = 400;
+
 /** The text-swap snippet's --text-swap-dur (index.css, .mn-followup). */
 const SWAP_MS = 150;
 
@@ -1291,32 +1152,6 @@ const SwapText: React.FC<{ value: string; sizers: React.ReactNode[]; children: R
             {sizers.map((node, i) => <span key={`z${i}`} aria-hidden="true" className="mn-swap-sizer">{node}</span>)}
             {leaving && <span key={`o${leaving.key}`} aria-hidden="true" className="mn-swap-out">{leaving.node}</span>}
             <span key={`i${value}`} className={swapped ? 'mn-swap-in' : undefined}>{children}</span>
-        </span>
-    );
-};
-
-/**
- * A width that follows its content with an ease instead of a jump: the inner
- * span is measured (ResizeObserver) and the outer one transitions to it
- * (.mn-autow in index.css — a resize: 250ms, --ease-smooth-out). Used where a
- * label changes length and the pill around it should grow into the new one,
- * rather than holding the longest label's width all the time. The first
- * measure lands without a transition, so nothing animates on first paint.
- */
-const AutoWidth: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    const innerRef = useRef<HTMLSpanElement>(null);
-    const [width, setWidth] = useState<number | null>(null);
-    useLayoutEffect(() => {
-        const el = innerRef.current;
-        if (!el || typeof ResizeObserver === 'undefined') return;
-        const ro = new ResizeObserver(() => setWidth(el.offsetWidth));
-        ro.observe(el);
-        setWidth(el.offsetWidth);
-        return () => ro.disconnect();
-    }, []);
-    return (
-        <span className="mn-autow" style={width === null ? undefined : { width }}>
-            <span ref={innerRef} className="mn-autow-in">{children}</span>
         </span>
     );
 };
@@ -1381,209 +1216,347 @@ const SpeakerNameInput: React.FC<{
     );
 };
 
-/** Copy for the follow-up card: Copy → Check is transitions.dev's icon swap. */
-// The notes header's Copy, exactly: quiet text that brightens on hover, no card
-// behind it, Copy → Check icon swap and a Copy → Copied label swap.
-const FollowUpCopyButton: React.FC<{ copied: boolean; onCopy: () => void }> = ({ copied, onCopy }) => {
+/** The dropdown snippet's --dropdown-close-dur (index.css, .mn-followup). */
+const TONE_MENU_CLOSE_MS = 150;
+
+// Tone picker for the follow-up draft. Picking a tone rewrites the draft in it.
+// Must be a named component (not an IIFE) so React can track its hooks stably.
+// It leads the follow-up sheet's toolbar as quiet text with a ^, brightening
+// on hover and while open, no fill behind it. Motion is transitions.dev's menu dropdown: the menu grows
+// upward from the trigger's corner and closes quicker and quieter than it opens,
+// with .is-closing held for the close duration.
+const ToneDropdown: React.FC<{
+    followUpTone: FollowUpTone;
+    isRegeneratingFollowUp: boolean;
+    onSelect: (tone: FollowUpTone) => void;
+    /** The meeting's mode has writing samples: "Your style" leads the list. */
+    offerYourStyle: boolean;
+}> = ({ followUpTone, isRegeneratingFollowUp, onSelect, offerYourStyle }) => {
     const t = useT();
+    const isLight = useResolvedTheme() === 'light';
+    const toneOptions: { value: FollowUpTone; label: string }[] = [
+        ...(offerYourStyle || followUpTone === 'your_style' ? [{ value: 'your_style' as const, label: t('Your style') }] : []),
+        { value: 'professional', label: t('Professional') },
+        { value: 'warm',         label: t('Warm')         },
+        { value: 'concise',      label: t('Concise')      },
+        { value: 'friendly',     label: t('Friendly')     },
+    ];
+    const [open, setOpen] = useState(false);
+    const [closing, setClosing] = useState(false);
+    const rootRef = useRef<HTMLDivElement>(null);
+    const trigger = () => rootRef.current?.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]') ?? null;
+    const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+    const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const menuId = useId();
+
+    const openMenu = () => {
+        clearTimeout(closeTimer.current);
+        setClosing(false);
+        setOpen(true);
+    };
+    // `refocus`: hand focus back to the trigger (Escape, a pick) rather than
+    // letting it fall to <body> when the menu goes inert.
+    const close = (refocus: boolean) => {
+        setOpen(false);
+        setClosing(true);
+        clearTimeout(closeTimer.current);
+        closeTimer.current = setTimeout(() => setClosing(false), TONE_MENU_CLOSE_MS);
+        if (refocus) trigger()?.focus({ preventScroll: true });
+    };
+    useEffect(() => () => clearTimeout(closeTimer.current), []);
+    // Opening moves focus onto the current tone, so the arrow keys work at once and
+    // the trigger's focus ring does not sit around it while the menu is up.
+    useEffect(() => {
+        if (!open) return;
+        const selected = toneOptions.findIndex(o => o.value === followUpTone);
+        itemRefs.current[Math.max(0, selected)]?.focus({ preventScroll: true });
+        const onDown = (e: MouseEvent) => {
+            if (rootRef.current && !rootRef.current.contains(e.target as Node)) close(false);
+        };
+        document.addEventListener('mousedown', onDown);
+        return () => document.removeEventListener('mousedown', onDown);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open]);
+
+    const onMenuKeyDown = (e: React.KeyboardEvent) => {
+        const items = itemRefs.current.filter(Boolean) as HTMLButtonElement[];
+        const at = items.indexOf(document.activeElement as HTMLButtonElement);
+        const go = (i: number) => { e.preventDefault(); items[(i + items.length) % items.length]?.focus(); };
+        if (e.key === 'ArrowDown') go(at + 1);
+        else if (e.key === 'ArrowUp') go(at - 1);
+        else if (e.key === 'Home') go(0);
+        else if (e.key === 'End') go(items.length - 1);
+        else if (e.key === 'Escape') { e.preventDefault(); close(true); }
+        else if (e.key === 'Tab') close(false);
+    };
+
     return (
-        <button
-            type="button"
-            onClick={onCopy}
-            aria-label={copied ? t('Copied') : t('Copy follow-up email')}
-            className="shrink-0 flex items-center gap-2 text-xs font-medium text-text-secondary hover:text-text-primary transition-[color,opacity]"
-        >
-            <span className="t-icon-swap w-3.5 h-3.5" data-state={copied ? 'b' : 'a'} aria-hidden="true">
-                <Copy className="t-icon w-3.5 h-3.5" data-icon="a" size={14} />
-                <Check className="t-icon w-3.5 h-3.5 text-emerald-500" data-icon="b" size={14} />
-            </span>
-            <SwapText value={copied ? 'copied' : 'copy'} sizers={[t('Copy'), t('Copied')]}>
-                {copied ? t('Copied') : t('Copy')}
-            </SwapText>
-        </button>
+        <div ref={rootRef} className="relative">
+            <button
+                type="button"
+                className={`mn-fu-tone h-8 flex items-center text-[13px] font-medium transition-[color,opacity] duration-150 disabled:opacity-40 ${open ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}
+                disabled={isRegeneratingFollowUp}
+                onClick={() => (open ? close(false) : openMenu())}
+                onKeyDown={(e) => { if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !open) { e.preventDefault(); openMenu(); } }}
+                aria-haspopup="menu"
+                aria-expanded={open}
+                aria-controls={menuId}
+            >
+                <span className="inline-flex items-center gap-1.5">
+                    {/* Every tone stacked invisibly in one cell: the trigger is always as wide
+                        as the longest label, so the footer never shifts on a pick. */}
+                    <span className="grid text-left">
+                        {toneOptions.map(o => (
+                            <span key={o.value} aria-hidden="true" className="invisible col-start-1 row-start-1">{o.label}</span>
+                        ))}
+                        <span className="col-start-1 row-start-1">{toneOptions.find(o => o.value === followUpTone)?.label ?? t('Tone')}</span>
+                    </span>
+                    {/* One "^" (the menu opens upward), "v" while open; it lifts toward
+                        the menu on hover, as the send's ^ does (index.css, .mn-fu-tone). */}
+                    <ChevronDown
+                        className="mn-fu-tone-mark w-3.5 h-3.5 opacity-60"
+                        strokeWidth={2.5}
+                        style={{ transform: `scaleY(${open ? 1 : -1})` }}
+                        aria-hidden="true"
+                    />
+                </span>
+            </button>
+            {/* Above the trigger, from its left edge, with the tone names left-aligned
+                over the trigger's label (the rows' 10px inset, pulled back by -left-2.5). */}
+            <div
+                id={menuId}
+                role="menu"
+                data-origin="bottom-left"
+                inert={!open}
+                onKeyDown={onMenuKeyDown}
+                className={`t-dropdown${open ? ' is-open' : closing ? ' is-closing' : ''} absolute -left-2.5 bottom-full mb-1.5 min-w-[140px] z-50 p-[3px] rounded-[10px] border ${isLight
+                    ? 'bg-white border-black/[0.08] shadow-[0_6px_20px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.06)]'
+                    : 'bg-[#2C2C2E] border-white/[0.08] shadow-[0_6px_20px_rgba(0,0,0,0.5),0_1px_2px_rgba(0,0,0,0.3)]'}`}
+            >
+                {toneOptions.map((opt, i) => {
+                    const selected = followUpTone === opt.value;
+                    return (
+                        <button
+                            key={opt.value}
+                            ref={(el) => { itemRefs.current[i] = el; }}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={selected}
+                            tabIndex={-1}
+                            onClick={() => { close(true); if (!selected) onSelect(opt.value); }}
+                            className={`w-full h-7 flex items-center px-[7px] rounded-[7px] text-left text-[13px] font-medium whitespace-nowrap focus-visible:outline-none transition-colors ${selected
+                                ? 'text-text-primary'
+                                : 'text-text-secondary hover:text-text-primary focus-visible:text-text-primary'} ${isLight
+                                ? 'hover:bg-black/[0.05] focus-visible:bg-black/[0.05]'
+                                : 'hover:bg-white/[0.06] focus-visible:bg-white/[0.06]'}`}
+                        >
+                            <span>{opt.label}</span>
+                            {selected && <Check className="ml-auto pl-3 w-[26px] h-3.5 shrink-0" strokeWidth={2.5} aria-hidden="true" />}
+                        </button>
+                    );
+                })}
+            </div>
+        </div>
     );
 };
 
-/** The follow-up card's in-place editor: the page owns the text, the card shows the fields. */
-interface FollowUpCardEdit {
-    editing: 'subject' | 'body' | null;
-    subject: string;
-    body: string;
-    onStart: (field: 'subject' | 'body') => void;
-    onChange: (patch: { subject?: string; body?: string }) => void;
-    onCommit: () => void;
-    onCancel: () => void;
-}
+/** Google's G (as CalendarSettings' GoogleMark). */
+const GoogleG: React.FC<{ size: number }> = ({ size }) => (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true" style={{ flexShrink: 0 }}>
+        <g transform="matrix(1, 0, 0, 1, 27.009001, -39.238998)">
+            <path fill="#4285F4" d="M -3.264 51.509 C -3.264 50.719 -3.334 49.969 -3.454 49.239 L -14.754 49.239 L -14.754 53.749 L -8.284 53.749 C -8.574 55.229 -9.424 56.479 -10.684 57.329 L -10.684 60.329 L -6.824 60.329 C -4.564 58.239 -3.264 55.159 -3.264 51.509 Z" />
+            <path fill="#34A853" d="M -14.754 63.239 C -11.514 63.239 -8.804 62.159 -6.824 60.329 L -10.684 57.329 C -11.764 58.049 -13.134 58.489 -14.754 58.489 C -17.884 58.489 -20.534 56.379 -21.484 53.529 L -25.464 53.529 L -25.464 56.619 C -23.494 60.539 -19.444 63.239 -14.754 63.239 Z" />
+            <path fill="#FBBC05" d="M -21.484 53.529 C -21.734 52.809 -21.864 52.039 -21.864 51.239 C -21.864 50.439 -21.734 49.669 -21.484 48.949 L -21.484 45.859 L -25.464 45.859 C -26.284 47.479 -26.754 49.299 -26.754 51.239 C -26.754 53.179 -26.284 54.999 -25.464 56.619 L -21.484 53.529 Z" />
+            <path fill="#EA4335" d="M -14.754 43.989 C -12.984 43.989 -11.404 44.599 -10.154 45.789 L -6.734 42.369 C -8.804 40.429 -11.514 39.239 -14.754 39.239 C -19.444 39.239 -23.494 41.939 -25.464 45.859 L -21.484 48.949 C -20.534 46.099 -17.884 43.989 -14.754 43.989 Z" />
+        </g>
+    </svg>
+);
 
-/**
- * The follow-up draft as a mail card: a header strip with the subject and Copy,
- * then the message. It enters as a Transitions.dev "Texts reveal" (the same
- * wiring as UpcomingCalendarCard's heading): at rest it carries `.is-shown`
- * from the first paint, so a saved draft never animates; with `reveal` (a draft
- * that just came back from Generate) it mounts without it, commits that start
- * state with one reflow, then adds it, and the card rises in. While the draft is
- * rewritten (`busy`) the message dims; the rewrite then settles in by `bodyKey`.
- */
-const FollowUpDraftCard: React.FC<{
-    reveal: boolean;
-    subjectLabel?: React.ReactNode;
-    subject?: React.ReactNode;
-    subjectText?: string;
-    body: React.ReactNode;
-    bodyKey: number;
-    busy: boolean;
-    copied: boolean;
-    onCopy: () => void;
-    isLight: boolean;
-    /** Everyone on the meeting's calendar invite (followUpRecipients): the To line. */
-    recipients?: Array<{ email: string; name?: string }>;
-    /** Opens the draft in Gmail, addressed to them. */
-    onEmail?: () => void;
-    /** A quiet line under the card ("Written in your style · Turn off"). */
-    footnote?: React.ReactNode;
-    /** Editing in place: which field has the editor, and its text while it does. */
-    edit?: FollowUpCardEdit;
-}> = ({ reveal, subjectLabel, subject, subjectText, body, bodyKey, busy, copied, onCopy, isLight, recipients, onEmail, footnote, edit }) => {
-    const t = useT();
-    const ref = useRef<HTMLDivElement>(null);
-    const bodyEditorRef = useRef<HTMLTextAreaElement>(null);
-    const subjectEditorRef = useRef<HTMLInputElement>(null);
-    const editingBody = edit?.editing === 'body';
-    const editingSubject = edit?.editing === 'subject';
-    // The editor takes the place of the text, in the same type and padding; it
-    // grows with what is typed so the card never scrolls inside itself.
-    useLayoutEffect(() => {
-        const el = bodyEditorRef.current;
-        if (!el) return;
-        el.style.height = '0px';
-        el.style.height = `${el.scrollHeight}px`;
-    }, [editingBody, edit?.body]);
-    useEffect(() => {
-        if (editingBody) bodyEditorRef.current?.focus({ preventScroll: true });
-        if (editingSubject) subjectEditorRef.current?.focus({ preventScroll: true });
-    }, [editingBody, editingSubject]);
-    // A click (not a drag that selects text to copy part of it) opens the editor.
-    const startOnClick = (field: 'subject' | 'body') => () => {
-        if (!edit || busy) return;
-        const sel = window.getSelection?.();
-        if (sel && !sel.isCollapsed) return;
-        edit.onStart(field);
-    };
-    const editorKeys = (multiline: boolean) => (e: React.KeyboardEvent) => {
-        if (!edit) return;
-        if (e.key === 'Escape') { e.preventDefault(); edit.onCancel(); }
-        else if (e.key === 'Enter' && (!multiline || e.metaKey || e.ctrlKey)) { e.preventDefault(); edit.onCommit(); }
-    };
-    const [shown, setShown] = useState(!reveal);
-    // The room at the end of the text is the button's real width (labels differ by
-    // language), measured, plus a 16px gap; 156px is only the first-paint guess.
-    const gmailRef = useRef<HTMLDivElement>(null);
-    const [gmailWidth, setGmailWidth] = useState<number | null>(null);
-    useLayoutEffect(() => {
-        const el = gmailRef.current;
-        if (!el || typeof ResizeObserver === 'undefined') return;
-        const ro = new ResizeObserver(() => setGmailWidth(el.offsetWidth));
-        ro.observe(el);
-        setGmailWidth(el.offsetWidth);
-        return () => ro.disconnect();
-    }, [!!onEmail]);
-    useLayoutEffect(() => {
-        if (shown) return;
-        void ref.current?.offsetHeight;
-        setShown(true);
-    }, [shown]);
+/** Apple Mail's mark (the blue tile, the white envelope), for the macOS Mail row
+ *  until the system reports the default mail app's own icon. */
+const AppleMailMark: React.FC = () => {
+    const id = useId();
     return (
-        <div ref={ref} className={`t-stagger${shown ? ' is-shown' : ''}`}>
-            {/* Mail rows: To (the invite, as Fathom's recap does) and Subject + Copy,
-                then the message, roomier than the rows; "Open in Gmail" is the one
-                send-like action, so it sits at the foot of the draft as a glass button. */}
-            <div className={`t-stagger-line t-stagger-line--1 rounded-2xl border overflow-hidden ${isLight ? 'border-black/[0.08] bg-white/70' : 'border-white/[0.08] bg-white/[0.025]'}`}>
-                {recipients && recipients.length > 0 && (
-                    <div className={`flex items-center gap-2.5 min-h-10 px-4 py-1.5 border-b ${isLight ? 'border-black/[0.06]' : 'border-white/[0.06]'}`}>
-                        <p className="min-w-0 flex-1 truncate text-[12.5px] select-text" title={recipients.map((r) => r.email).join(', ')}>
-                            <span className="text-text-tertiary mr-1">{t('To:')}</span>{' '}
-                            <span className="text-text-primary">{recipientSummary(recipients)}</span>
-                        </p>
-                    </div>
-                )}
-                <div className={`flex items-center gap-2.5 min-h-10 px-4 py-1.5 border-b ${isLight ? 'border-black/[0.06]' : 'border-white/[0.06]'}`}>
-                    {subject && (editingSubject && edit ? (
-                        <p className="min-w-0 flex-1 flex items-center text-[12.5px]">
-                            <span className="text-text-tertiary mr-1 shrink-0">{subjectLabel}</span>{' '}
-                            <input
-                                ref={subjectEditorRef}
-                                value={edit.subject}
-                                onChange={(e) => edit.onChange({ subject: e.target.value })}
-                                onBlur={edit.onCommit}
-                                onKeyDown={editorKeys(false)}
-                                aria-label={t('Subject')}
-                                spellCheck
-                                className="min-w-0 flex-1 bg-transparent p-0 border-0 outline-none font-medium text-text-primary text-[12.5px]"
-                            />
-                        </p>
-                    ) : (
-                        <p className="min-w-0 flex-1 truncate text-[12.5px] select-text" title={subjectText}>
-                            {/* mr-1 on top of the literal space: a clear gap after the label that
-                                still reads "Subject: …" when the line is selected or copied. */}
-                            <span className="text-text-tertiary mr-1">{subjectLabel}</span>{' '}
-                            <span
-                                className={`font-medium text-text-primary${edit ? ' cursor-text' : ''}`}
-                                onMouseUp={edit ? startOnClick('subject') : undefined}
-                            >
-                                {subject}
-                            </span>
-                        </p>
-                    ))}
-                    <div className="ml-auto shrink-0">
-                        <FollowUpCopyButton copied={copied} onCopy={onCopy} />
-                    </div>
-                </div>
-                {/* "Open in Gmail" sits on the sign-off's line, at the right: the text ends
-                    with an invisible space the button's width (it wraps to a line of its
-                    own if the last line is long), and the button is pinned over that
-                    line, centred on it. Copying uses the draft text, not this DOM. */}
-                <div className="relative" style={gmailWidth ? { '--mn-fu-gmail-room': `${gmailWidth + 16}px` } as React.CSSProperties : undefined}>
-                    {editingBody && edit ? (
-                        // Bottom padding leaves the Gmail button its own line while editing,
-                        // since the text can no longer make room for it on the last line.
-                        <textarea
-                            ref={bodyEditorRef}
-                            value={edit.body}
-                            onChange={(e) => edit.onChange({ body: e.target.value })}
-                            onBlur={edit.onCommit}
-                            onKeyDown={editorKeys(true)}
-                            aria-label={t('Follow-up email')}
-                            spellCheck
-                            className={`block w-full resize-none overflow-hidden bg-transparent border-0 outline-none px-4 pt-4 ${onEmail ? 'pb-14' : 'pb-4'} text-[13px] text-text-secondary leading-[1.65] font-sans`}
-                        />
-                    ) : (
-                    <pre
-                        aria-busy={busy}
-                        onMouseUp={edit ? startOnClick('body') : undefined}
-                        className={`px-4 py-4 text-[13px] text-text-secondary leading-[1.65] whitespace-pre-wrap font-sans select-text cursor-text transition-opacity duration-[250ms] ease-in-out ${busy ? 'opacity-50' : ''}`}
+        <svg viewBox="0 0 16 16" width={16} height={16} aria-hidden="true" style={{ flexShrink: 0 }}>
+            <defs>
+                <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stopColor="#4FB8FF" />
+                    <stop offset="1" stopColor="#1670F5" />
+                </linearGradient>
+            </defs>
+            <rect width="16" height="16" rx="3.6" fill={`url(#${CSS.escape(id)})`} />
+            <rect x="3" y="4.6" width="10" height="6.8" rx="1.1" fill="#FFFFFF" />
+            <path d="M3.5 5.2 8 8.5l4.5-3.3" fill="none" stroke="#1670F5" strokeOpacity="0.45" strokeWidth="0.9" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+    );
+};
+
+/** Microsoft's four squares, for Outlook (as CalendarSettings' MicrosoftMark). */
+const MicrosoftMark: React.FC<{ size: number }> = ({ size }) => (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true" style={{ flexShrink: 0 }}>
+        <path fill="#F25022" d="M2 2h9.5v9.5H2z" />
+        <path fill="#7FBA00" d="M12.5 2H22v9.5h-9.5z" />
+        <path fill="#00A4EF" d="M2 12.5h9.5V22H2z" />
+        <path fill="#FFB900" d="M12.5 12.5H22V22h-9.5z" />
+    </svg>
+);
+
+// The follow-up sheet's send: "Send with Gmail" and, joined to it, a ^ that
+// opens the other ways to send it: Outlook (on the web), and the computer's own
+// mail app by its real name and icon (mail-app-info; "Mail app" when the system
+// has none to report). One lavender glass pill (.mn-fu-send, index.css); the menu is the tone menu's dropdown, grown upward from the right corner.
+const FollowUpSendButton: React.FC<{
+    label: string;
+    /** The whole control: no draft to send yet. */
+    disabled: boolean;
+    /** Gmail alone: a send in flight, or no one to send it to. */
+    gmailDisabled: boolean;
+    gmailTitle?: string;
+    mailApp: { name: string; icon?: string } | null;
+    onGmail: () => void;
+    onOutlook: () => void;
+    onMailApp: () => void;
+}> = ({ label, disabled, gmailDisabled, gmailTitle, mailApp, onGmail, onOutlook, onMailApp }) => {
+    const t = useT();
+    const isLight = useResolvedTheme() === 'light';
+    const [open, setOpen] = useState(false);
+    const [closing, setClosing] = useState(false);
+    const rootRef = useRef<HTMLDivElement>(null);
+    const lens = useLensTracking<HTMLDivElement>();
+    const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+    const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const menuId = useId();
+    // The button itself is Gmail, so the menu holds the others: Outlook, and the
+    // computer's mail app by the name and icon the system reports. Until it has
+    // reported (or when it cannot), macOS shows Mail, its own default, and
+    // Windows a plain "Mail app".
+    const items: { key: string; label: string; icon: React.ReactNode; run: () => void }[] = [
+        { key: 'outlook', label: 'Outlook', icon: <MicrosoftMark size={14} />, run: onOutlook },
+        {
+            key: 'mail-app',
+            label: mailApp?.name || (isMac ? 'Mail' : t('Mail app')),
+            icon: mailApp?.icon
+                ? <img src={mailApp.icon} alt="" width={16} height={16} className="shrink-0" draggable={false} />
+                : isMac ? <AppleMailMark /> : <Mail className="w-[15px] h-[15px] text-text-secondary" aria-hidden="true" />,
+            run: onMailApp,
+        },
+    ];
+
+    const close = (refocus: boolean) => {
+        setOpen(false);
+        setClosing(true);
+        clearTimeout(closeTimer.current);
+        closeTimer.current = setTimeout(() => setClosing(false), TONE_MENU_CLOSE_MS);
+        if (refocus) rootRef.current?.querySelector<HTMLButtonElement>('.mn-fu-send-more')?.focus({ preventScroll: true });
+    };
+    const openMenu = () => {
+        clearTimeout(closeTimer.current);
+        setClosing(false);
+        setOpen(true);
+    };
+    useEffect(() => () => clearTimeout(closeTimer.current), []);
+    useEffect(() => { if (disabled && open) close(false); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [disabled]);
+    // Opening moves focus onto the first app that can send, so the arrow keys work at once.
+    useEffect(() => {
+        if (!open) return;
+        itemRefs.current.find((el) => el && !el.disabled)?.focus({ preventScroll: true });
+        const onDown = (e: MouseEvent) => {
+            if (rootRef.current && !rootRef.current.contains(e.target as Node)) close(false);
+        };
+        document.addEventListener('mousedown', onDown);
+        return () => document.removeEventListener('mousedown', onDown);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open]);
+
+    const onMenuKeyDown = (e: React.KeyboardEvent) => {
+        const els = itemRefs.current.filter((el): el is HTMLButtonElement => !!el && !el.disabled);
+        const at = els.indexOf(document.activeElement as HTMLButtonElement);
+        const go = (i: number) => { e.preventDefault(); els[(i + els.length) % els.length]?.focus(); };
+        if (e.key === 'ArrowDown') go(at + 1);
+        else if (e.key === 'ArrowUp') go(at - 1);
+        else if (e.key === 'Home') go(0);
+        else if (e.key === 'End') go(els.length - 1);
+        else if (e.key === 'Escape') { e.preventDefault(); close(true); }
+        else if (e.key === 'Tab') close(false);
+    };
+
+    return (
+        <div ref={rootRef} className="relative">
+            {/* One pill in the Usage question's lavender glass (.lg-lavender, re-tinted
+                for dark in .mn-fu-send as .lg-bubble-lavender is): two click areas in
+                it, the send and the ^, with no line between them. A div wearing the
+                glass classes, since a button cannot hold two buttons; the lens follows
+                the pointer as on any LiquidGlassButton. */}
+            <div
+                ref={lens.ref}
+                onPointerMove={lens.onPointerMove}
+                className="lg-button lg-lavender lg-sm mn-fu-send"
+                aria-disabled={disabled || undefined}
+            >
+                <span className="lg-lens" aria-hidden="true" />
+                <span className="lg-content">
+                    <button
+                        type="button"
+                        className="mn-fu-send-main"
+                        onClick={onGmail}
+                        onFocus={lens.onFocus}
+                        disabled={disabled || gmailDisabled}
+                        title={gmailTitle}
                     >
-                        <span key={bodyKey} className={`block${bodyKey > 0 ? ' mn-fu-body-in' : ''}`}>
-                            {body}
-                            {onEmail && <span aria-hidden="true" className="mn-fu-gmail-room" />}
-                        </span>
-                    </pre>
-                    )}
-                    {onEmail && (
-                        <div ref={gmailRef} className="mn-fu-gmail">
-                            <LiquidGlassButton
-                                variant="clear"
-                                className="lg-sm"
-                                onClick={onEmail}
-                                aria-label={t('Open the email in Gmail')}
-                                icon={<Mail className="w-3.5 h-3.5" strokeWidth={2.2} />}
-                            >
-                                {t('Open in Gmail')}
-                            </LiquidGlassButton>
-                        </div>
-                    )}
-                </div>
+                        <GoogleG size={13} />
+                        <span>{label}</span>
+                    </button>
+                    <button
+                        type="button"
+                        className="mn-fu-send-more"
+                        disabled={disabled}
+                        onClick={() => (open ? close(false) : openMenu())}
+                        onFocus={lens.onFocus}
+                        onKeyDown={(e) => { if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !open) { e.preventDefault(); openMenu(); } }}
+                        aria-label={t('Other ways to send')}
+                        title={t('Other ways to send')}
+                        aria-haspopup="menu"
+                        aria-expanded={open}
+                        aria-controls={menuId}
+                    >
+                        {/* "^" while closed (the menu opens upward), "v" while open, as the
+                            tone's; its motion (flip, hover lift, press) is in index.css. */}
+                        <ChevronDown
+                            className="w-3.5 h-3.5"
+                            strokeWidth={2.5}
+                            style={{ transform: `scaleY(${open ? 1 : -1})` }}
+                        />
+                    </button>
+                </span>
             </div>
-            {footnote && <p className="t-stagger-line mt-2 px-1 text-[12px] text-text-tertiary">{footnote}</p>}
+            <div
+                id={menuId}
+                role="menu"
+                aria-label={t('Other ways to send')}
+                data-origin="bottom-right"
+                inert={!open}
+                onKeyDown={onMenuKeyDown}
+                className={`t-dropdown${open ? ' is-open' : closing ? ' is-closing' : ''} absolute right-0 bottom-full mb-1.5 min-w-[168px] z-50 p-1 rounded-[12px] border ${isLight
+                    ? 'bg-white border-black/[0.08] shadow-[0_8px_28px_rgba(0,0,0,0.14),0_1px_2px_rgba(0,0,0,0.06)]'
+                    : 'bg-[#2C2C2E] border-white/[0.08] shadow-[0_8px_28px_rgba(0,0,0,0.55),0_1px_2px_rgba(0,0,0,0.3)]'}`}
+            >
+                {items.map((item, i) => (
+                    <button
+                        key={item.key}
+                        ref={(el) => { itemRefs.current[i] = el; }}
+                        type="button"
+                        role="menuitem"
+                        tabIndex={-1}
+                        onClick={() => { close(true); item.run(); }}
+                        className={`w-full h-8 flex items-center gap-2.5 px-2.5 rounded-[8px] text-left text-[13px] font-medium whitespace-nowrap text-text-primary focus-visible:outline-none transition-colors disabled:opacity-40 ${isLight
+                            ? 'hover:bg-black/[0.05] focus-visible:bg-black/[0.05]'
+                            : 'hover:bg-white/[0.07] focus-visible:bg-white/[0.07]'} disabled:hover:bg-transparent`}
+                    >
+                        <span className="grid place-items-center w-4 h-4 shrink-0">{item.icon}</span>
+                        <span className="truncate">{item.label}</span>
+                    </button>
+                ))}
+            </div>
         </div>
     );
 };
@@ -1900,7 +1873,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const mainRef = useRef<HTMLElement | null>(null);
     const transcriptListRef = useRef<HTMLDivElement | null>(null);
     const [query, setQuery] = useState('');
-    const [isCopied, setIsCopied] = useState(false);
     const [isChatOpen, setIsChatOpen] = useState(false);
     // Usage tab: the screenshot preview being viewed full size (UsageImageViewer).
     const [imageViewer, setImageViewer] = useState<{ images: string[]; index: number } | null>(null);
@@ -1992,29 +1964,42 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     // An email: plain text on screen, in Copy and in the Gmail link, so model markdown (**Problem:**) is stripped once, here.
     const followUpBody = plainEmailText(typeof rawFollowUp === 'string' ? rawFollowUp : (rawFollowUp?.body || ''));
     const followUpSubject = typeof rawFollowUp === 'string' ? undefined : rawFollowUp?.subject;
-    const followUpDraftTone = (typeof rawFollowUp === 'string' ? undefined : rawFollowUp?.tone) as 'professional' | 'warm' | 'concise' | 'friendly' | undefined;
+    const followUpDraftTone = (typeof rawFollowUp === 'string' ? undefined : rawFollowUp?.tone) as FollowUpTone | undefined;
     const hasFollowUpDraft = followUpBody.trim().length > 0;
-    // Written in the user's own voice (Settings › Connections › Follow-ups in your style).
+    // Written in the user's own voice: the samples of the mode this meeting ran
+    // under (Modes Manager, "Follow-ups in your style"). No switch: a mode with
+    // samples uses them, so there is nothing here to turn off.
     const followUpStyled = typeof rawFollowUp === 'object' && rawFollowUp?.styled === true;
 
     // Regenerate / evidence-jump / speaker-rename UI state.
     const [isRegenerating, setIsRegenerating] = useState(false);
     const [isRegeneratingFollowUp, setIsRegeneratingFollowUp] = useState(false);
     // Selected follow-up tone, shown in the selector. Seeded from the saved draft's tone.
-    const [followUpTone, setFollowUpTone] = useState<'professional' | 'warm' | 'concise' | 'friendly'>(followUpDraftTone || 'professional');
-    // Local "Copied!" confirmation for the follow-up copy button.
-    const [followUpCopied, setFollowUpCopied] = useState(false);
+    const [followUpTone, setFollowUpTone] = useState<FollowUpTone>(followUpDraftTone || 'professional');
+    // Whether the mode this meeting ran under has writing samples (Modes Manager):
+    // then "Your style" is in the tone list, and the first draft is written in it.
+    const followUpStyleModeId: string | undefined = (meeting.detailedSummary as any)?.mode?.selectedModeId;
+    const [modeHasStyle, setModeHasStyle] = useState(false);
+    useEffect(() => {
+        let live = true;
+        setModeHasStyle(false);
+        const api = (window.electronAPI as any)?.meetingOutputs;
+        if (!followUpStyleModeId || !api?.getWritingStyle) return;
+        api.getWritingStyle(followUpStyleModeId)
+            .then((st: { sampleCount?: number } | null) => { if (live) setModeHasStyle(!!st && (st.sampleCount || 0) > 0); })
+            .catch(() => { /* no style: the preset tones only */ });
+        return () => { live = false; };
+    }, [followUpStyleModeId]);
     // The last Generate / Regenerate of the draft came back without one.
     const [followUpFailed, setFollowUpFailed] = useState(false);
-    // The first draft's entrance. 'armed' by a Generate click on a meeting with no
-    // draft: once the draft lands, the hint fades out in place (FOLLOW_UP_HIDE_MS),
-    // then 'reveal' mounts the draft to play its staggered rise. A draft already
+    // The first draft's entrance. 'armed' when the first draft is asked for: once
+    // it lands, the "Writing…" line fades out (FOLLOW_UP_HIDE_MS), then 'reveal'
+    // brings Subject and the message in (.mn-fu-land). A draft already
     // saved when the notes open never arms, so it never animates.
     const [followUpEntrance, setFollowUpEntrance] = useState<'none' | 'armed' | 'reveal'>('none');
     // Bumped when a Regenerate / tone change rewrites an existing draft, so the new
-    // text settles in (FollowUpDraftCard's bodyKey) instead of snapping.
+    // text settles in (the sheet's message is keyed by it) instead of snapping.
     const [followUpBodyKey, setFollowUpBodyKey] = useState(0);
-    const followUpRegenTipId = useId();
     useEffect(() => {
         if (followUpEntrance !== 'armed' || !hasFollowUpDraft) return;
         const id = setTimeout(() => setFollowUpEntrance('reveal'), FOLLOW_UP_HIDE_MS);
@@ -2318,10 +2303,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         return () => { cancelled = true; if (timer) clearTimeout(timer); off?.(); };
     }, [isSummaryGenerating, meeting.id]);
 
-    const copyRecipe = (text: string) => {
-        navigator.clipboard?.writeText(text || '').catch(() => { /* swallow */ });
-    };
-
     const loadNotesVersions = async () => {
         try {
             const list = await window.electronAPI?.getMeetingNotesVersions?.(meeting.id);
@@ -2342,7 +2323,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 // Keep the tone selector in sync with the regenerated draft.
                 const fu = (fresh as Meeting).detailedSummary?.followUpDraft;
                 const tone = typeof fu === 'string' ? undefined : fu?.tone;
-                if (tone === 'professional' || tone === 'warm' || tone === 'concise' || tone === 'friendly') setFollowUpTone(tone);
+                if (tone === 'professional' || tone === 'warm' || tone === 'concise' || tone === 'friendly' || tone === 'your_style') setFollowUpTone(tone);
             }
         } catch { /* swallow */ }
     };
@@ -2444,24 +2425,22 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         } catch { /* swallow */ } finally { setIsRegenerating(false); }
     };
 
-    // ── Editing the follow-up in place ──
-    // The card's subject and body open an editor on click. The edit is saved with
-    // the meeting on blur (Enter in the subject, Cmd/Ctrl+Enter in the body), and
-    // Escape drops it. Copy and Open in Gmail use the text on screen, edited or
-    // not, and tell main it was used: an edited body then becomes a writing sample
-    // for "Follow-ups in your style" (one per meeting, outputs/followUpEdit.ts).
-    // An edit stays pending (on screen, and in Copy / Gmail) until main has saved
-    // it; a failed save keeps it and says so, with a retry (meeting/outputsView.ts).
-    const [fuEditing, setFuEditing] = useState<'subject' | 'body' | null>(null);
+    // ── Editing the follow-up ──
+    // The sheet's Subject and message are fields. An edit is saved with the
+    // meeting on blur and when the sheet closes; Reset drops it. Both send
+    // buttons use the text on screen, edited or not, and tell main it was used:
+    // an edited body then becomes a writing sample for "Follow-ups in your
+    // style" (one per meeting, outputs/followUpEdit.ts). An edit stays pending
+    // (on screen, and in the sends) until main has saved it; a failed save
+    // keeps it and says so, with a retry (meeting/outputsView.ts).
     const [fuText, setFuText] = useState<FollowUpText | null>(null);
     const [fuSaveError, setFuSaveError] = useState<string | null>(null);
-    // What the card shows and Copy / Gmail use: the pending edit, else what is saved.
+    // What the sheet shows and the sends use: the pending edit, else what is saved.
     const fuShownSubject = fuText?.subject ?? followUpSubject ?? '';
     const fuShownBody = fuText?.body ?? followUpBody;
     const followUpText = () => ({ subject: fuShownSubject, body: fuShownBody });
     const saveFollowUp = async (used: boolean) => {
         const pending = fuText;
-        setFuEditing(null);
         const api = window.electronAPI?.meetingOutputs;
         if (!api) return;
         const changes = followUpChanges(pending, { subject: followUpSubject, body: followUpBody });
@@ -2484,47 +2463,73 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         setFuText((cur) => settleFollowUpSave(cur, pending, res).pending);
         setFuSaveError(settleFollowUpSave(null, pending, res).error);
     };
-    const followUpEdit: FollowUpCardEdit | undefined = hasFollowUpDraft ? {
-        editing: fuEditing,
-        subject: fuShownSubject,
-        body: fuShownBody,
-        onStart: (field) => {
-            if (isRegeneratingFollowUp) return;
-            setFuText((cur) => cur ?? { subject: followUpSubject ?? '', body: followUpBody });
-            setFuEditing(field);
-        },
-        onChange: (patch) => setFuText((cur) => ({ subject: cur?.subject ?? followUpSubject ?? '', body: cur?.body ?? followUpBody, ...patch })),
-        onCommit: () => { void saveFollowUp(false); },
-        onCancel: () => { setFuEditing(null); setFuText(null); setFuSaveError(null); },
-    } : undefined;
+    const editFollowUp = (patch: { subject?: string; body?: string }) =>
+        setFuText((cur) => ({ subject: cur?.subject ?? followUpSubject ?? '', body: cur?.body ?? followUpBody, ...patch }));
 
-    const copyFollowUp = () => {
-        const { subject, body } = followUpText();
-        copyRecipe((subject ? `Subject: ${subject}\n\n` : '') + body);
-        void saveFollowUp(true);
-        setFollowUpCopied(true);
-        setTimeout(() => setFollowUpCopied(false), 1500);
-    };
+    // Whether the follow-up sends through Gmail (connected in Settings › Connectors), and how far a send got.
+    const [gmailSend, setGmailSend] = useState<{ connected: boolean; state: 'idle' | 'confirm' | 'sending' | 'sent'; message?: string }>({ connected: false, state: 'idle' });
+    useEffect(() => {
+        let live = true;
+        void window.electronAPI?.connectors?.getGmailStatus?.().then((g) => { if (live && g) setGmailSend((cur) => ({ ...cur, connected: !!g.connected })); }).catch(() => {});
+        return () => { live = false; };
+    }, [meeting.id]);
 
     // The follow-up's recipients: everyone on the meeting's calendar invite.
     const followUpTo = followUpRecipients(meeting?.calendarEvent?.attendees);
+    // The sheet's To line: the invite's people to start with, then whatever is
+    // typed there. Sends go to the addresses in it (comma or space separated).
+    const [fuToDraft, setFuToDraft] = useState<string | null>(null);
+    useEffect(() => { setFuToDraft(null); }, [meeting.id]);
+    const fuToShown = fuToDraft ?? followUpTo.map((r) => r.email).join(', ');
+    const fuToList = () => fuToShown.split(/[,;\s]+/).filter((a) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a));
     // Gmail's compose window, addressed and filled in, in the calendar's own
     // Google account (followUpRecipients.mjs says why Gmail over mailto).
     const emailFollowUp = async () => {
+        // Gmail connected (Settings › Connectors): send from the user's own Gmail.
+        // Two presses, so a stray click never emails a client: the first asks,
+        // the second sends what is on screen.
+        if (gmailSend.connected) {
+            if (gmailSend.state === 'sending') return;
+            if (gmailSend.state !== 'confirm') {
+                setGmailSend((g) => ({ ...g, state: 'confirm', message: undefined }));
+                window.setTimeout(() => setGmailSend((g) => (g.state === 'confirm' ? { ...g, state: 'idle' } : g)), 5000);
+                return;
+            }
+            const { subject, body } = followUpText();
+            setGmailSend((g) => ({ ...g, state: 'sending' }));
+            void saveFollowUp(true);
+            const res = await window.electronAPI?.connectors?.sendGmailFollowUp({ meetingId: meeting.id, to: fuToList(), subject, body }).catch(() => undefined);
+            setGmailSend((g) => (res?.ok
+                ? { ...g, state: 'sent', message: undefined }
+                : { ...g, state: 'idle', message: res?.message || 'The email was not sent. Try again.' }));
+            return;
+        }
         // Read before the await: the text on screen when the button was pressed.
         const { subject, body } = followUpText();
         void saveFollowUp(true);
         const status = await window.electronAPI?.getCalendarStatus?.().catch(() => null);
         const url = gmailComposeUrl({
-            to: followUpTo.map((r) => r.email),
+            to: fuToList(),
             subject,
             body,
             account: status?.connected ? status.email : undefined,
         });
         await window.electronAPI?.openExternal?.(url);
     };
+    // "Send with default client": the system's mail app (Mail, Outlook…), filled in.
+    const mailFollowUp = async () => {
+        const { subject, body } = followUpText();
+        void saveFollowUp(true);
+        await window.electronAPI?.openMailto?.({ to: fuToList().join(','), subject, body }).catch(() => undefined);
+    };
+    // Outlook on the web's compose window, filled in (the send menu).
+    const outlookFollowUp = async () => {
+        const { subject, body } = followUpText();
+        void saveFollowUp(true);
+        await window.electronAPI?.openExternal?.(outlookComposeUrl({ to: fuToList(), subject, body }));
+    };
 
-    const handleRegenerateFollowUp = async (tone?: 'professional' | 'warm' | 'concise' | 'friendly') => {
+    const handleRegenerateFollowUp = async (tone?: FollowUpTone) => {
         if (isRegeneratingFollowUp || !window.electronAPI?.regenerateMeetingFollowUp) return;
         setIsRegeneratingFollowUp(true);
         setFollowUpFailed(false);
@@ -2539,6 +2544,34 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
             }
             else { setFollowUpFailed(true); setFollowUpEntrance('none'); }
         } catch { setFollowUpFailed(true); setFollowUpEntrance('none'); } finally { setIsRegeneratingFollowUp(false); }
+    };
+
+    // The header's Follow-up email button. One press is the email: with no draft
+    // yet it opens the dialog and starts writing one (in "Your style" or the mode's
+    // tone, as Generate did), and the dialog shows it being written.
+    const [followUpOpen, setFollowUpOpen] = useState(false);
+    // The computer's own mail app by name and icon, for the send menu; read once,
+    // the first time the sheet opens.
+    const [mailApp, setMailApp] = useState<{ name: string; icon?: string } | null>(null);
+    const mailAppAsked = useRef(false);
+    useEffect(() => {
+        if (!followUpOpen || mailAppAsked.current) return;
+        mailAppAsked.current = true;
+        void window.electronAPI?.getMailAppInfo?.().then((info) => { if (info?.name) setMailApp(info); }).catch(() => {});
+    }, [followUpOpen]);
+    const openFollowUp = () => {
+        setFollowUpOpen(true);
+        if (!hasFollowUpDraft && !isRegeneratingFollowUp) void handleRegenerateFollowUp();
+    };
+    // Regenerate: the email written again from the notes, in the tone on the picker
+    // (without it a rewrite fell back to the default and lost a picked tone). It
+    // drops unsaved edits and puts the invite's people back on the To line.
+    const resetFollowUp = () => {
+        if (isRegeneratingFollowUp) return;
+        setFuText(null);
+        setFuSaveError(null);
+        setFuToDraft(null);
+        void handleRegenerateFollowUp(followUpTone);
     };
 
     const handleSaveSpeakerLabel = async (speakerId: string, name: string) => {
@@ -2706,7 +2739,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         }
     };
 
-    const handleCopy = async () => {
+    // Share › Copy: the tab you are on, as text. True once it is on the clipboard
+    // (the Share button then reads "Copied" for a moment).
+    const handleCopy = async (): Promise<boolean> => {
         let textToCopy = '';
 
         if (activeTab === 'summary' && meeting.detailedSummary) {
@@ -2761,14 +2796,14 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
             textToCopy = meeting.usage.map(u => `Q: ${u.question || ''}\nA: ${usageAnswerText(u.answer)}`).join('\n\n');
         }
 
-        if (!textToCopy) return;
+        if (!textToCopy) return false;
 
         try {
             await navigator.clipboard.writeText(textToCopy);
-            setIsCopied(true);
-            setTimeout(() => setIsCopied(false), 2000);
+            return true;
         } catch (err) {
             console.error('Failed to copy content:', err);
+            return false;
         }
     };
 
@@ -2929,8 +2964,23 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                             </div>
                         </div>
 
-                        {/* Moved Actions: Follow-up & Share (REMOVED per user request) */}
-                        {/* <div className="flex items-center gap-2 mt-1"> ... </div> */}
+                        {/* Follow-up email — a meeting-level action, so it sits by the title
+                            rather than at the foot of the notes. It opens the draft in a dialog
+                            (FollowUpDialog below) and writes one first if there is none yet. */}
+                        {meeting.detailedSummary && (
+                            <div className="shrink-0">
+                                <LiquidGlassButton
+                                    variant="clear"
+                                    className="lg-sm mn-generate"
+                                    onClick={openFollowUp}
+                                    disabled={isSummaryGenerating}
+                                    aria-haspopup="dialog"
+                                    icon={<Mail className="w-3.5 h-3.5" strokeWidth={2.2} />}
+                                >
+                                    {t('Follow-up email')}
+                                </LiquidGlassButton>
+                            </div>
+                        )}
                     </div>
 
                     {/* Tabs */}
@@ -2974,35 +3024,20 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                             the pointer) and which swaps in place when the tab changes. opacity
                             joins the transition so the disabled dim fades out as notes land. */}
                         {(() => {
-                            // One label on every tab: what it copies is the tab you are on.
-                            const copyLabel = t('Copy');
                             return (
                                 <div className="flex items-center gap-5 min-w-0">
                                     {/* Which calendar event this was: linked, or offered when a calendar
-                                        is connected. A meeting-level action, so it sits with Copy rather
+                                        is connected. A meeting-level action, so it sits with Share rather
                                         than on the date line. See meeting/CalendarLinkChip. */}
-                                    {/* Which folders it is in, and its tags (organise/MeetingOrganiseMenu). */}
-                                    <OrganiseChip meetingId={meeting.id} isLight={isLight} />
                                     <CalendarLinkChip meetingId={meeting.id} meetingTitle={meeting.title} event={meeting.calendarEvent} isLight={isLight} onChanged={reloadMeeting} />
-                                    {/* Export and send: PDF, a shareable file, Slack, Notion, CRM (meeting/ShareMenu). */}
+                                    {/* Copy (the tab you are on), export and send: PDF, a shareable file,
+                                        a link, Slack, Notion, CRM (meeting/ShareMenu). */}
                                     <ShareMenu
                                         meetingId={meeting.id}
                                         disabled={isSummaryGenerating}
                                         hasTranscript={(meeting.transcript?.length ?? 0) > 0}
+                                        onCopy={handleCopy}
                                     />
-                                    <button
-                                        onClick={handleCopy}
-                                        disabled={activeTab === 'summary' && isSummaryGenerating}
-                                        className="shrink-0 flex items-center gap-2 text-xs font-medium text-text-secondary hover:text-text-primary transition-[color,opacity] disabled:opacity-40 disabled:cursor-default disabled:hover:text-text-secondary"
-                                    >
-                                        <span className="t-icon-swap w-3.5 h-3.5" data-state={isCopied ? 'b' : 'a'} aria-hidden="true">
-                                            <Copy className="t-icon w-3.5 h-3.5" data-icon="a" size={14} />
-                                            <Check className="t-icon w-3.5 h-3.5 text-emerald-500" data-icon="b" size={14} />
-                                        </span>
-                                        <SwapText value={isCopied ? 'copied' : 'copy'} sizers={[copyLabel, t('Copied')]}>
-                                            {isCopied ? t('Copied') : copyLabel}
-                                        </SwapText>
-                                    </button>
                                 </div>
                             );
                         })()}
@@ -3485,135 +3520,6 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                     </section>
                                 )}
 
-                                {/* V3 follow-up draft — written on demand: notes save without one and
-                                    offer Generate. Once written: a mail card with Copy, plus tone and
-                                    Regenerate in the header. Motion: .mn-followup in index.css. */}
-                                {isV3Summary && (() => { const h = revealBlock(); const hasFollowUp = hasFollowUpDraft; return (
-                                    <section className="mb-8 mn-followup">
-                                        <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
-                                            <h2 className={`text-lg font-semibold text-text-primary${h.cls}`} style={h.style} data-rw={h['data-rw']}>{t('Follow-up email')}</h2>
-                                            {/* One slot, two states that cross-fade in place: Generate before a
-                                                draft exists, the tone + Regenerate group after. */}
-                                            <div className="mn-fu-actions">
-                                                <div data-active={!hasFollowUp} inert={hasFollowUp}>
-                                                    {/* Generate — the only thing that writes a first draft. No tone
-                                                        argument: the mode's natural tone, changeable once it exists.
-                                                        Liquid Glass, the clear pill of the notes' action row with its
-                                                        ice-blue hover (.mn-generate, index.css); press feedback is the
-                                                        glass's own. While writing it stays lit and shimmers
-                                                        "Generating…" rather than dimming (aria-disabled, not disabled). */}
-                                                    <LiquidGlassButton
-                                                        variant="clear"
-                                                        className="lg-sm mn-generate"
-                                                        onClick={() => { if (!isRegeneratingFollowUp) handleRegenerateFollowUp(); }}
-                                                        aria-disabled={isRegeneratingFollowUp || undefined}
-                                                        aria-busy={isRegeneratingFollowUp}
-                                                        icon={<SquarePen className="w-3.5 h-3.5" strokeWidth={2.2} />}
-                                                    >
-                                                        {/* Sized to the label on screen: "Generate" at rest, and the pill
-                                                            grows into "Generating…" as the text swaps (AutoWidth), rather
-                                                            than reserving that width after "Generate" all the time. */}
-                                                        <AutoWidth>
-                                                            <SwapText value={isRegeneratingFollowUp ? 'busy' : 'idle'} sizers={[isRegeneratingFollowUp ? t('Generating…') : t('Generate')]}>
-                                                                {isRegeneratingFollowUp
-                                                                    ? <span className="t-shimmer" data-text={t('Generating…')}>{t('Generating…')}</span>
-                                                                    : t('Generate')}
-                                                            </SwapText>
-                                                        </AutoWidth>
-                                                    </LiquidGlassButton>
-                                                </div>
-                                                <div data-active={hasFollowUp} inert={!hasFollowUp} className="flex items-center gap-2">
-                                                    <ToneDropdown
-                                                        followUpTone={followUpTone}
-                                                        isRegeneratingFollowUp={isRegeneratingFollowUp}
-                                                        onSelect={(tone) => { setFollowUpTone(tone); handleRegenerateFollowUp(tone); }}
-                                                    />
-                                                    {/* Regenerate — a round clear-glass button with the committed .t-tt
-                                                        tooltip; the arrows turn on hover and spin while rewriting. While
-                                                        rewriting it stays lit (aria-disabled, not disabled), like Generate
-                                                        (.mn-fu-regen, index.css). */}
-                                                    <span className="t-tt-wrap">
-                                                        <LiquidGlassButton
-                                                            variant="clear"
-                                                            className="lg-sm mn-fu-regen t-tt-trigger"
-                                                            onClick={() => { if (!isRegeneratingFollowUp) handleRegenerateFollowUp(); }}
-                                                            aria-disabled={isRegeneratingFollowUp || undefined}
-                                                            aria-busy={isRegeneratingFollowUp}
-                                                            aria-label={isRegeneratingFollowUp ? t('Regenerating…') : t('Regenerate')}
-                                                            aria-describedby={followUpRegenTipId}
-                                                        >
-                                                            <span className="mn-fu-regen-turn flex" aria-hidden="true">
-                                                                <RefreshCw
-                                                                    className={`w-3.5 h-3.5 ${isRegeneratingFollowUp && !prefersReducedMotion ? 'animate-spin' : ''}`}
-                                                                    strokeWidth={2.2}
-                                                                />
-                                                            </span>
-                                                        </LiquidGlassButton>
-                                                        <span className="t-tt" id={followUpRegenTipId} role="tooltip">{t('Regenerate')}</span>
-                                                    </span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        {/* Transitions.dev "Texts reveal" (.t-stagger). Nothing moves while the
-                                            draft is being written — only the button says so. When a first draft
-                                            lands, the hint fades out in place, then the card rises in
-                                            (FollowUpDraftCard). Only the visible block takes part in the notes'
-                                            reveal cascade. */}
-                                        {(() => {
-                                            const hintHiding = hasFollowUp && followUpEntrance === 'armed';
-                                            const hintText = followUpFailed ? t("Couldn't write the email. Try again.") : t('Write a follow-up email from these notes when you need one.');
-                                            return !hasFollowUp || hintHiding ? (
-                                                <div className={`t-stagger${hintHiding ? ' is-hiding' : ' is-shown'}`}>
-                                                    <p className="t-stagger-line text-[12.5px] text-text-tertiary leading-relaxed">{revealWords(hintText)}</p>
-                                                </div>
-                                            ) : (
-                                                <FollowUpDraftCard
-                                                    reveal={followUpEntrance === 'reveal'}
-                                                    subjectLabel={followUpSubject ? revealWords(t('Subject:')) : undefined}
-                                                    subject={followUpSubject ? (fuText ? fuShownSubject : revealWords(followUpSubject)) : undefined}
-                                                    subjectText={followUpSubject ? fuShownSubject : undefined}
-                                                    body={fuText ? fuShownBody : revealWords(followUpBody)}
-                                                    bodyKey={followUpBodyKey}
-                                                    busy={isRegeneratingFollowUp}
-                                                    copied={followUpCopied}
-                                                    onCopy={copyFollowUp}
-                                                    isLight={isLight}
-                                                    recipients={followUpTo}
-                                                    onEmail={followUpTo.length > 0 ? emailFollowUp : undefined}
-                                                    edit={followUpEdit}
-                                                    footnote={fuSaveError ? (
-                                                        <>
-                                                            <span role="alert">{t(fuSaveError)}</span>{' '}
-                                                            <button
-                                                                type="button"
-                                                                className="font-medium text-text-secondary hover:text-text-primary transition-colors"
-                                                                onClick={() => { void saveFollowUp(false); }}
-                                                            >
-                                                                {t('Try again')}
-                                                            </button>
-                                                        </>
-                                                    ) : followUpStyled ? (
-                                                        <>
-                                                            {t('Written in your style')}{' · '}
-                                                            <button
-                                                                type="button"
-                                                                className="font-medium text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
-                                                                disabled={isRegeneratingFollowUp}
-                                                                onClick={async () => {
-                                                                    await window.electronAPI?.meetingOutputs?.setWritingStyleEnabled(false).catch(() => undefined);
-                                                                    handleRegenerateFollowUp(followUpTone);
-                                                                }}
-                                                            >
-                                                                {t('Turn off')}
-                                                            </button>
-                                                        </>
-                                                    ) : undefined}
-                                                />
-                                            );
-                                        })()}
-                                    </section>
-                                ); })()}
-
                                 {/* Action Items - Only show if there are items */}
                                 {!isV3Summary && meeting.detailedSummary?.actionItems && meeting.detailedSummary.actionItems.length > 0 && (
                                     <section className="mb-8">
@@ -3747,26 +3653,6 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                     `coachingInsights` type above is kept so already-saved notes
                                     still parse; restore this <section> from git history if the
                                     flag is ever flipped back on. */}
-
-                                {/* Phase 7 — Follow-up email draft (legacy V2: string). V3 renders its own above. */}
-                                {!isV3Summary && typeof meeting.detailedSummary?.followUpDraft === 'string' && meeting.detailedSummary.followUpDraft.trim() && (
-                                    <section className="mb-8">
-                                        <div className="flex items-center justify-between mb-3">
-                                            <h2 className="text-lg font-semibold text-text-primary">{t('Follow-up Draft')}</h2>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    const fu = meeting.detailedSummary?.followUpDraft;
-                                                    navigator.clipboard?.writeText(typeof fu === 'string' ? fu : '').catch(() => { /* swallow */ });
-                                                }}
-                                                className="text-[11px] px-2 py-1 rounded-md bg-white/5 hover:bg-white/10 text-text-secondary border border-white/10 transition-colors"
-                                            >
-                                                {t('Copy')}
-                                            </button>
-                                        </div>
-                                        <pre className="text-[12.5px] text-text-secondary leading-relaxed whitespace-pre-wrap font-sans select-text cursor-text p-3 rounded-[10px] border border-white/10 bg-white/[0.02]">{meeting.detailedSummary.followUpDraft}</pre>
-                                    </section>
-                                )}
 
                                 {/* Mode-specific sections (when active mode has a notes template) */}
                                 {!isV3Summary && meeting.detailedSummary?.sections && meeting.detailedSummary.sections.length > 0 && (
@@ -4102,6 +3988,185 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                     setSubmittedQuery(newQuery);
                 }}
             />
+
+            {/* Follow-up email, opened from the header button: a compose sheet in the
+                notes page's language, on the toasters' card size (SupportToaster,
+                UpdateModal, BrowserExtensionToaster: 600 wide, 440 tall, radius 20,
+                40px side insets). A sheet of paper lifted off the page (white on the
+                grey page, a step lighter in dark), so it never reads as more page; a
+                plain title and a round close; To and Subject
+                as an envelope between edge-to-edge hairlines; the message, which
+                scrolls inside the fixed height; then one toolbar: the tone and two icon tools on the left,
+                and the send on the right, Gmail with a ^ for the other mail apps. A Radix portal inside the window (as ConfirmDialog and
+                ShareMenu's dialogs), so it stays under the window's content protection;
+                .mn-followup carries the motion variables, since the portal sits outside
+                .mn-root, and .mn-fu-sheet is the sheet's own motion (index.css). Edits
+                save on blur and when the sheet closes. Escape first closes the tone
+                menu, then the sheet. */}
+            {meeting.detailedSummary && (() => {
+                const rule = isLight ? 'border-black/[0.07]' : 'border-white/[0.07]';
+                // The toolbar's icon tools (and the close): no fill behind them, the glyph
+                // brightens, and Regenerate's arrows turn on hover (.mn-fu-tool, index.css).
+                const tool = `mn-fu-tool grid place-items-center w-8 h-8 rounded-lg text-text-tertiary hover:text-text-primary transition-[color,opacity] duration-150 disabled:opacity-40 disabled:hover:text-text-tertiary`;
+                const writingFirst = !hasFollowUpDraft || followUpEntrance === 'armed';
+                const toCount = fuToList().length;
+                const gmailLabel = !gmailSend.connected ? 'Send with Gmail'
+                    : gmailSend.state === 'confirm' ? `Send to ${toCount === 1 ? '1 person' : `${toCount} people`}?`
+                    : gmailSend.state === 'sending' ? 'Sending…'
+                    : gmailSend.state === 'sent' ? 'Sent' : 'Send with Gmail';
+                const note = gmailSend.message ? <span role="alert">{t(gmailSend.message)}</span>
+                    : fuSaveError ? (
+                        <>
+                            <span role="alert">{t(fuSaveError)}</span>{' '}
+                            <button type="button" className="font-medium text-text-secondary hover:text-text-primary transition-colors" onClick={() => { void saveFollowUp(false); }}>
+                                {t('Try again')}
+                            </button>
+                        </>
+                    ) : followUpStyled && hasFollowUpDraft && !writingFirst ? t('Written in your style') : null;
+                return (
+                <DialogPrimitive.Root
+                    open={followUpOpen}
+                    onOpenChange={(open) => {
+                        if (!open && fuText) void saveFollowUp(false);
+                        // A landed first draft has played its entrance; reopening shows it at rest.
+                        if (!open && followUpEntrance === 'reveal') setFollowUpEntrance('none');
+                        setFollowUpOpen(open);
+                    }}
+                >
+                    <DialogPrimitive.Portal>
+                        <DialogPrimitive.Overlay className={`mn-fu-dim fixed inset-0 ${isLight ? 'bg-black/[0.16]' : 'bg-black/55'}`} style={{ zIndex: FOLLOW_UP_DIALOG_LAYER }} />
+                        <DialogPrimitive.Content
+                            aria-describedby={undefined}
+                            onEscapeKeyDown={(e) => { if ((e.target as HTMLElement | null)?.closest?.('[role="menu"]')) e.preventDefault(); }}
+                            className={`mn-followup mn-fu-sheet fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] max-w-[92vw] h-[min(440px,86vh)] flex flex-col rounded-[20px] border outline-none ${isLight
+                                ? 'bg-white border-black/[0.06] shadow-[0_24px_70px_rgba(0,0,0,0.16),0_2px_8px_rgba(0,0,0,0.05)]'
+                                : 'bg-[#1C1C1E] border-white/[0.08] shadow-[0_24px_70px_rgba(0,0,0,0.6),0_2px_8px_rgba(0,0,0,0.35)]'}`}
+                            style={{ zIndex: FOLLOW_UP_DIALOG_LAYER }}
+                        >
+                            {/* Title and close, in the row (an animating
+                                row painted over a floated close button and swallowed its clicks). */}
+                            {/* Centred in its band (as much room above the title as below it,
+                                down to the To line), and the X's glyph ends on the same 40px
+                                inset the title starts on: the 28px button holds a 15px glyph,
+                                6.5px in from its edge, so the button sits 33.5px in. */}
+                            <div className="mn-fu-row shrink-0 flex items-center justify-between gap-4 h-[68px] pl-10 pr-[33.5px]" style={{ '--i': 0 } as React.CSSProperties}>
+                                <DialogPrimitive.Title className="min-w-0 text-[15px] leading-7 font-semibold tracking-[-0.01em] text-text-primary">{t('Follow-up email')}</DialogPrimitive.Title>
+                                <DialogPrimitive.Close aria-label={t('Close')} className={`${tool} rounded-full w-7 h-7 text-text-tertiary`}>
+                                    <X size={15} strokeWidth={2.2} />
+                                </DialogPrimitive.Close>
+                            </div>
+
+                            <label className={`mn-fu-row flex items-center gap-3 h-11 shrink-0 px-10 border-t ${rule}`} style={{ '--i': 1 } as React.CSSProperties}>
+                                <span className="w-[52px] shrink-0 text-[13px] text-text-tertiary">{t('To')}</span>
+                                <input
+                                    type="text"
+                                    value={fuToShown}
+                                    onChange={(e) => setFuToDraft(e.target.value)}
+                                    placeholder="name@example.com"
+                                    spellCheck={false}
+                                    autoComplete="off"
+                                    className="min-w-0 flex-1 bg-transparent p-0 border-0 outline-none text-[13px] text-text-primary placeholder:text-text-tertiary/70"
+                                />
+                            </label>
+                            <label className={`mn-fu-row flex items-center gap-3 h-11 shrink-0 px-10 border-y ${rule}`} style={{ '--i': 2 } as React.CSSProperties}>
+                                <span className="w-[52px] shrink-0 text-[13px] text-text-tertiary">{t('Subject')}</span>
+                                <input
+                                    type="text"
+                                    value={writingFirst ? '' : fuShownSubject}
+                                    disabled={writingFirst}
+                                    readOnly={isRegeneratingFollowUp}
+                                    onChange={(e) => editFollowUp({ subject: e.target.value })}
+                                    onBlur={() => { if (fuText) void saveFollowUp(false); }}
+                                    spellCheck
+                                    className={`min-w-0 flex-1 bg-transparent p-0 border-0 outline-none text-[13px] font-semibold text-text-primary transition-opacity ${isRegeneratingFollowUp && hasFollowUpDraft ? 'opacity-50' : ''}${followUpEntrance === 'reveal' ? ' mn-fu-land' : ''}`}
+                                />
+                            </label>
+
+                            {/* The message, sized to its text (field-sizing) and at least the
+                                space left, so a click anywhere in it writes; a long one scrolls
+                                inside the card's fixed height. While a first draft is written
+                                the space says so (the shimmer), then fades; the message rises in.
+                                A rewrite dims what is there, then the new text settles in. */}
+                            <div className="mn-fu-row custom-scrollbar relative min-h-0 flex-auto overflow-y-auto" style={{ '--i': 3 } as React.CSSProperties}>
+                                {writingFirst ? (
+                                    <div className={`px-10 pt-4 text-[14px] leading-[1.7] text-text-tertiary${hasFollowUpDraft ? ' mn-fu-writing-out' : ''}`}>
+                                        {followUpFailed ? (
+                                            <p>
+                                                {t("Couldn't write the email.")}{' '}
+                                                <button type="button" className="font-medium text-text-secondary hover:text-text-primary transition-colors" onClick={() => { void handleRegenerateFollowUp(); }}>
+                                                    {t('Try again')}
+                                                </button>
+                                            </p>
+                                        ) : isRegeneratingFollowUp || hasFollowUpDraft ? (
+                                            <p className="t-shimmer" data-text={t('Writing the email from these notes…')}>{t('Writing the email from these notes…')}</p>
+                                        ) : (
+                                            <p>
+                                                <button type="button" className="font-medium text-text-secondary hover:text-text-primary transition-colors" onClick={() => { void handleRegenerateFollowUp(); }}>
+                                                    {t('Write a follow-up email from these notes')}
+                                                </button>
+                                            </p>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <textarea
+                                        key={followUpBodyKey}
+                                        value={fuShownBody}
+                                        readOnly={isRegeneratingFollowUp}
+                                        onChange={(e) => editFollowUp({ body: e.target.value })}
+                                        onBlur={() => { if (fuText) void saveFollowUp(false); }}
+                                        aria-label={t('Follow-up email')}
+                                        spellCheck
+                                        className={`block w-full min-h-full [field-sizing:content] resize-none overflow-hidden bg-transparent px-10 pt-4 pb-4 border-0 outline-none font-sans text-[14px] leading-[1.7] text-text-primary transition-opacity${isRegeneratingFollowUp ? ' opacity-50' : ''}${followUpBodyKey > 0 ? ' mn-fu-body-in' : followUpEntrance === 'reveal' ? ' mn-fu-land' : ''}`}
+                                        style={followUpBodyKey > 0 ? undefined : { '--i': 1 } as React.CSSProperties}
+                                    />
+                                )}
+                            </div>
+                            {note && <p className="shrink-0 px-10 pb-3 text-[12px] text-text-tertiary">{note}</p>}
+
+                            {/* One toolbar: tone and Regenerate on the left; the system's
+                                Gmail as the one filled button, its ^ for every other way to send. */}
+                            <div className={`mn-fu-row shrink-0 flex items-center pl-10 pr-6 py-3 border-t ${rule}`} style={{ '--i': 4 } as React.CSSProperties}>
+                                {hasFollowUpDraft && !writingFirst && (
+                                    <>
+                                        <ToneDropdown
+                                            followUpTone={followUpTone}
+                                            isRegeneratingFollowUp={isRegeneratingFollowUp}
+                                            onSelect={(tone) => { setFollowUpTone(tone); setFuText(null); handleRegenerateFollowUp(tone); }}
+                                            offerYourStyle={modeHasStyle}
+                                        />
+                                        {/* 20px from the tone's chevrons to the glyph, which sits 8.5px
+                                            inside its 32px button. */}
+                                        <button
+                                            type="button"
+                                            className={`ml-[11.5px] ${tool}`}
+                                            onClick={resetFollowUp}
+                                            disabled={isRegeneratingFollowUp}
+                                            aria-busy={isRegeneratingFollowUp}
+                                            aria-label={t('Regenerate')}
+                                            title={t('Regenerate')}
+                                        >
+                                            <RefreshCw className={`mn-fu-turn w-[15px] h-[15px] ${isRegeneratingFollowUp && !prefersReducedMotion ? 'animate-spin' : ''}`} aria-hidden="true" />
+                                        </button>
+                                    </>
+                                )}
+                                <div className="ml-auto">
+                                    <FollowUpSendButton
+                                        label={t(gmailLabel)}
+                                        disabled={writingFirst}
+                                        gmailDisabled={gmailSend.state === 'sending' || (gmailSend.connected && toCount === 0)}
+                                        gmailTitle={gmailSend.connected && toCount === 0 ? t('Add who it goes to') : undefined}
+                                        mailApp={mailApp}
+                                        onGmail={() => { void emailFollowUp(); }}
+                                        onOutlook={() => { void outlookFollowUp(); }}
+                                        onMailApp={() => { void mailFollowUp(); }}
+                                    />
+                                </div>
+                            </div>
+                        </DialogPrimitive.Content>
+                    </DialogPrimitive.Portal>
+                </DialogPrimitive.Root>
+                );
+            })()}
 
             {/* Regenerating over hand-edited notes: the in-app confirm, never window.confirm. */}
             <ConfirmDialog

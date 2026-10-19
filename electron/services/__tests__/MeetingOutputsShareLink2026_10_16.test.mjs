@@ -283,7 +283,9 @@ describe('item 3: big meetings are trimmed to the server limits, never refused',
     test('"too long" names the transcript only when one was sent', async () => {
         const with413 = () => OPTS(fakeFetch([{ status: 413, body: { ok: false, error: 'too_long' } }]).fetchImpl);
         const withT = await share.createShareLink(share.sharePayload(doc(), { includeTranscript: true }), with413());
-        assert.match(withT.message, /Leave out the transcript/);
+        // No switch to turn the transcript off any more (2026-10-17), so no advice to.
+        assert.match(withT.message, /and the transcript are too long/);
+        assert.doesNotMatch(withT.message, /Leave out/);
         const without = await share.createShareLink(share.sharePayload(doc(), { includeTranscript: false }), with413());
         assert.doesNotMatch(without.message, /transcript/);
         assert.match(without.message, /Share them as a file/);
