@@ -134,6 +134,18 @@ describe('auth and origin checks', () => {
         const desk = JSON.parse(s.claudeDesktop).mcpServers.natively;
         assert.ok(desk.args.every((a) => !a.includes(' ')));
         assert.equal(desk.env.NATIVELY_AUTH, 'Bearer tok');
+        assert.equal(s.codex, '[mcp_servers.natively]\nurl = "http://127.0.0.1:51234/mcp"\nhttp_headers = { Authorization = "Bearer tok" }');
+    });
+    test('the address is the same with or without the token, and Settings gets it while the server is off', () => {
+        assert.equal(mcp.mcpUrl(51234), mcp.mcpClientSnippets(51234, 'tok').url);
+        const fs = require('node:fs');
+        const ipc = fs.readFileSync(path.join(REPO, 'electron/services/outputs/outputsIpc.ts'), 'utf8');
+        const body = ipc.slice(ipc.indexOf('function mcpStatus()'), ipc.indexOf('async function startMcp()'));
+        // url hangs on the port alone; the token and setups still need the server enabled.
+        assert.match(body, /\.\.\.\(port \? \{ port, url: mcpUrl\(port\) \} : \{\}\)/);
+        assert.match(body, /\.\.\.\(s\.token && s\.enabled \? \{ token: s\.token \} : \{\}\)/);
+        // A port is picked and kept the first time, so a never-enabled install has an address too.
+        assert.match(body, /if \(!st\.mcpSettings\(\)\.port\) st\.setMcp\(\{ port: randomMcpPort\(\)/);
     });
 });
 

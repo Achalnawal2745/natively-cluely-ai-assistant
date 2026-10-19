@@ -252,6 +252,18 @@ test('every preload ipcRenderer.invoke channel has a matching ipcMain.handle reg
         const text = fs.readFileSync(full, 'utf8');
         let mm;
         while ((mm = handleRe.exec(text)) !== null) registered.add(mm[1]);
+        // Also a channel named through a constant object in the same file:
+        // `export const GMAIL_CHANNELS = { connect: 'connectors:gmail-connect' }`
+        // registered as `safeHandle(GMAIL_CHANNELS.connect, …)`. Only the keys
+        // actually handled count, so an unused entry is still caught.
+        const tables = new Map();
+        for (const t of text.matchAll(/const\s+([A-Z][A-Z0-9_]*)\s*=\s*\{([^}]*)\}/g)) {
+          tables.set(t[1], new Map([...t[2].matchAll(/(\w+)\s*:\s*['"]([a-z0-9:_\-./]+)['"]/gi)].map((e) => [e[1], e[2]])));
+        }
+        for (const h of text.matchAll(/(?:ipcMain\.handle|safeHandle|registerStealthHandler|registerHandler)\(\s*([A-Z][A-Z0-9_]*)\.(\w+)\b/g)) {
+          const ch = tables.get(h[1])?.get(h[2]);
+          if (ch) registered.add(ch);
+        }
       }
     }
   };

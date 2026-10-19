@@ -204,6 +204,43 @@ on every settings render, (b) broke the panel's icons offline, and (c) pinned to
 snapshot, not a live dependency. To refresh, re-run
 `npm pack @lobehub/icons-static-svg@<version>` and update this file.
 
+## Connector marks
+
+The logos on Settings › Connectors (the `connections` tab), rendered by
+`ConnectorMark` in `src/components/settings/ConnectorMark.tsx`. Used
+nominatively, as everything else here.
+
+```
+slack.svg       ← @iconify-json/logos 1.2.16 `slack-icon`   (CC0, gilbarbara/logos)
+salesforce.svg  ← @iconify-json/logos 1.2.16 `salesforce`   (CC0, cloud path only)
+notion.svg      ← @lobehub/icons-static-svg 1.94.0 notion.svg  (MIT)
+mcp.svg         ← @lobehub/icons-static-svg 1.94.0 mcp.svg     (MIT)
+hubspot.svg     ← simple-icons 16.35.0 hubspot.svg              (CC0)
+attio.svg       ← thesvg-color `attio` (glincker/thesvg, MIT)
+affinity.png    ← https://www.affinity.co app icon (512 → 128)
+clearbit.png    ← https://clearbit.com/favicon-192.png (192 → 128)
+```
+
+Licences: `LICENSE.svg-logos` (CC0, gilbarbara/logos), `LICENSE.thesvg` (MIT),
+`LICENSE.simple-icons`, and `LICENSE` for lobehub.
+
+Slack and Salesforce are no longer in simple-icons (removed at the owners'
+request) and lobehub has neither, so they come from gilbarbara's CC0 set. The
+Salesforce file keeps only the blue cloud: upstream also draws the white
+"salesforce" wordmark inside it, which is unreadable at the 20px the row uses.
+HubSpot got `fill="#FF7A59"` (simple-icons' recorded hex) and `1em` sizing.
+Attio's `#2e3238` was changed to `currentColor`, because that near-black
+disappears on the dark tile; Attio's mark is monochrome, so this is how it
+reproduces.
+
+Affinity here is the relationship-intelligence CRM (affinity.co), not Serif's
+Affinity design apps. The icon sets carry only Serif's mark, so the CRM's own
+site icon is used, the knot on its purple tile, as it publishes it. Clearbit
+publishes only a raster icon too. Neither comes with a licence statement, so
+both are used nominatively, like AgentRouter and Fluxion above.
+
+`ConnectorMarkCoverage.test.mjs` fails if a connector row has no mark.
+
 ## Inlined SVG vs `<img>`
 
 The SVGs are imported with `?raw` and inlined, because most of them paint with

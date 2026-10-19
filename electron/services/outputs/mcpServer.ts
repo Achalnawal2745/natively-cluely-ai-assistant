@@ -1,6 +1,6 @@
 // A local, read-only MCP server so Claude Desktop, Cursor or Claude Code can read
 // the user's meetings. Off by default; the user turns it on in Settings,
-// Connections.
+// Connectors.
 //
 // Transport: MCP "Streamable HTTP", the plain-JSON form. Every request is a
 // POST of one JSON-RPC message to /mcp and is answered with one JSON response
@@ -443,8 +443,13 @@ export function startMcpServer(opts: McpServerOptions): Promise<RunningMcpServer
 }
 
 /** The ready-to-paste client setups shown in Settings. */
-export function mcpClientSnippets(port: number, token: string): { url: string; claudeCode: string; cursor: string; claudeDesktop: string } {
-    const url = `http://${MCP_HOST}:${port}${MCP_PATH}`;
+/** The server's address. The port is kept, so this is the same on or off. */
+export function mcpUrl(port: number): string {
+    return `http://${MCP_HOST}:${port}${MCP_PATH}`;
+}
+
+export function mcpClientSnippets(port: number, token: string): { url: string; claudeCode: string; cursor: string; claudeDesktop: string; codex: string } {
+    const url = mcpUrl(port);
     return {
         url,
         claudeCode: `claude mcp add --transport http natively ${url} --header "Authorization: Bearer ${token}"`,
@@ -461,5 +466,7 @@ export function mcpClientSnippets(port: number, token: string): { url: string; c
                 },
             },
         }, null, 2),
+        // Codex reads ~/.codex/config.toml; http_headers is an inline TOML table.
+        codex: `[mcp_servers.natively]\nurl = "${url}"\nhttp_headers = { Authorization = "Bearer ${token}" }`,
     };
 }

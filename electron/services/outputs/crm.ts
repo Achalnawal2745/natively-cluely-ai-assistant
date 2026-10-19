@@ -1,6 +1,7 @@
 // CRM notes: the meeting's notes as a note on each attendee the CRM knows,
 // found by email. HubSpot (private app token), Attio (API key), Affinity
-// (API key) and Salesforce (access token + the org's instance URL). The user
+// (API key), Salesforce (access token + the org's instance URL) and Pipedrive
+// (personal API token, or a sign-in at the company's own API host). The user
 // sees who matched before anything is written.
 //
 // Salesforce differs from the other three: it is reached at the user's own org
@@ -16,7 +17,7 @@ import type { ConnectionErrorKind, CrmService } from '../../../src/types/meeting
 import { errorKindOf, httpRequest, type FetchLike } from './httpRequest';
 import { notesToMarkdown, notesToPlainText, type NotesDocument } from './notesDocument';
 
-export const CRM_LABELS: Record<CrmService, string> = { hubspot: 'HubSpot', attio: 'Attio', affinity: 'Affinity', salesforce: 'Salesforce' };
+export const CRM_LABELS: Record<CrmService, string> = { hubspot: 'HubSpot', attio: 'Attio', affinity: 'Affinity', salesforce: 'Salesforce', pipedrive: 'Pipedrive' };
 
 /** Salesforce REST API version Natively calls (a stable, widely available one). */
 export const SALESFORCE_API_VERSION = 'v60.0';
@@ -60,7 +61,11 @@ const NOTE_MAX_CHARS = 60_000;
 export interface CrmRecord { id: string; name?: string }
 export interface CrmMatch { email: string; name?: string; record?: CrmRecord }
 
-interface CrmCallOpts { token: string; fetchImpl?: FetchLike; signal?: AbortSignal; /** Required for Salesforce: the org's REST host. */ instanceUrl?: string }
+interface CrmCallOpts {
+    token: string; fetchImpl?: FetchLike; signal?: AbortSignal;
+    /** Required for Salesforce (the org's REST host). For Pipedrive, a sign-in's company host; absent for a pasted token. */
+    instanceUrl?: string;
+}
 
 export function normaliseEmail(raw: unknown): string | null {
     const e = String(raw ?? '').trim().toLowerCase();
@@ -134,6 +139,29 @@ export function parseAffinityPersons(data: any, email: string): CrmRecord | unde
     return undefined;
 }
 
+/** Pipedrive person search: the first person with exactly this email. */
+export function parsePipedrivePersons(data: any, email: string): CrmRecord | undefined {
+    for (const it of Array.isArray(data?.data?.items) ? data.data.items : []) {
+        const p = it?.item || {};
+        const emails: string[] = (Array.isArray(p.emails) ? p.emails : []).map((e: any) => String(typeof e === 'string' ? e : e?.value || '').toLowerCase());
+        if (!emails.includes(email)) continue;
+        if (p.id === undefined || p.id === null) continue;
+        const name = String(p.name || '').trim();
+        return { id: String(p.id), ...(name ? { name } : {}) };
+    }
+    return undefined;
+}
+
+/**
+ * Pipedrive: a sign-in calls its company host (`https://acme.pipedrive.com/api/v1`)
+ * with a Bearer token; a pasted personal API token calls
+ * `https://api.pipedrive.com/v1` with the x-api-token header.
+ */
+const pipedrive = (o: CrmCallOpts): { base: string; headers: Record<string, string> } => ({
+    base: o.instanceUrl ? `${o.instanceUrl}/api/v1` : 'https://api.pipedrive.com/v1',
+    headers: o.instanceUrl ? { Authorization: `Bearer ${o.token}` } : { 'x-api-token': o.token },
+});
+
 const HUBSPOT = 'https://api.hubapi.com';
 const ATTIO = 'https://api.attio.com/v2';
 const AFFINITY = 'https://api.affinity.co';
@@ -160,6 +188,13 @@ export async function findCrmRecord(service: CrmService, email: string, o: CrmCa
             fetchImpl: o.fetchImpl, signal: o.signal,
         });
         return parseAttioPeople(res.data, email);
+    }
+    if (service === 'pipedrive') {
+        const p = pipedrive(o);
+        const res = await httpRequest(`${p.base}/persons/search?term=${encodeURIComponent(email)}&fields=email&exact_match=true&limit=5`, {
+            headers: p.headers, fetchImpl: o.fetchImpl, signal: o.signal,
+        });
+        return parsePipedrivePersons(res.data, email);
     }
     if (service === 'salesforce') {
         if (!o.instanceUrl) throw new Error('salesforce instance url missing');
@@ -190,6 +225,9 @@ export async function testCrm(service: CrmService, o: CrmCallOpts): Promise<void
         await httpRequest(`${HUBSPOT}/crm/v3/objects/contacts?limit=1`, { headers: bearer(o.token), fetchImpl: o.fetchImpl, signal: o.signal });
     } else if (service === 'attio') {
         await httpRequest(`${ATTIO}/self`, { headers: bearer(o.token), fetchImpl: o.fetchImpl, signal: o.signal });
+    } else if (service === 'pipedrive') {
+        const p = pipedrive(o);
+        await httpRequest(`${p.base}/users/me`, { headers: p.headers, fetchImpl: o.fetchImpl, signal: o.signal });
     } else if (service === 'salesforce') {
         if (!o.instanceUrl) throw new Error('salesforce instance url missing');
         await httpRequest(`${o.instanceUrl}/services/data/${SALESFORCE_API_VERSION}/limits`, { headers: bearer(o.token), fetchImpl: o.fetchImpl, signal: o.signal });
@@ -205,12 +243,12 @@ function htmlParagraphs(text: string): string {
     return text.split(/\n{2,}/).map((p) => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('');
 }
 
-/** The note bodies, per CRM: HubSpot takes HTML, Attio Markdown, Affinity and Salesforce plain text. */
+/** The note bodies, per CRM: HubSpot and Pipedrive take HTML, Attio Markdown, Affinity and Salesforce plain text. */
 export function crmNoteBody(service: CrmService, doc: NotesDocument): string {
     if (service === 'attio') return notesToMarkdown(doc, { includeTitle: false }).slice(0, NOTE_MAX_CHARS);
     if (service === 'salesforce') return notesToPlainText(doc).slice(0, SALESFORCE_DESCRIPTION_MAX);
     const text = notesToPlainText(doc).slice(0, NOTE_MAX_CHARS);
-    return service === 'hubspot' ? htmlParagraphs(text) : text;
+    return service === 'hubspot' || service === 'pipedrive' ? htmlParagraphs(text) : text;
 }
 
 /** HubSpot's own association type for note → contact. */
@@ -276,7 +314,7 @@ export async function sendCrmNote(service: CrmService, doc: NotesDocument, recor
             return { sentIds: [], notesCreated: 0, error: errorKindOf(err) };
         }
     }
-    // Attio and Salesforce attach to one record each, written one after another
+    // Attio, Salesforce and Pipedrive attach to one record each, written one after another
     // (their rate limits); a failure stops there and reports who already has
     // theirs. Salesforce logs a completed Task (its "log a call" activity);
     // Attio writes a note.
@@ -285,7 +323,15 @@ export async function sendCrmNote(service: CrmService, doc: NotesDocument, recor
     const sentIds: string[] = [];
     for (const r of records) {
         try {
-            if (service === 'salesforce') {
+            if (service === 'pipedrive') {
+                const p = pipedrive(o);
+                await httpRequest(`${p.base}/notes`, {
+                    method: 'POST',
+                    headers: p.headers,
+                    json: { content: `<p><b>${doc.title.replace(/[<>&]/g, '')}</b></p>${body}`.slice(0, NOTE_MAX_CHARS), person_id: Number(r.id) },
+                    fetchImpl: o.fetchImpl, signal: o.signal,
+                });
+            } else if (service === 'salesforce') {
                 await httpRequest(`${o.instanceUrl}/services/data/${SALESFORCE_API_VERSION}/sobjects/Task`, {
                     method: 'POST',
                     headers: bearer(o.token),
