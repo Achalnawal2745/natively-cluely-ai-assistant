@@ -377,3 +377,27 @@ export interface WindowInfo {
   title: string
   path?: string
 }
+
+export interface CaptureRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface GdiCaptureResult {
+  data: Buffer
+  width: number
+  height: number
+  method: string
+  durationMs: number
+  blank: boolean
+}
+
+export declare function capture_foreground_tree_gdi(maxWidth?: number | null): GdiCaptureResult | null
+export declare function capture_window_tree_gdi(hwnd: Buffer, maxWidth?: number | null): GdiCaptureResult | null
+export declare function get_foreground_window_rect(): CaptureRect | null
+export declare function is_window_capture_protected(hwnd?: Buffer | null): boolean
+export declare function capture_region_gdi(rect: CaptureRect, maxWidth?: number | null): GdiCaptureResult | null
+export declare function get_virtual_screen_bounds(): CaptureRect
+export declare function is_capturable_window(hwnd: Buffer): boolean

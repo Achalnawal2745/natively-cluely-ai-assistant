@@ -69,6 +69,19 @@ const BLANK_LUMA_MAX = 15
 /** Below this spread between min and max = one flat colour, also a failure. */
 const BLANK_LUMA_SPREAD = 6
 
+export function logCapture(msg: string): void {
+  const ts = new Date().toISOString()
+  const line = `[${ts}] [ScreenshotGdi] ${msg}\n`
+  console.log(`[ScreenshotGdi] ${msg}`)
+  try {
+    const os = require('os')
+    const path = require('path')
+    const fs = require('fs')
+    const logPath = path.join(os.homedir(), 'natively_capture.log')
+    fs.appendFileSync(logPath, line, 'utf8')
+  } catch {}
+}
+
 let cached: GdiCaptureNative | null | undefined
 
 function loadGdiNative(): GdiCaptureNative | null {
@@ -83,7 +96,13 @@ function loadGdiNative(): GdiCaptureNative | null {
     const native = loadNativeModule() as unknown as GdiCaptureNative | null
     cached =
       native && typeof native.capture_foreground_tree_gdi === 'function' ? native : null
-  } catch {
+    if (!cached) {
+      logCapture('loadGdiNative: native module loaded but capture_foreground_tree_gdi is missing')
+    } else {
+      logCapture('loadGdiNative: native module loaded successfully with GDI exports')
+    }
+  } catch (err) {
+    logCapture(`loadGdiNative error: ${err}`)
     cached = null
   }
   return cached
@@ -236,15 +255,22 @@ export async function repairBlankedWindowCapture(
   try {
     native = loadGdiNative()
     rect = native?.get_foreground_window_rect?.() ?? null
-  } catch {
+  } catch (err) {
+    logCapture(`repairBlankedWindowCapture: native call failed: ${err}`)
     return false
   }
-  if (!native || !rect) return false
+  if (!native || !rect) {
+    logCapture(`repairBlankedWindowCapture aborted: native=${!!native}, rect=${JSON.stringify(rect)}`)
+    return false
+  }
+
+  logCapture(`repairBlankedWindowCapture target rect: ${JSON.stringify(rect)}`)
 
   let png: Buffer
   try {
     png = await fs.promises.readFile(pngPath)
   } catch {
+    logCapture(`Failed to read pngPath: ${pngPath}`)
     return false
   }
 
@@ -261,7 +287,10 @@ export async function repairBlankedWindowCapture(
   if (!imgW || !imgH) return false
 
   const region = windowRectToImageCoords(rect, display, imgW, imgH)
-  if (!region) return false
+  if (!region) {
+    logCapture('windowRectToImageCoords returned null, cannot map coordinates')
+    return false
+  }
 
   // 1. Detect if the foreground window (or any child) is protected via WDA_EXCLUDEFROMCAPTURE or WDA_MONITOR
   const isProtected = native.is_window_capture_protected?.() ?? false
@@ -271,6 +300,11 @@ export async function repairBlankedWindowCapture(
 
   const coverage = (region.width * region.height) / (imgW * imgH)
 
+  logCapture(
+    `Image ${imgW}x${imgH}, region=${JSON.stringify(region)}, coverage=${(coverage * 100).toFixed(1)}%, ` +
+    `isProtected=${isProtected}, blank=${blank}, force=${force}`
+  )
+
   // Trigger repair if:
   // - forced by env
   // - window is protected (WDA_EXCLUDEFROMCAPTURE / WDA_MONITOR) - THIS FIXES THE WALLPAPER TRANSPARENCY BUG
@@ -279,17 +313,17 @@ export async function repairBlankedWindowCapture(
   const shouldRepair = force || isProtected || blank || (coverage >= 0.4)
 
   if (!shouldRepair) {
-    console.log('[ScreenshotGdi] foreground window looks normal and unprotected; keeping desktopCapturer frame')
+    logCapture('foreground window looks normal and unprotected; keeping desktopCapturer frame')
     return false
   }
 
-  console.log(
-    `[ScreenshotGdi] triggering GDI capture (protected=${isProtected}, blank=${blank}, coverage=${(coverage * 100).toFixed(0)}%)`
+  logCapture(
+    `triggering GDI capture (protected=${isProtected}, blank=${blank}, coverage=${(coverage * 100).toFixed(0)}%)`
   )
 
   const gdi = captureForegroundWindowGdi()
   if (!gdi) {
-    console.warn('[ScreenshotGdi] GDI capture produced no frame; keeping original')
+    logCapture('GDI capture produced no frame; keeping original')
     return false
   }
 
@@ -297,7 +331,7 @@ export async function repairBlankedWindowCapture(
     // If the window is near fullscreen (>= 70%), writing the clean window capture directly gives the AI full fidelity
     if (coverage >= 0.7) {
       await fs.promises.writeFile(pngPath, gdi.png)
-      console.log(`[ScreenshotGdi] replaced ${pngPath} with full ${gdi.width}x${gdi.height} GDI frame (${gdi.method})`)
+      logCapture(`replaced ${pngPath} with full ${gdi.width}x${gdi.height} GDI frame (${gdi.method})`)
       return true
     }
 
@@ -316,15 +350,17 @@ export async function repairBlankedWindowCapture(
       .toBuffer()
 
     await fs.promises.writeFile(pngPath, composited)
-    console.log(`[ScreenshotGdi] composited ${gdi.method} frame onto desktop at (${region.x}, ${region.y})`)
+    logCapture(`composited ${gdi.method} frame onto desktop at (${region.x}, ${region.y})`)
     return true
   } catch (error) {
-    console.error('[ScreenshotGdi] failed to composite/write GDI frame:', error)
+    logCapture(`failed to composite/write GDI frame: ${error}`)
     // Fallback: overwrite with gdi.png
     try {
       await fs.promises.writeFile(pngPath, gdi.png)
+      logCapture(`Fallback: wrote raw GDI frame to ${pngPath}`)
       return true
-    } catch {
+    } catch (fbErr) {
+      logCapture(`Fallback write failed: ${fbErr}`)
       return false
     }
   }

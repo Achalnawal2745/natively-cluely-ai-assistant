@@ -81,9 +81,11 @@ use windows::Win32::Graphics::Gdi::{
     DIB_RGB_COLORS, HALFTONE, HDC, HBITMAP, HGDIOBJ, ROP_CODE, SRCCOPY,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowDisplayAffinity,
-    GetWindowRect, IsIconic, IsWindow, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    EnumChildWindows, EnumWindows, GetClassNameW, GetForegroundWindow, GetSystemMetrics,
+    GetWindowDisplayAffinity, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+    IsWindow, IsWindowVisible, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
     SM_YVIRTUALSCREEN,
 };
 
@@ -102,6 +104,16 @@ const BLANK_LUMA_SPREAD: u32 = 6;
 
 /// Minimum size for a child window to be worth trying.
 const MIN_CHILD_EDGE: i32 = 50;
+
+fn log_gdi(msg: &str) {
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        let path = std::path::Path::new(&home).join("natively_capture.log");
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            use std::io::Write;
+            let _ = writeln!(file, "[Rust-GDI] {}", msg);
+        }
+    }
+}
 
 #[napi(object)]
 pub struct CaptureRect {
@@ -611,7 +623,10 @@ pub fn capture_window_tree_gdi(
     children.sort_by_key(|c| -((c.width as i64) * (c.height as i64)));
     targets.extend(children);
 
+    log_gdi(&format!("capture_window_tree_gdi: parent=0x{:X}, total targets={}", parent.0, targets.len()));
+
     if targets.is_empty() {
+        log_gdi("capture_window_tree_gdi: targets list is empty");
         return None;
     }
 
@@ -626,7 +641,17 @@ pub fn capture_window_tree_gdi(
             if let Some(pixels) = capture(target, max_width) {
                 let (ow, oh) = downscale_target(target.width, target.height, max_width);
                 let (lo, hi, _mean) = frame_luma(&pixels, ow as u32, oh as u32);
-                if !is_blank(lo, hi) {
+                let blank = is_blank(lo, hi);
+                log_gdi(&format!(
+                    "  attempt target '{}' [{}] -> {}x{}, luma=(lo={}, hi={}, mean={:.1}) => {}",
+                    target.class, label, ow, oh, lo, hi, _mean,
+                    if blank { "BLANK" } else { "OK" }
+                ));
+                if !blank {
+                    log_gdi(&format!(
+                        "WINNER: target '{}' via {} succeeded in {:.1}ms",
+                        target.class, label, elapsed_ms(started)
+                    ));
                     return finish(
                         pixels,
                         ow,
@@ -639,13 +664,164 @@ pub fn capture_window_tree_gdi(
         }
     }
 
+    log_gdi("capture_window_tree_gdi: all targets returned blank/null");
     None
 }
 
-/// Convenience: walk the window and child tree of whatever window has focus.
+unsafe extern "system" fn enum_windows_top_proc(
+    hwnd: HWND,
+    lparam: LPARAM,
+) -> BOOL {
+    if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+        return TRUE;
+    }
+
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    let my_pid = GetCurrentProcessId();
+    if pid == my_pid {
+        return TRUE; // Ignore Natively's own windows
+    }
+
+    let mut name = [0u16; 256];
+    let len = GetClassNameW(hwnd, &mut name);
+    let class = String::from_utf16_lossy(&name[..len.max(0) as usize]);
+
+    // Skip Windows Shell, Desktop, and Taskbar
+    if class == "Progman"
+        || class == "WorkerW"
+        || class == "Shell_TrayWnd"
+        || class == "Shell_SecondaryTrayWnd"
+        || class == "Windows.UI.Core.CoreWindow"
+    {
+        return TRUE;
+    }
+
+    let mut rect = RECT::default();
+    if GetWindowRect(hwnd, &mut rect).is_ok() {
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
+        if w > 200 && h > 200 {
+            let out = &mut *(lparam.0 as *mut HWND);
+            *out = hwnd;
+            return FALSE; // Found the top-most visible target app!
+        }
+    }
+
+    TRUE
+}
+
+unsafe extern "system" fn enum_windows_by_title_proc(
+    hwnd: HWND,
+    lparam: LPARAM,
+) -> BOOL {
+    if !IsWindowVisible(hwnd).as_bool() {
+        return TRUE;
+    }
+    let mut title_buf = [0u16; 512];
+    let len = GetWindowTextW(hwnd, &mut title_buf);
+    if len <= 0 {
+        return TRUE;
+    }
+    let title = String::from_utf16_lossy(&title_buf[..len as usize]).to_lowercase();
+
+    let data = &mut *(lparam.0 as *mut (String, HWND, i64));
+    let needle = &data.0;
+    if title.contains(needle) {
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_ok() {
+            let area = ((rect.right - rect.left) as i64) * ((rect.bottom - rect.top) as i64);
+            if area > data.2 {
+                data.1 = hwnd;
+                data.2 = area;
+            }
+        }
+    }
+    TRUE
+}
+
+/// Finds the best target window to capture:
+/// 1. Reads CAPTURE_TARGET or NATIVELY_CAPTURE_TARGET env var if provided (explicit title match)
+/// 2. If foreground window is a real third-party app, returns it
+/// 3. If foreground window is Natively, Desktop (Progman/WorkerW), or Taskbar, walks Z-order
+///    to pick the topmost third-party application window underneath.
+fn find_best_target_window() -> HWND {
+    // 0. Did the user specify CAPTURE_TARGET env var?
+    if let Ok(target_str) = std::env::var("CAPTURE_TARGET").or_else(|_| std::env::var("NATIVELY_CAPTURE_TARGET")) {
+        let trimmed = target_str.trim().to_lowercase();
+        if !trimmed.is_empty() {
+            log_gdi(&format!("Searching for CAPTURE_TARGET: '{}'", trimmed));
+            let mut data = (trimmed, HWND(0), 0i64);
+            unsafe {
+                let _ = EnumWindows(
+                    Some(enum_windows_by_title_proc),
+                    LPARAM(&mut data as *mut (String, HWND, i64) as isize),
+                );
+            }
+            if data.1 .0 != 0 {
+                log_gdi(&format!("Found window matching CAPTURE_TARGET: HWND=0x{:X}", data.1 .0));
+                return data.1;
+            } else {
+                log_gdi("No window matched CAPTURE_TARGET, falling back to Z-order");
+            }
+        }
+    }
+
+    // 1. Check GetForegroundWindow()
+    let fg = unsafe { GetForegroundWindow() };
+    if fg.0 != 0 {
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(fg, Some(&mut pid)) };
+        let my_pid = unsafe { GetCurrentProcessId() };
+
+        let mut name = [0u16; 256];
+        let len = unsafe { GetClassNameW(fg, &mut name) };
+        let class = String::from_utf16_lossy(&name[..len.max(0) as usize]);
+
+        log_gdi(&format!("GetForegroundWindow: HWND=0x{:X}, class='{}', pid={}, my_pid={}", fg.0, class, pid, my_pid));
+
+        if pid != my_pid
+            && class != "Progman"
+            && class != "WorkerW"
+            && !class.starts_with("Shell_")
+        {
+            let mut rect = RECT::default();
+            if unsafe { GetWindowRect(fg, &mut rect) }.is_ok() {
+                let w = rect.right - rect.left;
+                let h = rect.bottom - rect.top;
+                if w > 150 && h > 150 {
+                    log_gdi(&format!("Using foreground window directly: HWND=0x{:X}, size={}x{}", fg.0, w, h));
+                    return fg;
+                }
+            }
+        }
+    } else {
+        log_gdi("GetForegroundWindow returned 0");
+    }
+
+    // 2. If foreground window is Natively, Desktop, Taskbar, or 0,
+    // walk Z-order to pick the top third-party application window:
+    log_gdi("Foreground is desktop/assistant, walking Z-order via EnumWindows...");
+    let mut target = HWND(0);
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_windows_top_proc),
+            LPARAM(&mut target as *mut HWND as isize),
+        );
+    }
+    if target.0 != 0 {
+        log_gdi(&format!("Z-order discovered top app window: HWND=0x{:X}", target.0));
+    } else {
+        log_gdi("Z-order found no candidate application window");
+    }
+    target
+}
+
+/// Convenience: walk the window and child tree of whatever window has focus,
+/// falling back to the top visible application if the desktop or Natively is focused.
 #[napi]
 pub fn capture_foreground_tree_gdi(max_width: Option<u32>) -> Option<GdiCaptureResult> {
-    let hwnd = unsafe { GetForegroundWindow() };
+    let hwnd = find_best_target_window();
     if hwnd.0 == 0 {
         return None;
     }
@@ -669,13 +845,13 @@ unsafe extern "system" fn check_child_affinity_proc(
     TRUE
 }
 
-/// Checks whether the foreground window (or any of its children) has set
+/// Checks whether the target window (or any of its children) has set
 /// `WDA_EXCLUDEFROMCAPTURE` or `WDA_MONITOR`.
 #[napi]
 pub fn is_window_capture_protected(hwnd: Option<Buffer>) -> bool {
     let target = match hwnd {
         Some(buf) => buffer_to_hwnd(&buf),
-        None => unsafe { GetForegroundWindow() },
+        None => find_best_target_window(),
     };
     if target.0 == 0 {
         return false;
@@ -697,16 +873,10 @@ pub fn is_window_capture_protected(hwnd: Option<Buffer>) -> bool {
     child_protected
 }
 
-/// The foreground window's rectangle, in physical screen pixels.
-///
-/// Exists so the caller can measure that region inside a `desktopCapturer`
-/// frame and tell whether the window actually made it into the capture.
-/// Checking the whole image instead is useless here: when a window is excluded
-/// the desktop shows through it, so the frame is full of pixels and looks
-/// healthy while the thing you wanted is missing.
+/// The target window's rectangle, in physical screen pixels.
 #[napi]
 pub fn get_foreground_window_rect() -> Option<CaptureRect> {
-    let hwnd = unsafe { GetForegroundWindow() };
+    let hwnd = find_best_target_window();
     if hwnd.0 == 0 {
         return None;
     }
