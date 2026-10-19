@@ -1,7 +1,7 @@
 // dailyBrief.ts
 //
 // Today, in the launcher: the day's remaining meetings in order, each with one
-// line of context from what Natively already holds, and "You owe" under them.
+// line of context from what Natively already holds.
 //
 // The context line, first that applies:
 //   - a recurring meeting with notes from last time: "Last time: <first point>"
@@ -17,7 +17,6 @@ import { buildLastTimeRecap, findPreviousSeriesMeeting } from '../meeting/recurr
 import { firstNameOf, type UserIdentity } from './assistPeople';
 import { clip, meetingEmails, meetingTitle, type AssistMeeting } from './assistNotes';
 import { briefAttendees, type BriefEvent } from './meetingBrief';
-import { collectOwedItems, type DoneMap, type OwedItem } from './owedItems';
 
 export interface DailyBriefMeeting {
   eventId: string;
@@ -33,11 +32,7 @@ export interface DailyBriefMeeting {
 
 export interface DailyBrief {
   meetings: DailyBriefMeeting[];
-  owed: OwedItem[];
-  owedTotal: number;
 }
-
-export const DAILY_OWED_SHOWN = 8;
 
 function shortDay(ms: number, timeZone?: string): string {
   try {
@@ -93,7 +88,6 @@ export function buildDailyBrief(input: {
   meetings: AssistMeeting[];
   identity: UserIdentity;
   nowMs: number;
-  done?: DoneMap;
   /** Today's bounds; the machine's day when absent. */
   day?: { startMs: number; endMs: number };
   timeZone?: string;
@@ -125,6 +119,5 @@ export function buildDailyBrief(input: {
       contextMeetingId: ctx.meetingId,
     });
   }
-  const owedAll = collectOwedItems(input.meetings, input.identity, { nowMs: input.nowMs, done: input.done, timeZone: input.timeZone });
-  return { meetings, owed: owedAll.slice(0, DAILY_OWED_SHOWN), owedTotal: owedAll.length };
+  return { meetings };
 }

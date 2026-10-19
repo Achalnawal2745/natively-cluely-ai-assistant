@@ -121,9 +121,9 @@ export function clip(text: string, max: number): string {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * The longest any assist list looks back (Brief me: 180 days). Ticks in "You
- * owe" are kept at least this long, so one an older lookup can still read is
- * never forgotten (owedItems.pruneDone).
+ * The longest any assist list looks back (Brief me: 180 days). Task keys are
+ * chained over this window (owedItems.collectOwedItems), so a task keeps one
+ * key whichever list reads it.
  */
 export const ASSIST_LONGEST_LOOKBACK_DAYS = 180;
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];

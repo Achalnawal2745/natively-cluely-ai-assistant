@@ -16,14 +16,30 @@ import { writeFileAtomicSync } from './atomicFile';
 
 export const CONNECTIONS_FILE = 'connections.enc';
 
+/**
+ * What a browser sign-in (Settings › Connectors › Connect) adds to a token:
+ * how to renew it, when it runs out, and whose account it is. A pasted token
+ * has none of these.
+ */
+export interface OAuthGrant {
+    refreshToken?: string;
+    /** Epoch ms. Absent when the provider did not say (Salesforce) or the token does not expire. */
+    expiresAt?: number;
+    /** Workspace or account name, for the row's "Connected to …". */
+    account?: string;
+    via?: 'oauth';
+}
+
 export interface ConnectionSecrets {
     slack: { webhooks: Array<SlackWebhookInfo & { url: string }> };
-    notion?: { token: string; parent?: NotionParentInfo };
-    hubspot?: { token: string };
-    attio?: { token: string };
+    notion?: { token: string; parent?: NotionParentInfo } & OAuthGrant;
+    hubspot?: { token: string } & OAuthGrant;
+    attio?: { token: string } & OAuthGrant;
     affinity?: { token: string };
     /** Salesforce needs the org's instance URL as well as the access token. */
-    salesforce?: { token: string; instanceUrl: string };
+    salesforce?: { token: string; instanceUrl: string } & OAuthGrant;
+    /** Pipedrive: a pasted API token, or a sign-in whose company API host is kept as instanceUrl. */
+    pipedrive?: { token: string; instanceUrl?: string } & OAuthGrant;
     /** Attendee enrichment directory (opt-in lookups of title and company by email). */
     clearbit?: { token: string };
     /** The local MCP server: its bearer token, the port it keeps, and whether it is on. */
@@ -44,8 +60,25 @@ export interface ConnectionsStoreDeps {
 const empty = (): ConnectionSecrets => ({ slack: { webhooks: [] } });
 
 export const MAX_SLACK_WEBHOOKS = 20;
-const MAX_TOKEN_CHARS = 512;
+// OAuth access tokens run longer than pasted keys (HubSpot's are several
+// hundred characters), so the stored cap is generous; pasted tokens are still
+// capped at 512 by the IPC.
+const MAX_TOKEN_CHARS = 4096;
 const MAX_LABEL_CHARS = 80;
+
+const OAUTH_SERVICES = ['notion', 'hubspot', 'attio', 'salesforce', 'pipedrive'] as const;
+export type OAuthTokenService = typeof OAUTH_SERVICES[number];
+
+function sanitizeGrant(raw: any): OAuthGrant {
+    if (raw?.via !== 'oauth') return {};
+    const exp = Number(raw.expiresAt);
+    return {
+        via: 'oauth',
+        ...(typeof raw.refreshToken === 'string' && raw.refreshToken ? { refreshToken: raw.refreshToken.slice(0, MAX_TOKEN_CHARS) } : {}),
+        ...(Number.isFinite(exp) && exp > 0 ? { expiresAt: exp } : {}),
+        ...(typeof raw.account === 'string' && raw.account ? { account: raw.account.slice(0, 120) } : {}),
+    };
+}
 
 function sanitize(raw: any): ConnectionSecrets {
     const out = empty();
@@ -68,12 +101,18 @@ function sanitize(raw: any): ConnectionSecrets {
     for (const k of ['hubspot', 'attio', 'affinity', 'clearbit'] as const) {
         if (token(raw?.[k])) out[k] = { token: token(raw[k])! };
     }
+    const pdUrl = typeof raw?.pipedrive?.instanceUrl === 'string' ? raw.pipedrive.instanceUrl : '';
+    if (token(raw?.pipedrive)) out.pipedrive = { token: token(raw.pipedrive)!, ...(/^https:\/\/[a-z0-9-]+\.pipedrive\.com$/i.test(pdUrl) ? { instanceUrl: pdUrl } : {}) };
     // Salesforce is kept only with BOTH a token and an https instance URL; the
     // IPC validates the host before it reaches here, so a half-saved pair (e.g.
     // an older file) is dropped rather than used.
     const sfTok = token(raw?.salesforce);
     const sfUrl = typeof raw?.salesforce?.instanceUrl === 'string' ? raw.salesforce.instanceUrl.slice(0, MAX_TOKEN_CHARS) : '';
     if (sfTok && /^https:\/\//i.test(sfUrl)) out.salesforce = { token: sfTok, instanceUrl: sfUrl };
+    for (const k of OAUTH_SERVICES) {
+        const cur = out[k];
+        if (cur) Object.assign(cur, sanitizeGrant(raw?.[k]));
+    }
     if (token(raw?.mcp)) {
         const port = Number(raw.mcp.port);
         out.mcp = {
@@ -159,6 +198,47 @@ export class ConnectionsStore {
             else if (service === 'salesforce') { if (n.salesforce?.instanceUrl) n.salesforce = { token, instanceUrl: n.salesforce.instanceUrl }; }
             else n[service] = { token };
         });
+    }
+
+    /** The sign-in details kept with a token, or null for a pasted token or none. */
+    grant(service: OAuthTokenService): OAuthGrant | null {
+        const g = this.read()[service];
+        return g?.via === 'oauth' ? { ...(g.refreshToken ? { refreshToken: g.refreshToken } : {}), ...(g.expiresAt ? { expiresAt: g.expiresAt } : {}), ...(g.account ? { account: g.account } : {}), via: 'oauth' } : null;
+    }
+
+    /**
+     * Save what a browser sign-in returned. A renewal passes only what changed:
+     * the refresh token, account and (for Notion) the chosen parent are kept
+     * unless replaced.
+     */
+    setOAuth(service: OAuthTokenService, c: { token: string; refreshToken?: string; expiresAt?: number; account?: string; instanceUrl?: string }, opts: { renewal?: boolean } = {}): boolean {
+        return this.update((n) => {
+            const prev = n[service] as (({ token: string } & OAuthGrant & { parent?: NotionParentInfo; instanceUrl?: string }) | undefined);
+            const keep = opts.renewal && prev?.via === 'oauth' ? prev : undefined;
+            const grant: OAuthGrant = {
+                via: 'oauth',
+                ...((c.refreshToken || keep?.refreshToken) ? { refreshToken: c.refreshToken || keep?.refreshToken } : {}),
+                ...(c.expiresAt ? { expiresAt: c.expiresAt } : {}),
+                ...((c.account || keep?.account) ? { account: c.account || keep?.account } : {}),
+            };
+            if (service === 'pipedrive') {
+                const instanceUrl = c.instanceUrl || keep?.instanceUrl;
+                n.pipedrive = { token: c.token, ...(instanceUrl ? { instanceUrl } : {}), ...grant };
+            } else if (service === 'salesforce') {
+                const instanceUrl = c.instanceUrl || keep?.instanceUrl;
+                if (instanceUrl) n.salesforce = { token: c.token, instanceUrl, ...grant };
+            } else if (service === 'notion') {
+                // A new sign-in can share different pages, so the parent is kept only on a renewal.
+                n.notion = { token: c.token, ...(keep?.parent ? { parent: keep.parent } : {}), ...grant };
+            } else {
+                n[service] = { token: c.token, ...grant };
+            }
+        });
+    }
+
+    /** Pipedrive's company API host from a sign-in, or null for a pasted token (which uses api.pipedrive.com). */
+    pipedriveInstanceUrl(): string | null {
+        return this.read().pipedrive?.instanceUrl ?? null;
     }
 
     /** The saved Salesforce instance URL (its org's REST host), or null. */

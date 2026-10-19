@@ -1050,6 +1050,10 @@ export class ModesManager {
             }
         } catch { /* non-fatal — orphans are disk bloat, not correctness */ }
         DatabaseManager.getInstance().deleteMode(id);
+        // Its follow-up writing samples go with it (styles are per mode).
+        try {
+            require('./outputs/outputsIpc').forgetWritingStyleForMode(id);
+        } catch { /* non-fatal: an orphan file is never read */ }
         this.invalidateActiveModeCache();
     }
 

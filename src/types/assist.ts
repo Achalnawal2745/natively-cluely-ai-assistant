@@ -37,8 +37,6 @@ export interface AssistDailyBriefMeeting {
 
 export interface AssistDailyBrief {
   meetings: AssistDailyBriefMeeting[];
-  owed: AssistOwedItem[];
-  owedTotal: number;
 }
 
 export interface AssistBriefPerson {

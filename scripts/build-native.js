@@ -113,6 +113,7 @@ function fixMacOSDylibPaths(nodeFilePath) {
 const MACOS_DEPLOYMENT_TARGET = '12.0';
 
 if (os.platform() === 'darwin') {
+  const { alignMachOStringTableFile } = require(path.join(__dirname, 'lib', 'macho-align-strtab.cjs'));
   const macTargets = buildAllMacTargets
     ? ['x86_64-apple-darwin', 'aarch64-apple-darwin']
     : [os.arch() === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'];
@@ -148,11 +149,15 @@ if (os.platform() === 'darwin') {
     runCommand(`npx napi build --platform --target ${target} --release`, extraEnv);
   }
 
-  // Fix hardcoded absolute paths in .node binaries
+  // Fix hardcoded absolute paths in .node binaries, then pad the string table
+  // macOS 27's dyld insists on (scripts/lib/macho-align-strtab.cjs). Signed
+  // builds replace the ad-hoc signature this leaves when electron-builder signs.
   for (const target of macTargets) {
     const artifact = artifactMap[target];
     const artifactPath = path.join(nativeModulePath, artifact);
     fixMacOSDylibPaths(artifactPath);
+    const pad = alignMachOStringTableFile(artifactPath);
+    if (pad) console.log(`Aligned the string table in ${artifact} (+${pad} bytes) and re-signed it.`);
   }
 
   verifyArtifacts(macTargets.map((target) => artifactMap[target]));

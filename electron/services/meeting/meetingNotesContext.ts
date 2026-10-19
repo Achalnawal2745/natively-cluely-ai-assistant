@@ -517,19 +517,3 @@ export function renderNotesPromptContext(ctx: NotesPromptContext | null | undefi
   if (vocab) parts.push(vocab);
   return parts.join('\n\n');
 }
-
-/**
- * One line for the title call: who the meeting was with, from the invite or the
- * meeting app. '' when there is nobody to name. Names only, no addresses.
- */
-export function titleContextHint(ctx: MeetingPeopleContext | null | undefined): string {
-  if (!ctx) return '';
-  const nameOnly = (p: string) => p.replace(/\s*\([^)]*\)\s*$/, '').replace(/\s*<[^>]*>\s*/g, '').trim();
-  const people = [...(ctx.split ? ctx.external : ctx.invited), ...ctx.callParticipants]
-    .map(nameOnly).filter(Boolean);
-  const uniquePeople = [...new Set(people)].slice(0, 4);
-  const parts: string[] = [];
-  if (ctx.externalOrganisations.length) parts.push(`with ${ctx.externalOrganisations.slice(0, 3).join(', ')}`);
-  if (uniquePeople.length) parts.push(`people: ${uniquePeople.join(', ')}`);
-  return parts.length ? `Context for naming only (from the calendar invite or meeting app; use only if it fits the notes): ${parts.join('; ')}` : '';
-}

@@ -15435,13 +15435,17 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle('update-meeting-summary', async (_, { id, updates }: { id: string; updates: any }) => {
-    return DatabaseManager.getInstance().updateMeetingSummary(id, updates);
+    const result = DatabaseManager.getInstance().updateMeetingSummary(id, updates);
+    // Settings › Connectors: webhooks that asked for note.edited hear about it
+    // (debounced per meeting, so typing does not send a request per keystroke).
+    try { if (result && typeof id === 'string') require('./services/outputs/connectorsDeliveryIpc').connectorsDelivery.notesEdited(id); } catch { /* never blocks a save */ }
+    return result;
   });
 
   // Meeting Notes V3 — regenerate the full structured notes for a saved meeting, optionally
   // with a different mode (templateType) and follow-up tone. Runs the map-reduce pipeline on
   // the stored transcript off the UI thread; honors the post_call_summary data scope.
-  safeHandle('regenerate-meeting-summary', async (_, { id, templateType, modeId, tone }: { id: string; templateType?: string; modeId?: string; tone?: 'professional' | 'warm' | 'concise' | 'friendly' }) => {
+  safeHandle('regenerate-meeting-summary', async (_, { id, templateType, modeId, tone }: { id: string; templateType?: string; modeId?: string; tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style' }) => {
     if (!id || typeof id !== 'string') return { success: false, error: 'invalid id' };
     if (modeId !== undefined && typeof modeId !== 'string') modeId = undefined;
     if (templateType !== undefined && typeof templateType !== 'string') templateType = undefined;
@@ -15467,7 +15471,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   // Meeting Notes V3 — regenerate ONLY the follow-up draft (cheap; no re-summarize).
-  safeHandle('regenerate-meeting-followup', async (_, { id, tone }: { id: string; tone?: 'professional' | 'warm' | 'concise' | 'friendly' }) => {
+  safeHandle('regenerate-meeting-followup', async (_, { id, tone }: { id: string; tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style' }) => {
     if (!id || typeof id !== 'string') return { success: false, error: 'invalid id' };
     const mgr = appState.getIntelligenceManager();
     if (!mgr) return { success: false, error: 'intelligence manager unavailable' };
@@ -16914,6 +16918,12 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
     },
   );
+
+  // The default mail app (name + icon) for the follow-up sheet's send menu.
+  safeHandle('mail-app-info', async () => {
+    const { defaultMailApp } = require('./utils/mailApp');
+    return defaultMailApp(process.platform, app).catch(() => null);
+  });
 
   // ==========================================
   // RAG (Retrieval-Augmented Generation) Handlers

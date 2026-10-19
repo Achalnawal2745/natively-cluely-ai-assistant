@@ -2421,7 +2421,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         className={navItemClass(activeTab === 'connections')}
                                     >
                                         {activeTab === 'connections' && navActivePill}
-                                        <Plug size={16} /> {t('Connections')}
+                                        <Plug size={16} /> {t('Connectors')}
                                     </button>
                                     <button
                                         onClick={() => setActiveTab('skills')}

@@ -79,7 +79,7 @@ const TOKEN_PATH = path.join(app.getPath('userData'), 'calendar_tokens.enc');
 /** Token-endpoint errors that mean the stored grant is dead and reconnecting is the only fix. */
 const DEAD_GRANT_ERRORS = new Set(['invalid_grant', 'invalid_client', 'unauthorized_client', 'deleted_client']);
 
-function calendarOAuthClient(): { id: string; secret: string } {
+export function calendarOAuthClient(): { id: string; secret: string } {
     return {
         id: process.env.GOOGLE_CALENDAR_CLIENT_ID || DEFAULT_CALENDAR_CLIENT_ID,
         secret: process.env.GOOGLE_CALENDAR_CLIENT_SECRET || DEFAULT_CALENDAR_CLIENT_SECRET,

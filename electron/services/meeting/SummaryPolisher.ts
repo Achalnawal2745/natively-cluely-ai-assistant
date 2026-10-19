@@ -12,7 +12,7 @@
 // section bullets) — NEVER the raw transcript. Scope-gated by the caller on post_call_summary.
 
 import type { LLMHelper } from '../../LLMHelper';
-import type { ActionItem, DecisionItem, MeetingNoteSection, RiskItem } from './MeetingSummaryV3';
+import { MEETING_TITLE_RULE, type ActionItem, type DecisionItem, type MeetingNoteSection, type RiskItem } from './MeetingSummaryV3';
 import { generateStructured, NOTE_CALL_TIMEOUT_MS } from './generateStructured';
 import { INCLUDE_NEXT_STEPS, getOverviewBand } from './MeetingSummaryReducer';
 import { renderNotesPromptContext, type NotesPromptContext } from './meetingNotesContext';
@@ -130,7 +130,13 @@ ${grounded}`;
   // "new". LAST TIME is deliberately left out of both: the overview must describe this
   // meeting, and a fact only last time's notes hold would fail the gate and throw the
   // whole paragraph away. Carried-over items reach the overview through the notes.
-  async polishOverview(p: PolishSummaryParams & { briefs?: string[]; topics?: string[]; totalTokensEstimate?: number; notesContext?: NotesPromptContext | null }): Promise<string | null> {
+  //
+  // The meeting's TITLE rides in the same reply (2026-10-18): this is the one call that
+  // reads the whole meeting, so the name covers all of it rather than its opening, and
+  // naming the meeting costs no request of its own. The raw title is returned as the
+  // model wrote it; the caller vets it (MeetingPersistence.vetProposedTitle) and keeps
+  // it even when the overview itself is rejected by the gate.
+  async polishOverview(p: PolishSummaryParams & { briefs?: string[]; topics?: string[]; totalTokensEstimate?: number; notesContext?: NotesPromptContext | null }): Promise<{ overview: string | null; title: string | null }> {
     const noteCorpus = this.buildGroundedNotes(p);
     const timeline = (p.briefs || []).filter(Boolean);
     const topics = (p.topics || []).filter(Boolean);
@@ -139,7 +145,7 @@ ${grounded}`;
     if (topics.length) groundedParts.push(`Topics:\n${topics.map(t => `- ${t}`).join('\n')}`);
     if (noteCorpus) groundedParts.push(noteCorpus);
     const grounded = groundedParts.join('\n\n');
-    if (!grounded.trim()) return null;
+    if (!grounded.trim()) return { overview: null, title: null };
     const contextText = renderNotesPromptContext(p.notesContext, { includeLastTime: false });
     // What the "no new information" gate accepts: the notes plus that context.
     const reference = contextText ? `${grounded}\n\n${contextText}` : grounded;
@@ -158,7 +164,8 @@ ${grounded}`;
 STRICT RULES:
 - Use ONLY the facts in the NOTES below. Introduce NO new information, name, number, date, company, or owner not already present.
 - No filler ("productive discussion", "the team aligned", "great meeting"). Every sentence must carry a real fact — writing more paragraphs is not licence to pad; only expand if the notes actually contain that much grounded content.
-- If the notes contain no substance, return an empty "overview" string.${contextText ? `
+- ${MEETING_TITLE_RULE}. Only what the notes say, like the overview.
+- If the notes contain no substance, return an empty "overview" string and an empty "title".${contextText ? `
 - The context below is background for naming people, organisations and the meeting correctly. Name someone only where the NOTES tie them to what happened; never say who attended from the invite. When the user's own notes are present, lead with what they marked as important.
 
 ${contextText}` : ''}
@@ -166,8 +173,14 @@ ${contextText}` : ''}
 NOTES:
 ${grounded}`;
 
-    const jsonShapeHint = `{ "overview": "one flowing paragraph summarizing the whole meeting" }`;
+    const jsonShapeHint = `{ "title": "the meeting's name", "overview": "one flowing paragraph summarizing the whole meeting" }`;
 
+    // The title is kept apart from the overview's verdict: a paragraph rejected as
+    // too short says nothing about its name. A name that carries a fact the notes
+    // never mention is dropped, whichever reply it came from (inventedTitleFacts).
+    // The accepted reply's title wins; otherwise the first clean one is kept.
+    let title: string | null = null;
+    let acceptedTitle: string | null = null;
     const result = await generateStructured<{ overview: string }>({
       schemaName: 'MeetingOverview',
       systemPrompt,
@@ -178,6 +191,9 @@ ${grounded}`;
       // polish (a writing task), not the benchmarked structured-extraction route.
       callOpts: { timeoutMs: NOTE_CALL_TIMEOUT_MS },
       validate: (raw) => {
+        const proposed = (raw && typeof raw === 'object' && typeof (raw as any).title === 'string')
+          ? (raw as any).title.replace(/\s+/g, ' ').trim()
+          : '';
         // Collapse only HORIZONTAL whitespace and normalize runs of blank lines to a single
         // paragraph break (\n\n) — a plain `\s+ -> ' '` collapse (used elsewhere in this file
         // for single-line fields) would flatten every paragraph break the medium/long bands
@@ -185,21 +201,102 @@ ${grounded}`;
         const text = (raw && typeof raw === 'object')
           ? String((raw as any).overview || '').replace(/\r\n/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
           : '';
-        if (!text || text.length < 20) return { ok: false, errors: ['missing/short overview'], repaired: false };
+        const keepTitle = (inventions: string[]) => {
+          const clean = proposed && inventedTitleFacts(proposed, reference, inventions).length === 0 ? proposed : null;
+          if (title === null) title = clean;
+          return clean;
+        };
+        if (!text || text.length < 20) {
+          keepTitle([]);
+          return { ok: false, errors: ['missing/short overview'], repaired: false };
+        }
         const words = text.split(/\s+/);
         const clipped = words.length > band.maxWords ? words.slice(0, band.maxWords).join(' ') : text;
         const offending = newSignificantTokens(clipped, reference);
-        if (offending.length > 0) return { ok: false, errors: [`introduced new tokens: ${offending.slice(0, 5).join(', ')}`], repaired: false };
+        if (offending.length > 0) {
+          keepTitle(offending);
+          return { ok: false, errors: [`introduced new tokens: ${offending.slice(0, 5).join(', ')}`], repaired: false };
+        }
+        acceptedTitle = keepTitle([]);
         return { ok: true, data: { overview: clipped }, errors: [], repaired: false };
       },
     });
 
-    if (result.ok && result.data && result.data.overview) return result.data.overview;
+    if (result.ok && result.data && result.data.overview) return { overview: result.data.overview, title: acceptedTitle ?? title };
     // A rejected polish means the user silently receives the mechanical deterministic
     // overview. That failure was invisible for the entire life of this feature — log it.
     console.warn(`[SummaryPolisher] Overview polish rejected, keeping deterministic version: ${result.errors.join('; ') || 'unknown'}`);
-    return null;
+    return { overview: null, title };
   }
+
+  // The meeting's name alone, for when the overview polish is switched off
+  // (meetingSummaryLlmPolish): the overview call is the one that names the
+  // meeting, so without it a small call writes only the title. With the polish
+  // on this is never called — the name rides in the overview reply.
+  async nameMeeting(p: PolishSummaryParams & { briefs?: string[]; topics?: string[]; notesContext?: NotesPromptContext | null }): Promise<string | null> {
+    const timeline = (p.briefs || []).filter(Boolean);
+    const topics = (p.topics || []).filter(Boolean);
+    const noteCorpus = this.buildGroundedNotes(p);
+    const groundedParts: string[] = [];
+    if (timeline.length) groundedParts.push(`Chronological highlights:\n${timeline.map(b => `- ${b}`).join('\n')}`);
+    if (topics.length) groundedParts.push(`Topics:\n${topics.map(t => `- ${t}`).join('\n')}`);
+    if (noteCorpus) groundedParts.push(noteCorpus);
+    const grounded = groundedParts.join('\n\n');
+    if (!grounded.trim()) return null;
+    const contextText = renderNotesPromptContext(p.notesContext, { includeLastTime: false });
+    const reference = contextText ? `${grounded}\n\n${contextText}` : grounded;
+
+    const systemPrompt = `Name this meeting from the grounded notes below.
+- ${MEETING_TITLE_RULE}. Only what the notes say.
+- If the notes contain no substance, return an empty "title".${contextText ? `
+
+${contextText}` : ''}
+
+NOTES:
+${grounded}`;
+
+    let title: string | null = null;
+    await generateStructured<{ title: string }>({
+      schemaName: 'MeetingTitle',
+      systemPrompt,
+      jsonShapeHint: `{ "title": "the meeting's name" }`,
+      userContent: grounded,
+      llmHelper: this.llmHelper,
+      callOpts: { timeoutMs: NOTE_CALL_TIMEOUT_MS },
+      validate: (raw) => {
+        const proposed = (raw && typeof raw === 'object' && typeof (raw as any).title === 'string')
+          ? (raw as any).title.replace(/\s+/g, ' ').trim()
+          : '';
+        if (!proposed) return { ok: false, errors: ['missing title'], repaired: false };
+        const invented = inventedTitleFacts(proposed, reference, []);
+        if (invented.length > 0) return { ok: false, errors: [`title introduced: ${invented.join(', ')}`], repaired: false };
+        title = proposed;
+        return { ok: true, data: { title: proposed }, errors: [], repaired: false };
+      },
+    });
+    return title;
+  }
+}
+
+/**
+ * The facts a proposed title brings in that the notes never mention. A title is
+ * usually Title Case, so a capitalised word is no sign of a name here; only a
+ * number or a date is judged on its own, and a name only when the same reply's
+ * overview was caught inventing it (`overviewInventions`).
+ */
+export function inventedTitleFacts(title: string, reference: string, overviewInventions: string[]): string[] {
+  const invented = new Set(overviewInventions.map((t) => t.toLowerCase()));
+  const out = newSignificantTokens(title, reference).filter((tok) => {
+    const lower = tok.toLowerCase();
+    return /[\d%$]/.test(lower) || MONTHS.has(lower) || WEEKDAYS.has(lower);
+  });
+  // Every word, the first one too: a title opens on its subject ("Contoso contract
+  // signing"), where newSignificantTokens never reads a capital as a name.
+  for (const word of title.split(/\s+/)) {
+    const lower = word.replace(/['’]s$/i, '').replace(/^[^\p{L}\p{N}$]+|[^\p{L}\p{N}%]+$/gu, '').toLowerCase();
+    if (lower && invented.has(lower) && !out.some((t) => t.toLowerCase() === lower)) out.push(word);
+  }
+  return out;
 }
 
 // ── "No new information" gate ─────────────────────────────────────────────────

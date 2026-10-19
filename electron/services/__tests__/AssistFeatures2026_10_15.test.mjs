@@ -295,13 +295,6 @@ describe('Daily brief', () => {
     assert.equal(b.meetings[2].context, 'First meeting with Dana');
     assert.equal(b.meetings[2].contextMeetingId, null);
   });
-
-  test('You owe comes with it, overdue first', () => {
-    const b = daily.buildDailyBrief({ events, meetings: history, identity: ME, nowMs: NOW, day, timeZone: 'UTC' });
-    assert.equal(b.owedTotal, 1);
-    assert.equal(b.owed[0].text, 'Send the contract');
-    assert.equal(b.owed[0].overdue, true);
-  });
 });
 
 describe('Catch-up after back-to-back meetings', () => {
@@ -415,19 +408,6 @@ describe('AssistService', () => {
     const { deps, calls } = fakeDeps({ meetings: [] });
     await new svcMod.AssistService(deps).getMeetingBrief({ id: 'x', title: 'New', startTime: '2026-10-15T10:00:00Z', attendees: [{ email: 'a@b.com' }] });
     assert.equal(calls.model, 0);
-  });
-
-  test('You owe: ticking is stored locally and hides the item; unticking brings it back', () => {
-    const { deps, kv } = fakeDeps({ meetings: history });
-    const svc = new svcMod.AssistService(deps);
-    const [item] = svc.getOwed();
-    assert.equal(item.text, 'Share the pilot metrics');
-    assert.equal(svc.setOwedDone(item.key, true), true);
-    assert.ok(kv.get(svcMod.KV_OWED_DONE).includes(item.key));
-    assert.equal(svc.getOwed().length, 0);
-    svc.setOwedDone(item.key, false);
-    assert.equal(svc.getOwed().length, 1);
-    assert.equal(svc.setOwedDone('not-a-key', true), false);
   });
 
   test('catch-up: off in Settings means none; dismissed means none', () => {
@@ -546,7 +526,7 @@ describe('assist IPC', () => {
       sender: () => ({ name: 'Evin', email: 'evin@acme.com', google: true }),
       openExternal: async (url) => { opened.push(url); },
     });
-    for (const ch of ['assist:get-daily-brief', 'assist:get-owed', 'assist:set-owed-done', 'assist:get-meeting-brief', 'assist:get-catch-up', 'assist:dismiss-catch-up', 'assist:get-live-recap', 'assist:dismiss-live-recap', 'assist:get-catch-up-enabled', 'assist:set-catch-up-enabled', 'assist:get-sender', 'assist:open-mail-draft']) {
+    for (const ch of ['assist:get-daily-brief', 'assist:get-meeting-brief', 'assist:get-catch-up', 'assist:dismiss-catch-up', 'assist:get-live-recap', 'assist:dismiss-live-recap', 'assist:get-catch-up-enabled', 'assist:set-catch-up-enabled', 'assist:get-sender', 'assist:open-mail-draft']) {
       assert.ok(handlers.has(ch), ch);
     }
     assert.equal((await handlers.get('assist:open-mail-draft')({}, 'https://x.example')).ok, false);
@@ -636,10 +616,8 @@ describe('third review (2026-10-15)', () => {
     assert.equal(notes.meetingsRelated(unrelated[0], unrelated[1]), false);
   });
 
-  test('ticks are kept as long as the longest lookup (Brief me), from one shared constant', () => {
+  test('Brief me looks back as far as the task keys are chained, from one shared constant', () => {
     assert.equal(briefMod.BRIEF_LOOKBACK_DAYS, notes.ASSIST_LONGEST_LOOKBACK_DAYS);
-    const kept = owed.pruneDone({ a: NOW - 170 * DAY, b: NOW - 200 * DAY }, NOW);
-    assert.deepEqual(Object.keys(kept), ['a']);
   });
 
   test('a repeat without a deadline keeps the deadline and the meeting that set it', () => {
@@ -713,15 +691,15 @@ describe('fifth review: a task\'s tick key is the same in every view and over ti
   ];
   const event = { id: 'next', title: 'Priya sync', startTime: new Date(NOW + 60 * MIN).toISOString(), attendees: [priya] };
 
-  test('ticked in the launcher: closed in Brief me too', async () => {
+  // The launcher's tick list (You owe, then Loose Ends) came out 2026-10-17;
+  // a tick it stored before then still closes the task in Brief me.
+  test('a stored tick closes the task in Brief me', async () => {
     const { deps } = fakeDeps({ meetings: ms, modelAllowed: false });
     const svc = new svcMod.AssistService(deps);
-    const [item] = svc.getOwed();
-    assert.equal(item.text, 'Send the pilot plan');
+    const key = owed.owedItemKey('Send the pilot plan', 'k1');
     const before = await svc.getMeetingBrief(event);
-    assert.deepEqual(before.yourOpenItems.map((i) => i.key), [item.key], 'the same key in both views');
-    svc.setOwedDone(item.key, true);
-    assert.equal(svc.getOwed().length, 0);
+    assert.deepEqual(before.yourOpenItems.map((i) => i.key), [key], 'keyed by the meeting that first raised it');
+    deps.kvSet(svcMod.KV_OWED_DONE, JSON.stringify({ [key]: NOW }));
     assert.equal((await svc.getMeetingBrief(event)).yourOpenItems.length, 0);
   });
 

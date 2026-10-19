@@ -507,10 +507,9 @@ describe('the summary prompt\'s people block', () => {
     assert.match(ctxMod.MEETING_CONTEXT_RULES, /Never present them as something said in this meeting/);
   });
 
-  test('a long title is cut, and the title hint for naming the meeting drops the brackets', () => {
+  test('a long title is cut', () => {
     const ctx = ctxMod.buildMeetingPeopleContext({ ...base, knownPeople: [{ email: 'dana@acme.com', title: 'T'.repeat(200) }] });
     assert.ok(ctx.external[0].length < 140);
-    assert.match(ctxMod.titleContextHint(ctx), /people: Dana Fox, Lee Park$/);
   });
 
   test('buildNotesInputs passes them through, and hands the detector the invite\'s addresses', () => {

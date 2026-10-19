@@ -9,7 +9,7 @@
 // same inputs and the tests need no database.
 
 import type { CalendarEventSnapshot } from '../calendar/calendarSessionMatch';
-import { buildMeetingPeopleContext, formatMeetingPeopleBlock, titleContextHint, type KnownPersonInput, type MeetingPeopleContext } from './meetingNotesContext';
+import { buildMeetingPeopleContext, formatMeetingPeopleBlock, type KnownPersonInput, type MeetingPeopleContext } from './meetingNotesContext';
 import { findPreviousSeriesMeeting, formatLastTimeBlock, type SeriesCandidate } from './recurringMeetings';
 
 export interface NotesInputsSource {
@@ -38,7 +38,6 @@ export interface NotesInputs {
   lastTimeBlock: string;
   /** Id of the previous meeting of the series the block came from, for logs. */
   previousMeetingId?: string;
-  titleHint: string;
   userNotes?: string;
   vocabulary?: string[];
   /** For MeetingModeDetector: attendee and call names (no addresses). */
@@ -76,7 +75,6 @@ export function buildNotesInputs(src: NotesInputsSource): NotesInputs {
     meetingContextBlock: formatMeetingPeopleBlock(people),
     lastTimeBlock: formatLastTimeBlock(previous, { timeZone: src.calendarEvent?.timeZone || src.timeZone }),
     ...(previous ? { previousMeetingId: previous.id } : {}),
-    titleHint: titleContextHint(people),
     ...(typeof src.userNotes === 'string' && src.userNotes.trim() ? { userNotes: src.userNotes } : {}),
     ...(Array.isArray(src.vocabulary) && src.vocabulary.length ? { vocabulary: src.vocabulary } : {}),
     participantNames: [...new Set(participantNames)].slice(0, 50),

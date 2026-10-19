@@ -116,7 +116,13 @@ describe('saved with the meeting, through the IPC handler', () => {
         const start = Date.now() - 600_000;
         DatabaseManager.getInstance().saveMeeting({
             id: 'fu-1', title: 'Pricing', date: new Date(start).toISOString(), duration: '10:00', summary: '',
-            detailedSummary: { schemaVersion: 3, title: 'Pricing', tldr: ['Held list price'], sectionsV3: [], actionItems: [], keyPoints: [], followUpDraft: DRAFT },
+            detailedSummary: { schemaVersion: 3, title: 'Pricing', tldr: ['Held list price'], sectionsV3: [], actionItems: [], keyPoints: [], followUpDraft: DRAFT, mode: { selectedModeId: 'mode-sales' } },
+            transcript: [], usage: [], isProcessed: true, summaryStatus: 'completed',
+        }, start, 600_000);
+        // Ran under no recorded mode: its edits teach no mode's style.
+        DatabaseManager.getInstance().saveMeeting({
+            id: 'fu-2', title: 'No mode', date: new Date(start).toISOString(), duration: '10:00', summary: '',
+            detailedSummary: { schemaVersion: 3, title: 'No mode', tldr: [], sectionsV3: [], actionItems: [], keyPoints: [], followUpDraft: DRAFT },
             transcript: [], usage: [], isProcessed: true, summaryStatus: 'completed',
         }, start, 600_000);
     });
@@ -142,16 +148,33 @@ describe('saved with the meeting, through the IPC handler', () => {
         assert.equal(reopened.followUpDraft.generated.body, DRAFT.body);
         assert.deepEqual(reopened.tldr, ['Held list price'], 'the notes themselves are untouched');
         assert.equal(reopened.userEditedAt, undefined, 'editing the email does not mark the notes as hand-edited');
-        assert.equal(ipc.getWritingStyleService().status().learnedCount, 0);
+        assert.equal(ipc.getWritingStyleService('mode-sales').status().learnedCount, 0);
     });
     test('Copy (used) of the edited email records it once as a writing sample', async () => {
         const res = await save({ meetingId: 'fu-1', used: true });
         assert.equal(res.ok, true);
         assert.equal(res.recorded, true);
         await save({ meetingId: 'fu-1', used: true });
-        const st = ipc.getWritingStyleService().status();
+        const st = ipc.getWritingStyleService('mode-sales').status();
         assert.equal(st.learnedCount, 1, 'deduped: the same meeting adds one sample');
-        assert.ok(ipc.getWritingStyleService().listSamples()[0].preview.startsWith('Hey Sam,'));
+        assert.ok(ipc.getWritingStyleService('mode-sales').listSamples()[0].preview.startsWith('Hey Sam,'));
+        assert.equal(ipc.getWritingStyleService('mode-other').status().sampleCount, 0, 'only the mode the meeting ran under learns');
+    });
+    test('a meeting with no recorded mode saves the edit but teaches no style', async () => {
+        const res = await save({ meetingId: 'fu-2', body: EDITED, used: true });
+        assert.equal(res.ok, true);
+        assert.equal(res.recorded, false);
+    });
+    test('the style calls are per mode: each names its mode, none answers without one', async () => {
+        const call = (ch, ...args) => handlers.get(ch)({ sender: SENDER }, ...args);
+        assert.equal(await call('outputs:style-get'), null);
+        assert.deepEqual(await call('outputs:style-list'), []);
+        assert.equal((await call('outputs:style-add', undefined, EDITED)).ok, false);
+        const added = await call('outputs:style-add', 'mode-tech', 'Hi team,\n\nShort update: the build is green and the release goes out Monday.\n\nCheers,\nEvin');
+        assert.equal(added.ok, true);
+        assert.equal((await call('outputs:style-get', 'mode-tech')).pastedCount, 1);
+        assert.equal((await call('outputs:style-get', 'mode-sales')).pastedCount, 0);
+        assert.equal(handlers.has('outputs:style-set-enabled'), false, 'no on/off: samples are used when there are any');
     });
     test('an emptied body is refused and the saved email stays', async () => {
         const res = await save({ meetingId: 'fu-1', body: '  ' });

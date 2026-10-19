@@ -130,9 +130,9 @@ export async function httpRequest(url: string, opts: RequestOptions = {}): Promi
 /** The plain-words sentence for a failure, naming the service. Never a status or a code. */
 export function describeConnectionError(kind: ConnectionErrorKind | undefined, service: string): string {
     switch (kind) {
-        case 'not_connected': return `${service} is not connected. Add it in Settings, Connections.`;
+        case 'not_connected': return `${service} is not connected. Add it in Settings, Connectors.`;
         case 'invalid_input': return `${service} did not accept what was sent. Check the details and try again.`;
-        case 'auth': return `${service} did not accept the token. It may have been revoked or mistyped. Paste a new one in Settings, Connections.`;
+        case 'auth': return `${service} did not accept the token. It may have been revoked or mistyped. Paste a new one in Settings, Connectors.`;
         case 'forbidden': return `The token works, but it is not allowed to do this in ${service}. Check the permissions it was given.`;
         case 'not_found': return `${service} could not find where to send this. It may have been deleted or not shared with the integration.`;
         case 'rate_limited': return `${service} is asking us to slow down. Wait a minute and try again.`;

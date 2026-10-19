@@ -9,7 +9,7 @@
 export const SLACK_DRAFT_MAX_CHARS = 40_000;
 
 export type ConnectionService = 'slack' | 'notion' | 'hubspot' | 'attio' | 'affinity' | 'salesforce' | 'clearbit';
-export type CrmService = 'hubspot' | 'attio' | 'affinity' | 'salesforce';
+export type CrmService = 'hubspot' | 'attio' | 'affinity' | 'salesforce' | 'pipedrive';
 /** Outside directories that suggest a title and company for an attendee. Opt-in; results are suggestions only. */
 export type EnrichmentService = 'clearbit';
 
@@ -53,23 +53,31 @@ export interface McpServerStatus {
     port?: number;
     /** Shown in Settings so the user can copy it; the server is loopback only. */
     token?: string;
+    /** The address, on or off: the port is picked once and kept. */
     url?: string;
     /** Ready-to-paste setups for each client. */
-    snippets?: { claudeCode: string; cursor: string; claudeDesktop: string };
+    snippets?: { claudeCode: string; cursor: string; claudeDesktop: string; codex: string };
     /** Plain-words reason it is not running while enabled. */
     error?: string;
 }
+
+/** Services whose Connect button can sign in with the browser (natively-api holds their client). */
+export type OAuthConnectorService = 'slack' | 'notion' | 'hubspot' | 'salesforce' | 'pipedrive' | 'attio';
+
+/** How a token-based connection was made, and whose account it is (browser sign-ins only). */
+export interface ConnectedVia { via?: 'oauth'; account?: string }
 
 export interface ConnectionsStatus {
     /** False when the OS keychain / DPAPI is unavailable: tokens are then kept for this session only. */
     secureStorage: boolean;
     slack: { webhooks: SlackWebhookInfo[] };
-    notion: { connected: boolean; parent?: NotionParentInfo };
-    hubspot: { connected: boolean };
-    attio: { connected: boolean };
+    notion: { connected: boolean; parent?: NotionParentInfo } & ConnectedVia;
+    hubspot: { connected: boolean } & ConnectedVia;
+    attio: { connected: boolean } & ConnectedVia;
     affinity: { connected: boolean };
     /** Salesforce also keeps the instance URL the user pasted, so the row can show it. */
-    salesforce: { connected: boolean; instanceUrl?: string };
+    salesforce: { connected: boolean; instanceUrl?: string } & ConnectedVia;
+    pipedrive: { connected: boolean } & ConnectedVia;
     clearbit: { connected: boolean };
     mcp: McpServerStatus;
 }
@@ -86,13 +94,15 @@ export interface CrmMatchPreview extends OutputResult {
     attendees: Array<{ email: string; name?: string; matched: boolean; recordName?: string }>;
 }
 
+/** A mode's follow-up writing style. No switch: samples, when there are any, are used. */
 export interface WritingStyleStatus {
-    enabled: boolean;
     sampleCount: number;
     pastedCount: number;
     learnedCount: number;
     /** A short description of the learned style, when one is cached. */
     summary?: string;
+    /** The same style in a few words (one line in Settings; the summary is its tooltip). */
+    title?: string;
     derivedAt?: number;
     /** True while the cached profile does not reflect the current samples. */
     stale: boolean;
@@ -114,7 +124,6 @@ export interface ShareLinkInfo {
 
 export interface MeetingOutputsApi {
     exportPdf: (meetingId: string) => Promise<OutputResult & { canceled?: boolean; fileName?: string }>;
-    exportHtml: (meetingId: string, opts: { includeTranscript: boolean }) => Promise<OutputResult & { canceled?: boolean; fileName?: string }>;
     /** The meeting's link, when it has one. */
     getShareLink: (meetingId: string) => Promise<OutputResult & { link?: ShareLinkInfo }>;
     /** Makes the link (or hands back the one that exists) and puts it on the clipboard. */
@@ -130,6 +139,12 @@ export interface MeetingOutputsApi {
     saveToken: (service: 'notion' | CrmService | EnrichmentService, token: string, instanceUrl?: string) => Promise<OutputResult>;
     testConnection: (service: 'notion' | CrmService | EnrichmentService) => Promise<OutputResult>;
     disconnect: (service: 'notion' | CrmService | EnrichmentService) => Promise<OutputResult>;
+    /** Which services sign in with the browser right now. All false when natively-api cannot be reached. */
+    oauthServices: () => Promise<Record<OAuthConnectorService, boolean>>;
+    /** Opens the service's sign-in in the browser and resolves once it is saved, refused or cancelled. */
+    connectWithBrowser: (service: OAuthConnectorService) => Promise<OutputResult>;
+    /** Stops waiting for the browser; the pending connectWithBrowser resolves with an empty message. */
+    cancelBrowserConnect: () => Promise<void>;
     searchNotion: (query: string) => Promise<OutputResult & { results?: NotionSearchResult[] }>;
     setNotionParent: (parent: NotionParentInfo) => Promise<OutputResult>;
 
@@ -155,14 +170,18 @@ export interface MeetingOutputsApi {
     setMcpEnabled: (enabled: boolean) => Promise<McpServerStatus>;
     resetMcpToken: () => Promise<McpServerStatus>;
 
-    getWritingStyle: () => Promise<WritingStyleStatus>;
-    setWritingStyleEnabled: (enabled: boolean) => Promise<WritingStyleStatus>;
-    listWritingSamples: () => Promise<WritingSampleInfo[]>;
-    addWritingSample: (text: string) => Promise<OutputResult & { status?: WritingStyleStatus }>;
-    removeWritingSample: (id: string) => Promise<WritingStyleStatus>;
-    /** A follow-up the user copied or sent, as they finally wrote it. Kept only when edited. */
-    recordFollowUpSent: (payload: { finalText: string; draftText?: string }) => Promise<boolean>;
-    refreshWritingStyle: () => Promise<OutputResult & { status?: WritingStyleStatus }>;
+    // Follow-ups in your style are PER MODE: each call names the mode. Null
+    // (or an empty list) when no mode id is given.
+    getWritingStyle: (modeId: string) => Promise<WritingStyleStatus | null>;
+    listWritingSamples: (modeId: string) => Promise<WritingSampleInfo[]>;
+    addWritingSample: (modeId: string, text: string) => Promise<OutputResult & { status?: WritingStyleStatus }>;
+    removeWritingSample: (modeId: string, id: string) => Promise<WritingStyleStatus | null>;
+    /**
+     * A follow-up the user copied or sent, as they finally wrote it. Kept only
+     * when edited, under the mode of the meeting it was written for.
+     */
+    recordFollowUpSent: (payload: { meetingId: string; finalText: string; draftText?: string }) => Promise<boolean>;
+    refreshWritingStyle: (modeId: string) => Promise<OutputResult & { status?: WritingStyleStatus }>;
     /**
      * Saves the follow-up email as the user edited it on the meeting page. With
      * `used` (they copied it or opened it in their mail app), an edited body is

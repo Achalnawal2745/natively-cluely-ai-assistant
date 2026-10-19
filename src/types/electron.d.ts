@@ -1,4 +1,4 @@
-import type { AssistCatchUp, AssistDailyBrief, AssistEvent, AssistLiveRecap, AssistMeetingBrief, AssistOwedItem, AssistSender, LiveHelperAction } from './assist'
+import type { AssistCatchUp, AssistDailyBrief, AssistEvent, AssistLiveRecap, AssistMeetingBrief, AssistSender, LiveHelperAction } from './assist'
 // Phase 3 — DynamicActionPayload mirrors electron/services/dynamic-actions/DynamicAction.ts.
 // Kept as a structural interface (not a class import) to preserve the strict main↔renderer
 // type boundary — the renderer never imports from electron/* directly.
@@ -556,6 +556,8 @@ export interface ElectronAPI {
   exportDiagram?: (payload: { format: 'svg' | 'png' | 'mmd' | 'json' | 'csv'; data: string; name?: string }) => Promise<{ saved: boolean; canceled?: boolean; fileName?: string; silent?: boolean; error?: string }>
   /** Meeting outputs: export, Slack, Notion, CRM notes, the local MCP server, follow-up style. */
   meetingOutputs?: import('./meetingOutputs').MeetingOutputsApi
+  /** Settings › Connectors: webhooks, Zapier, automatic sending, API keys, Gmail (src/types/connectors.ts). */
+  connectors?: import('./connectors').ConnectorsApi
   /** The main process asks this window to draw a diagram for the phone. */
   onDiagramRenderRequest?: (callback: (request: { requestId: string; key: string; source: string }) => void) => () => void
   sendDiagramRenderResult?: (result: { requestId: string; key: string; ok: boolean; svg?: string }) => void
@@ -821,8 +823,8 @@ export interface ElectronAPI {
   testHindsightConnection: () => Promise<{ healthy: boolean; error?: string }>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
-  regenerateMeetingSummary: (id: string, opts?: { templateType?: string; modeId?: string; tone?: 'professional' | 'warm' | 'concise' | 'friendly' }) => Promise<{ success: boolean; error?: string }>
-  regenerateMeetingFollowUp: (id: string, tone?: 'professional' | 'warm' | 'concise' | 'friendly') => Promise<{ success: boolean; error?: string }>
+  regenerateMeetingSummary: (id: string, opts?: { templateType?: string; modeId?: string; tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style' }) => Promise<{ success: boolean; error?: string }>
+  regenerateMeetingFollowUp: (id: string, tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style') => Promise<{ success: boolean; error?: string }>
   updateMeetingSpeakerLabels: (id: string, labels: Record<string, string>) => Promise<{ success: boolean; labels?: Record<string, string>; notesUpdated?: boolean; error?: string }>
   deleteMeeting: (id: string) => Promise<boolean>
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => Promise<void>
@@ -954,6 +956,7 @@ export interface ElectronAPI {
   /** Link a saved meeting to one of those events, or unlink it (null). */
   setMeetingCalendarEvent: (meetingId: string, eventId: string | null) => Promise<{ success: boolean }>;
   openMailto: (params: { to: string; subject: string; body: string }) => Promise<{ success: boolean; error?: string }>;
+  getMailAppInfo?: () => Promise<{ name: string; icon?: string } | null>;
 
   // Audio Test
   startAudioTest: (deviceId?: string) => Promise<{ success: boolean }>;
@@ -1034,8 +1037,6 @@ export interface ElectronAPI {
   meetingAutoStopKeepGoing?: () => Promise<{ success: boolean }>
   /** Assist (electron/services/assist): the daily brief, You owe, Brief me, the catch-up, Last time. */
   assistGetDailyBrief?: (events: AssistEvent[]) => Promise<AssistDailyBrief>
-  assistGetOwed?: () => Promise<AssistOwedItem[]>
-  assistSetOwedDone?: (key: string, done: boolean) => Promise<{ ok: boolean }>
   assistGetMeetingBrief?: (event: AssistEvent, opts?: { refresh?: boolean }) => Promise<{ ok: true; brief: AssistMeetingBrief } | { ok: false; error: string }>
   assistGetCatchUp?: () => Promise<AssistCatchUp | null>
   assistDismissCatchUp?: (key: string) => Promise<{ ok: boolean }>

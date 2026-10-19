@@ -299,7 +299,7 @@ const SHARE_SERVICE = 'Natively';
 export function describeShareError(kind: ConnectionErrorKind | undefined, action: 'create' | 'revoke', ctx: { transcript?: boolean } = {}): string {
     switch (kind) {
         case 'too_large': return ctx.transcript
-            ? 'These notes are too long to share as a link with the transcript. Leave out the transcript and try again.'
+            ? 'These notes and the transcript are too long to share as a link. Share them as a file instead.'
             : 'These notes are too long to share as a link. Share them as a file instead.';
         case 'rate_limited': return 'Too many links were made just now. Wait a while and try again.';
         case 'auth': return 'Sharing a link needs an active Natively plan or trial. Check Settings, AI Providers, then try again.';

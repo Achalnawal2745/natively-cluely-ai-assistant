@@ -1,9 +1,18 @@
 // Follow-ups in the user's own writing voice. Natively keeps, on this computer
 // only, the follow-ups the user edited before copying or sending them, and any
-// writing samples they paste in Settings. From those it derives a short style
+// writing samples they paste in the Modes Manager. From those it derives a short style
 // profile (greeting, sign-off, sentence length, formality, emoji, phrases they
 // use) with the user's configured model, caches it, and FollowUpDraftGenerator
-// writes in that voice. The user can turn it off.
+// writes in that voice.
+//
+// NO SWITCH (2026-10-17): a mode with samples uses them; one without has no
+// style. Removing every sample is how a mode stops. An `enabled` left in a file
+// from before is ignored.
+//
+// PER MODE (2026-10-17): each mode keeps its own samples and profile,
+// in its own file (styleFileForMode), edited in the Modes Manager. A follow-up
+// uses the style of the mode its meeting ran under. The one global file from
+// before is handed to the built-in General mode once (migrateLegacyStyleFile).
 //
 // The measurable parts (sentence length, emoji, greeting, sign-off) are counted
 // here, so a profile exists even when no model is available; the model adds
@@ -16,7 +25,39 @@ import * as crypto from 'crypto';
 import type { WritingSampleInfo, WritingStyleStatus } from '../../../src/types/meetingOutputs';
 import { writeFileAtomicSync } from './atomicFile';
 
+/** The global file from before styles were per mode; only read to migrate it. */
 export const WRITING_STYLE_FILE = 'writing_style.json';
+
+/** A mode's style file. Ids that are not plain file-name characters are hashed. */
+export function styleFileForMode(modeId: string): string {
+    const safe = /^[A-Za-z0-9_-]{1,100}$/.test(modeId)
+        ? modeId
+        : crypto.createHash('sha256').update(modeId).digest('hex').slice(0, 32);
+    return `writing_style.mode-${safe}.json`;
+}
+
+/**
+ * Hands the old global file to one mode (the built-in General), once: renamed,
+ * so nothing is copied and it cannot run twice. Leaves it alone when that mode
+ * already has a file of its own. True when it moved.
+ */
+export function migrateLegacyStyleFile(dir: string, modeId: string): boolean {
+    const from = path.join(dir, WRITING_STYLE_FILE);
+    const to = path.join(dir, styleFileForMode(modeId));
+    try {
+        if (!fs.existsSync(from) || fs.existsSync(to)) return false;
+        fs.renameSync(from, to);
+        return true;
+    } catch (e: any) {
+        console.warn('[WritingStyle] Could not move the old style to General:', e?.code || 'rename failed');
+        return false;
+    }
+}
+
+/** Forgets a deleted mode's samples. */
+export function removeModeStyleFile(dir: string, modeId: string): void {
+    try { fs.rmSync(path.join(dir, styleFileForMode(modeId)), { force: true }); } catch { /* best effort */ }
+}
 export const MAX_SAMPLES = 30;
 export const SAMPLE_MAX_CHARS = 4000;
 export const SAMPLE_MIN_CHARS = 40;
@@ -47,6 +88,8 @@ export interface StyleProfile {
     phrases: string[];
     /** One sentence describing the voice. */
     description?: string;
+    /** A few words naming the voice, the description's title (Settings shows it on one line). */
+    title?: string;
 }
 
 export interface StyleStats {
@@ -62,7 +105,6 @@ export interface StyleStats {
 
 interface StyleFile {
     version: 1;
-    enabled: boolean;
     samples: WritingSample[];
     profile?: StyleProfile & { derivedAt: number; samplesKey: string };
 }
@@ -168,15 +210,19 @@ Counted from the samples already (use these, do not recount):
 Return:
 - formality: "casual", "neutral" or "formal".
 - phrases: up to 6 short phrases or openers they reuse (2 to 6 words each, no names or specifics). Empty if none recur.
-- description: one plain sentence on how they write (for example how direct they are, how they open and close, how much they hedge).`;
+- description: one plain sentence on how they write (for example how direct they are, how they open and close, how much they hedge).
+- title: 2 to 5 words naming the voice, like a title for the description (for example "Brief, direct and warm"). No full stop.`;
     const userContent = recent
         .map((s, i) => `<sample ${i + 1}>\n${s.text.slice(0, PROMPT_SAMPLE_CHARS)}\n</sample ${i + 1}>`)
         .join('\n\n');
-    const jsonShapeHint = '{"formality": "casual", "phrases": ["Quick note on", "Happy to"], "description": "Short, direct sentences; opens with the point and closes with a thanks."}';
+    const jsonShapeHint = '{"formality": "casual", "phrases": ["Quick note on", "Happy to"], "description": "Short, direct sentences; opens with the point and closes with a thanks.", "title": "Brief, direct and warm"}';
     return { systemPrompt, userContent, jsonShapeHint };
 }
 
-export function validateModelProfile(raw: unknown): { formality: Formality; phrases: string[]; description?: string } | null {
+/** Longest title kept; a longer one is a sentence, not a title, and the counted one stands in. */
+const TITLE_MAX_CHARS = 48;
+
+export function validateModelProfile(raw: unknown): { formality: Formality; phrases: string[]; description?: string; title?: string } | null {
     if (!raw || typeof raw !== 'object') return null;
     const r = raw as any;
     const formality: Formality = r.formality === 'casual' || r.formality === 'formal' ? r.formality : 'neutral';
@@ -186,7 +232,9 @@ export function validateModelProfile(raw: unknown): { formality: Formality; phra
         .filter((p: string) => p.length >= 3 && p.length <= 60)
         .slice(0, 6);
     const description = typeof r.description === 'string' ? r.description.replace(/[\r\n]+/g, ' ').trim().slice(0, 240) : undefined;
-    return { formality, phrases, ...(description ? { description } : {}) };
+    const titleRaw = typeof r.title === 'string' ? r.title.replace(/[\r\n"]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/[.\s]+$/, '') : '';
+    const title = titleRaw.length >= 3 && titleRaw.length <= TITLE_MAX_CHARS ? titleRaw : undefined;
+    return { formality, phrases, ...(description ? { description } : {}), ...(title ? { title } : {}) };
 }
 
 /** The block FollowUpDraftGenerator adds to its prompt. */
@@ -213,25 +261,33 @@ export function describeProfile(p: StyleProfile): string {
     return `${parts.join(', ')}.`.replace(/^./, (c) => c.toUpperCase());
 }
 
+/** The voice in a few words: the model's title, else one built from the counts ("Short sentences, casual"). */
+export function titleForProfile(p: StyleProfile): string {
+    if (p.title) return p.title;
+    return `${p.sentenceLength} sentences, ${p.formality}`.replace(/^./, (c) => c.toUpperCase());
+}
+
 export type StyleModelCall = (prompt: { systemPrompt: string; userContent: string; jsonShapeHint: string }) => Promise<unknown | null>;
 
 export class WritingStyleService {
     private cache: StyleFile | null = null;
 
-    constructor(private readonly opts: { dir: string; now?: () => number }) {}
+    /** `modeId`: that mode's file. Without one, the old global file (tests, migration). */
+    constructor(private readonly opts: { dir: string; modeId?: string; now?: () => number }) {}
 
-    private get file(): string { return path.join(this.opts.dir, WRITING_STYLE_FILE); }
+    private get file(): string {
+        return path.join(this.opts.dir, this.opts.modeId ? styleFileForMode(this.opts.modeId) : WRITING_STYLE_FILE);
+    }
     private now(): number { return (this.opts.now || Date.now)(); }
 
     private read(): StyleFile {
         if (this.cache) return this.cache;
-        let data: StyleFile = { version: 1, enabled: true, samples: [] };
+        let data: StyleFile = { version: 1, samples: [] };
         try {
             if (fs.existsSync(this.file)) {
                 const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
                 data = {
                     version: 1,
-                    enabled: raw?.enabled !== false,
                     samples: (Array.isArray(raw?.samples) ? raw.samples : [])
                         .filter((s: any) => typeof s?.id === 'string' && typeof s?.text === 'string' && (s.source === 'pasted' || s.source === 'followup'))
                         .slice(-MAX_SAMPLES)
@@ -259,11 +315,10 @@ export class WritingStyleService {
         const d = this.read();
         const key = samplesKey(d.samples);
         return {
-            enabled: d.enabled,
             sampleCount: d.samples.length,
             pastedCount: d.samples.filter((s) => s.source === 'pasted').length,
             learnedCount: d.samples.filter((s) => s.source === 'followup').length,
-            ...(d.profile ? { summary: describeProfile(d.profile), derivedAt: d.profile.derivedAt } : {}),
+            ...(d.profile ? { summary: describeProfile(d.profile), title: titleForProfile(d.profile), derivedAt: d.profile.derivedAt } : {}),
             stale: d.samples.length > 0 && (!d.profile || d.profile.samplesKey !== key),
         };
     }
@@ -272,10 +327,6 @@ export class WritingStyleService {
         return [...this.read().samples]
             .sort((a, b) => b.at - a.at)
             .map((s) => ({ id: s.id, source: s.source, at: s.at, preview: s.text.replace(/\s+/g, ' ').trim().slice(0, 140) }));
-    }
-
-    setEnabled(enabled: boolean): void {
-        this.write({ ...this.read(), enabled });
     }
 
     /** Adds a sample, dropping the oldest learned one (then the oldest pasted) past the cap. */
@@ -335,10 +386,10 @@ export class WritingStyleService {
         return profile;
     }
 
-    /** The style guide for a follow-up, deriving first when the samples changed. Null when off or empty. */
+    /** The style guide for a follow-up, deriving first when the samples changed. Null without samples. */
     async guideForFollowUp(call: StyleModelCall | null): Promise<string | null> {
         const d = this.read();
-        if (!d.enabled || !d.samples.length) return null;
+        if (!d.samples.length) return null;
         const profile = this.currentProfile() || (await this.derive(call));
         return profile ? renderStyleGuide(profile) : null;
     }

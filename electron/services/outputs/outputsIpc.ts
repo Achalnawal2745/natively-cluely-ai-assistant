@@ -21,14 +21,20 @@ import { observeMeetingDeletes } from '../../db/meetingDeleteObservers';
 import { buildNotesDocument, type NotesDocument } from './notesDocument';
 import { buildNotesHtml } from './htmlExport';
 import { NOTES_EXPORT_FILTERS, defaultExportPath, notesFileStem, withExportExtension, type NotesExportFormat } from './exportFiles';
-import { describeConnectionError, errorKindOf } from './httpRequest';
+import { ConnectionError, describeConnectionError, errorKindOf } from './httpRequest';
+import { connectWithBrowser, currentToken, isOAuthConnector, oauthServices, reconnectMessage, withCurrentToken } from './connectorOAuth';
+import { connectorsDelivery, registerConnectorsDeliveryIpc } from './connectorsDeliveryIpc';
+import { registerLocalApiIpc, startLocalApiIfKeys, stopLocalApi } from './localApiIpc';
+import { registerGmailIpc } from './gmailIpc';
+import type { AutoSendDestination } from '../../../src/types/connectors';
+import type { OAuthTokenService } from './connectionsStore';
 import { checkSlackDraft, composeSlackDraft, isSlackWebhookUrl, postSlackWebhook, slackDraftMessage, testSlackWebhook } from './slack';
 import { NotionPartialPages, appendNotionBatches, buildNotionBlocks, createNotionPage, looksLikeNotionToken, normaliseNotionId, notionPageTitle, searchNotion, testNotion } from './notion';
 import { CRM_LABELS, CrmSendSession, crmCandidates, crmSendSummary, matchAttendees, normaliseEmail, normaliseSalesforceInstanceUrl, remainingRecords, sendCrmNote, testCrm, uniqueRecords, type CrmRecord } from './crm';
 import { ENRICHMENT_LABEL, enrichmentFacts, lookupAttendees, lookupCompany, testEnrichment } from './enrichment';
 import { companyDomainForEmail, isFreeMailDomain } from '../organise/people';
-import { mcpClientSnippets, newMcpToken, randomMcpPort, startMcpServer, type MeetingSource, type RunningMcpServer } from './mcpServer';
-import { WritingStyleService, type StyleModelCall } from './writingStyle';
+import { mcpClientSnippets, mcpUrl, newMcpToken, randomMcpPort, startMcpServer, type MeetingSource, type RunningMcpServer } from './mcpServer';
+import { WritingStyleService, migrateLegacyStyleFile, removeModeStyleFile, type StyleModelCall } from './writingStyle';
 import { applyFollowUpEdit, currentDraft, followUpSample } from './followUpEdit';
 import { safeDiagramFileStem, saveDialogPlacement, uniqueDiagramFileName } from '../diagram/diagramExport';
 import { nativePromptsBlocked } from '../stealthPromptGate';
@@ -36,10 +42,11 @@ import { nativePromptsBlocked } from '../stealthPromptGate';
 type SafeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => void;
 
 const SERVICE_LABEL: Record<'slack' | 'notion' | CrmService | EnrichmentService, string> = { slack: 'Slack', notion: 'Notion', ...CRM_LABELS, clearbit: ENRICHMENT_LABEL };
-const TOKEN_SERVICES = ['notion', 'hubspot', 'attio', 'affinity', 'salesforce', 'clearbit'] as const;
+const TOKEN_SERVICES = ['notion', 'hubspot', 'attio', 'affinity', 'salesforce', 'pipedrive', 'clearbit'] as const;
 type TokenService = typeof TOKEN_SERVICES[number];
 const isTokenService = (v: unknown): v is TokenService => typeof v === 'string' && (TOKEN_SERVICES as readonly string[]).includes(v);
-const isCrm = (v: unknown): v is CrmService => v === 'hubspot' || v === 'attio' || v === 'affinity' || v === 'salesforce';
+const isOAuthTokenService = (v: unknown): v is OAuthTokenService => v === 'notion' || v === 'hubspot' || v === 'attio' || v === 'salesforce' || v === 'pipedrive';
+const isCrm = (v: unknown): v is CrmService => v === 'hubspot' || v === 'attio' || v === 'affinity' || v === 'salesforce' || v === 'pipedrive';
 
 // ── Singletons ───────────────────────────────────────────────────────────
 
@@ -48,17 +55,58 @@ let store: ConnectionsStore | null = null;
 const crmSession = new CrmSendSession();
 /** Notion pages made this session that are missing part of their notes. */
 const notionPartials = new NotionPartialPages();
-let style: WritingStyleService | null = null;
+/** Follow-up writing styles, one per mode (writingStyle.ts). */
+const styles = new Map<string, WritingStyleService>();
+let styleMigrated = false;
 
 export function getConnectionsStore(): ConnectionsStore {
     if (!store) store = new ConnectionsStore({ userDataDir: app.getPath('userData'), safeStorage });
     return store;
 }
 
-export function getWritingStyleService(): WritingStyleService {
-    if (!style) style = new WritingStyleService({ dir: app.getPath('userData') });
-    return style;
+/** The built-in General mode, which inherits the style kept before styles were per mode. */
+function generalModeId(): string | undefined {
+    try {
+        const { ModesManager } = require('../ModesManager');
+        const modes = ModesManager.getInstance().getModes() as Array<{ id: string; name: string; templateType: string; isBuiltin?: boolean }>;
+        return (modes.find((m) => m.isBuiltin && m.templateType === 'general')
+            ?? modes.find((m) => m.templateType === 'general' && m.name === 'General'))?.id;
+    } catch {
+        return undefined;
+    }
 }
+
+/** A mode's follow-up writing style. */
+export function getWritingStyleService(modeId: string): WritingStyleService {
+    const dir = app.getPath('userData');
+    if (!styleMigrated) {
+        const general = generalModeId();
+        if (general) {
+            styleMigrated = true;
+            if (migrateLegacyStyleFile(dir, general)) styles.delete(general);
+        }
+    }
+    let svc = styles.get(modeId);
+    if (!svc) {
+        svc = new WritingStyleService({ dir, modeId });
+        styles.set(modeId, svc);
+    }
+    return svc;
+}
+
+/** Drops a deleted mode's writing samples (ModesManager.deleteMode). */
+export function forgetWritingStyleForMode(modeId: string): void {
+    styles.delete(modeId);
+    removeModeStyleFile(app.getPath('userData'), modeId);
+}
+
+/** The mode a saved meeting ran under, from its notes; its follow-ups use that mode's style. */
+export function meetingStyleModeId(detailedSummary: unknown): string | undefined {
+    const id = (detailedSummary as any)?.mode?.selectedModeId;
+    return typeof id === 'string' && id ? id : undefined;
+}
+
+const isModeId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 200;
 
 /** The style-profile model call, through the same routing meeting notes use. */
 export function styleModelCall(llmHelper: any): StyleModelCall | null {
@@ -240,17 +288,23 @@ let mcpError: string | undefined;
 let mcpStarting: Promise<void> | null = null;
 
 function mcpStatus(): McpServerStatus {
-    const s = getConnectionsStore().mcpSettings();
+    const st = getConnectionsStore();
+    // Settings shows the address before the server is ever turned on, as Granola
+    // shows its public URL, so a port is picked and kept the first time it is
+    // asked for (with the token it is stored under; neither leaves main while
+    // off). Turning on then listens there, or moves once if the port was taken.
+    if (!st.mcpSettings().port) st.setMcp({ port: randomMcpPort(), ...(st.mcpSettings().token ? {} : { token: newMcpToken() }) });
+    const s = st.mcpSettings();
     const running = !!mcpServer;
     const port = mcpServer?.port ?? s.port;
     return {
         enabled: s.enabled,
         running,
-        ...(port ? { port } : {}),
+        ...(port ? { port, url: mcpUrl(port) } : {}),
         ...(s.token && s.enabled ? { token: s.token } : {}),
         ...(port && s.enabled && s.token ? (() => {
-            const { url, claudeCode, cursor, claudeDesktop } = mcpClientSnippets(port, s.token);
-            return { url, snippets: { claudeCode, cursor, claudeDesktop } };
+            const { url: _url, ...snippets } = mcpClientSnippets(port, s.token);
+            return { snippets };
         })() : {}),
         ...(s.enabled && !running && mcpError ? { error: mcpError } : {}),
     };
@@ -294,8 +348,12 @@ async function stopMcp(): Promise<void> {
     if (s) await s.close().catch(() => {});
 }
 
-/** At launch: back on if the user left it on. Never started otherwise. */
+/**
+ * At launch: the MCP server back on if the user left it on, and the local API
+ * (Personal API keys) if any key is active. Neither starts otherwise.
+ */
 export function startMcpServerIfEnabled(): void {
+    void startLocalApiIfKeys();
     try {
         if (!getConnectionsStore().mcpSettings().enabled) return;
         mcpStarting = startMcp().finally(() => { mcpStarting = null; });
@@ -305,6 +363,8 @@ export function startMcpServerIfEnabled(): void {
 /** On quit (both systems): drop open connections and stop listening. Never blocks the quit. */
 export function stopMcpServerOnQuit(): void {
     void stopMcp();
+    void stopLocalApi();
+    try { connectorsDelivery.dispose(); } catch { /* never blocks a quit */ }
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -324,6 +384,29 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
     const MCP_OFF: McpServerStatus = { enabled: false, running: false };
     const llm = () => { try { return appState.processingHelper.getLLMHelper(); } catch { return null; } };
 
+    // Browser sign-in (connectorOAuth.ts) and the tokens it keeps fresh.
+    const oauthDeps = () => ({ apiBase: nativelyApiBase(), store: getConnectionsStore() });
+    let browserSignIn: AbortController | null = null;
+    /** Runs `fn` with the service's token; a signed-in token is renewed when it runs out or is refused. */
+    const withToken = async <T>(service: TokenService, fn: (token: string) => Promise<T>): Promise<T> => {
+        if (isOAuthTokenService(service)) return withCurrentToken(service, oauthDeps(), fn);
+        const token = getConnectionsStore().token(service);
+        if (!token) throw new ConnectionError('not_connected');
+        return fn(token);
+    };
+    /** The token now (renewed first if it is about to run out), for calls that report failure in their result. */
+    const tokenNow = (service: TokenService): Promise<string | null> => (isOAuthTokenService(service)
+        ? currentToken(service, oauthDeps())
+        : Promise.resolve(getConnectionsStore().token(service)));
+    /** A failure; a refused signed-in token asks to connect again rather than to paste one. */
+    const failOn = (err: unknown, service: TokenService): OutputResult => {
+        const kind = errorKindOf(err);
+        if (kind === 'auth' && isOAuthTokenService(service) && getConnectionsStore().grant(service)) {
+            return { ok: false, kind, message: reconnectMessage(service) };
+        }
+        return fail(kind, SERVICE_LABEL[service]);
+    };
+
     // Export
     safeHandle('outputs:export-pdf', guard(FORBIDDEN, async (event, meetingId: unknown) => {
         const doc = loadDoc(meetingId);
@@ -334,13 +417,8 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
             return saveExport(appState, event, doc, 'pdf', pdf);
         } catch (err: any) {
             console.warn('[Outputs] PDF render failed:', err?.message || 'unknown');
-            return { ok: false, kind: 'unknown', message: 'The PDF could not be made. Try again, or use Share as file.' };
+            return { ok: false, kind: 'unknown', message: 'The PDF could not be made. Try again.' };
         }
-    }));
-    safeHandle('outputs:export-html', guard(FORBIDDEN, async (event, meetingId: unknown, opts: any) => {
-        const doc = loadDoc(meetingId);
-        if (!doc) return NO_MEETING;
-        return saveExport(appState, event, doc, 'html', buildNotesHtml(doc, { includeTranscript: opts?.includeTranscript === true }));
     }));
 
     // Share as link. The notes go to natively-api only when the user presses
@@ -391,17 +469,45 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
     safeHandle('outputs:get-connections', guard(null as unknown as ConnectionsStatus, async (): Promise<ConnectionsStatus> => {
         const st = getConnectionsStore();
         const s = st.read();
+        const via = (service: OAuthTokenService) => {
+            const g = st.grant(service);
+            return g ? { via: 'oauth' as const, ...(g.account ? { account: g.account } : {}) } : {};
+        };
         return {
             secureStorage: st.isPersistent(),
             slack: { webhooks: s.slack.webhooks.map(({ id, label }) => ({ id, label })) },
-            notion: { connected: !!s.notion?.token, ...(s.notion?.parent ? { parent: s.notion.parent } : {}) },
-            hubspot: { connected: !!s.hubspot?.token },
-            attio: { connected: !!s.attio?.token },
+            notion: { connected: !!s.notion?.token, ...(s.notion?.parent ? { parent: s.notion.parent } : {}), ...via('notion') },
+            hubspot: { connected: !!s.hubspot?.token, ...via('hubspot') },
+            attio: { connected: !!s.attio?.token, ...via('attio') },
             affinity: { connected: !!s.affinity?.token },
-            salesforce: { connected: !!s.salesforce?.token, ...(s.salesforce?.instanceUrl ? { instanceUrl: s.salesforce.instanceUrl } : {}) },
+            salesforce: { connected: !!s.salesforce?.token, ...(s.salesforce?.instanceUrl ? { instanceUrl: s.salesforce.instanceUrl } : {}), ...via('salesforce') },
+            pipedrive: { connected: !!s.pipedrive?.token, ...via('pipedrive') },
             clearbit: { connected: !!s.clearbit?.token },
             mcp: mcpStatus(),
         };
+    }));
+
+    safeHandle('outputs:oauth-services', guard({ slack: false, notion: false, hubspot: false, salesforce: false, pipedrive: false, attio: false }, async () => oauthServices({ apiBase: nativelyApiBase() })));
+    safeHandle('outputs:oauth-connect', guard(FORBIDDEN, async (_e, service: unknown): Promise<OutputResult> => {
+        if (!isOAuthConnector(service)) return { ok: false, kind: 'invalid_input', message: 'Unknown service.' };
+        // One sign-in at a time: a second Connect replaces the first, whose port closes.
+        browserSignIn?.abort();
+        const ctl = new AbortController();
+        browserSignIn = ctl;
+        try {
+            return await connectWithBrowser(service, {
+                ...oauthDeps(),
+                openExternal: (url: string) => shell.openExternal(url),
+                platform: process.platform,
+                signal: ctl.signal,
+            });
+        } finally {
+            if (browserSignIn === ctl) browserSignIn = null;
+        }
+    }));
+    safeHandle('outputs:oauth-cancel', guard(undefined, async () => {
+        browserSignIn?.abort();
+        browserSignIn = null;
     }));
 
     safeHandle('outputs:slack-add', guard(FORBIDDEN, async (_e, label: unknown, url: unknown) => {
@@ -462,11 +568,11 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
     }));
     safeHandle('outputs:test', guard(FORBIDDEN, async (_e, service: unknown) => {
         if (!isTokenService(service)) return { ok: false, kind: 'invalid_input', message: 'Unknown service.' };
-        const token = getConnectionsStore().token(service);
         const label = SERVICE_LABEL[service];
-        if (!token) return fail('not_connected', label);
-        const instanceUrl = service === 'salesforce' ? getConnectionsStore().salesforceInstanceUrl() ?? undefined : undefined;
-        try { await testToken(service, token, instanceUrl); return { ok: true, message: `${label} is connected.` }; } catch (err) { return fail(errorKindOf(err), label); }
+        if (!getConnectionsStore().token(service)) return fail('not_connected', label);
+        const instanceUrl = () => (service === 'salesforce' ? getConnectionsStore().salesforceInstanceUrl() ?? undefined
+            : service === 'pipedrive' ? getConnectionsStore().pipedriveInstanceUrl() ?? undefined : undefined);
+        try { await withToken(service, (token) => testToken(service, token, instanceUrl())); return { ok: true, message: `${label} is connected.` }; } catch (err) { return failOn(err, service); }
     }));
     safeHandle('outputs:disconnect', guard(FORBIDDEN, async (_e, service: unknown) => {
         if (!isTokenService(service)) return { ok: false, kind: 'invalid_input', message: 'Unknown service.' };
@@ -474,11 +580,10 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
         return { ok: true };
     }));
     safeHandle('outputs:notion-search', guard(FORBIDDEN, async (_e, query: unknown) => {
-        const token = getConnectionsStore().token('notion');
-        if (!token) return fail('not_connected', 'Notion');
+        if (!getConnectionsStore().token('notion')) return fail('not_connected', 'Notion');
         try {
-            return { ok: true, results: await searchNotion(typeof query === 'string' ? query : '', { token }) };
-        } catch (err) { return fail(errorKindOf(err), 'Notion'); }
+            return { ok: true, results: await withToken('notion', (token) => searchNotion(typeof query === 'string' ? query : '', { token })) };
+        } catch (err) { return failOn(err, 'notion'); }
     }));
     safeHandle('outputs:notion-set-parent', guard(FORBIDDEN, async (_e, parent: unknown) => {
         const p = parent as Partial<NotionParentInfo> | null;
@@ -513,7 +618,7 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
         } catch (err) {
             const kind = errorKindOf(err);
             return { ok: false, kind, message: kind === 'not_found' || kind === 'forbidden'
-                ? 'Slack no longer accepts this webhook. It may have been removed, or its channel archived. Add it again in Settings, Connections.'
+                ? 'Slack no longer accepts this webhook. It may have been removed, or its channel archived. Add it again in Settings, Connectors.'
                 : kind === 'invalid_input' ? 'Slack could not read this message. Try shortening it.' : describeConnectionError(kind, 'Slack') };
         }
     }));
@@ -523,7 +628,7 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
     safeHandle('outputs:notion-send', guard(FORBIDDEN, async (_e, meetingId: unknown, opts: any) => {
         const n = getConnectionsStore().read().notion;
         if (!n?.token) return fail('not_connected', 'Notion');
-        if (!n.parent) return { ok: false, kind: 'invalid_input', message: 'Pick where Notion pages go in Settings, Connections.' };
+        if (!n.parent) return { ok: false, kind: 'invalid_input', message: 'Pick where Notion pages go in Settings, Connectors.' };
         const doc = loadDoc(meetingId);
         if (!doc) return NO_MEETING;
         if (!hasNotes(doc)) return NO_NOTES;
@@ -535,17 +640,18 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
         }
         notionPartials.clear(mid);
         try {
-            const res = await createNotionPage(
-                { parent: n.parent, title: notionPageTitle(doc), blocks: buildNotionBlocks(doc, { includeTranscript: opts?.includeTranscript === true }) },
-                { token: n.token },
-            );
+            const parent = n.parent;
+            const res = await withToken('notion', (token) => createNotionPage(
+                { parent, title: notionPageTitle(doc), blocks: buildNotionBlocks(doc, { includeTranscript: opts?.includeTranscript === true }) },
+                { token },
+            ));
             if (res.partial && res.pageId) {
                 notionPartials.set(mid, { pageId: res.pageId, url: res.url, remaining: res.remaining || [] });
                 return { ok: false, kind: 'unknown', partial: true, url: res.url, message: PARTIAL_PAGE };
             }
             return { ok: true, url: res.url };
         } catch (err) {
-            return fail(errorKindOf(err), 'Notion');
+            return failOn(err, 'notion');
         }
     }));
     // The rest of a half-made page, appended to that same page.
@@ -555,7 +661,7 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
         const mid = typeof meetingId === 'string' ? meetingId : '';
         const pending = notionPartials.get(mid);
         if (!pending) return { ok: false, kind: 'not_found', message: 'There is nothing left to add to that page. Send the notes again to make a new one.' };
-        const remaining = await appendNotionBatches(pending.pageId, pending.remaining, { token: n.token });
+        const remaining = await appendNotionBatches(pending.pageId, pending.remaining, { token: (await tokenNow('notion')) || n.token });
         if (remaining.length) {
             notionPartials.set(mid, { ...pending, remaining });
             return { ok: false, kind: 'unknown', partial: true, url: pending.url, message: 'Notion still did not take the rest of the notes. Try again in a minute, or start over with a new page.' };
@@ -623,6 +729,10 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
     const crmCandidatesFor = (doc: NotesDocument) => crmCandidates(doc.attendees, [selfIdentity().email || '']);
     // Salesforce calls also need the org host; the other CRMs just need the token.
     const crmOpts = (service: CrmService, token: string): { token: string; instanceUrl?: string } | null => {
+        if (service === 'pipedrive') {
+            const host = getConnectionsStore().pipedriveInstanceUrl();
+            return host ? { token, instanceUrl: host } : { token };
+        }
         if (service !== 'salesforce') return { token };
         const instanceUrl = getConnectionsStore().salesforceInstanceUrl();
         return instanceUrl ? { token, instanceUrl } : null;
@@ -630,9 +740,7 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
     safeHandle('outputs:crm-preview', guard({ ok: false, kind: 'forbidden', service: 'hubspot', attendees: [] } as CrmMatchPreview, async (_e, meetingId: unknown, service: unknown): Promise<CrmMatchPreview> => {
         if (!isCrm(service)) return { ok: false, kind: 'invalid_input', message: 'Unknown CRM.', service: 'hubspot', attendees: [] };
         const token = getConnectionsStore().token(service);
-        if (!token) return { ...fail('not_connected', CRM_LABELS[service]), service, attendees: [] };
-        const opts = crmOpts(service, token);
-        if (!opts) return { ...fail('not_connected', CRM_LABELS[service]), service, attendees: [] };
+        if (!token || !crmOpts(service, token)) return { ...fail('not_connected', CRM_LABELS[service]), service, attendees: [] };
         const doc = loadDoc(meetingId);
         if (!doc) return { ...NO_MEETING, service, attendees: [] };
         const candidates = crmCandidatesFor(doc);
@@ -640,18 +748,16 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
             return { ok: false, kind: 'invalid_input', service, attendees: [], message: 'This meeting has no attendee emails to look up. Link it to its calendar event first.' };
         }
         try {
-            const matches = await matchAttendees(service, candidates, opts);
+            const matches = await withToken(service, (t) => matchAttendees(service, candidates, crmOpts(service, t)!));
             return { ok: true, service, attendees: matches.map((m) => ({ email: m.email, ...(m.name ? { name: m.name } : {}), matched: !!m.record, ...(m.record?.name ? { recordName: m.record.name } : {}) })) };
         } catch (err) {
-            return { ...fail(errorKindOf(err), CRM_LABELS[service]), service, attendees: [] };
+            return { ...failOn(err, service), service, attendees: [] };
         }
     }));
     safeHandle('outputs:crm-send', guard(FORBIDDEN, async (_e, meetingId: unknown, service: unknown, emails: unknown) => {
         if (!isCrm(service)) return { ok: false, kind: 'invalid_input', message: 'Unknown CRM.' };
         const token = getConnectionsStore().token(service);
-        if (!token) return fail('not_connected', CRM_LABELS[service]);
-        const opts = crmOpts(service, token);
-        if (!opts) return fail('not_connected', CRM_LABELS[service]);
+        if (!token || !crmOpts(service, token)) return fail('not_connected', CRM_LABELS[service]);
         const doc = loadDoc(meetingId);
         if (!doc) return NO_MEETING;
         if (!hasNotes(doc)) return NO_NOTES;
@@ -662,21 +768,115 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
         const mid = meetingId as string;
         let records: CrmRecord[];
         try {
-            const matches = await matchAttendees(service, candidates, opts);
+            const matches = await withToken(service, (t) => matchAttendees(service, candidates, crmOpts(service, t)!));
             // One person, one note: two emails of the same person collapse to one record.
             records = uniqueRecords(matches.map((m) => m.record).filter((r): r is CrmRecord => !!r));
         } catch (err) {
-            return fail(errorKindOf(err), CRM_LABELS[service]);
+            return failOn(err, service);
         }
         if (!records.length) return { ok: false, kind: 'not_found', message: `${CRM_LABELS[service]} no longer has a record for these attendees.` };
         // A retry after a partial failure writes only the notes not yet written.
         const todo = remainingRecords(records, crmSession.sentFor(mid, service));
         if (!todo.length) return { ok: true, notesCreated: 0, message: `The note is already on everyone you picked in ${CRM_LABELS[service]}.` };
+        // The lookup just above renewed a signed-in token if it needed it.
+        const opts = crmOpts(service, (await tokenNow(service)) || token);
+        if (!opts) return fail('not_connected', CRM_LABELS[service]);
         const outcome = await sendCrmNote(service, doc, todo, opts);
         crmSession.markSent(mid, service, outcome.sentIds);
         const summary = crmSendSummary(service, outcome, todo.length, describeConnectionError);
         return { ok: summary.ok, ...(summary.kind ? { kind: summary.kind } : {}), ...(summary.message ? { message: summary.message } : {}), notesCreated: summary.notesCreated, remaining: summary.remaining };
     }));
+
+    // Automatic sending (autoSend.ts) and webhooks / Zapier (webhooks.ts). The
+    // senders are the Share menu's own sends, minus the review step: the user
+    // made the rule on the connector's page, which is their say-so for it.
+    const autoSendSender = async (destination: AutoSendDestination, meetingId: string): Promise<{ ok: boolean; message?: string; skipped?: boolean }> => {
+        const doc = loadDoc(meetingId);
+        if (!doc) return { ok: false, message: 'The meeting could not be found.' };
+        if (!hasNotes(doc)) return { ok: true, skipped: true };
+        const store = getConnectionsStore();
+        if (destination.kind === 'slack') {
+            const url = store.slackWebhookUrl(destination.webhookId);
+            if (!url) return { ok: false, message: 'That Slack channel is no longer connected. Add it again on the Slack page.' };
+            const checked = checkSlackDraft(doc.title, doc.dateLabel, composeSlackDraft(doc, { includeActionItems: true }));
+            if (!checked.ok) return { ok: false, message: slackDraftMessage(checked) };
+            try { await postSlackWebhook(url, checked.payload); return { ok: true }; } catch (err) { return { ok: false, message: describeConnectionError(errorKindOf(err), 'Slack') }; }
+        }
+        if (destination.kind === 'notion') {
+            const n = store.read().notion;
+            if (!n?.token) return { ok: false, message: describeConnectionError('not_connected', 'Notion') };
+            if (!n.parent) return { ok: false, message: 'Pick where Notion pages go in Settings, Connectors.' };
+            const parent = n.parent;
+            try {
+                const res = await withToken('notion', (token) => createNotionPage(
+                    { parent, title: notionPageTitle(doc), blocks: buildNotionBlocks(doc, { includeTranscript: false }) },
+                    { token },
+                ));
+                if (res.partial && res.pageId) {
+                    notionPartials.set(meetingId, { pageId: res.pageId, url: res.url, remaining: res.remaining || [] });
+                    return { ok: false, message: 'The page was made in Notion, but only part of the notes reached it. Finish it from the meeting’s Share menu.' };
+                }
+                return { ok: true };
+            } catch (err) { return { ok: false, message: failOn(err, 'notion').message }; }
+        }
+        const service = destination.service;
+        if (!isCrm(service)) return { ok: false, message: 'Unknown CRM.' };
+        const label = CRM_LABELS[service];
+        const token = store.token(service);
+        if (!token || !crmOpts(service, token)) return { ok: false, message: describeConnectionError('not_connected', label) };
+        const candidates = crmCandidatesFor(doc);
+        if (!candidates.length) return { ok: true, skipped: true };
+        try {
+            const matches = await withToken(service, (t) => matchAttendees(service, candidates, crmOpts(service, t)!));
+            const records = uniqueRecords(matches.map((m) => m.record).filter((r): r is CrmRecord => !!r));
+            // Nobody from this meeting is in the CRM: nothing to attach the note to.
+            if (!records.length) return { ok: true, skipped: true };
+            const todo = remainingRecords(records, crmSession.sentFor(meetingId, service));
+            if (!todo.length) return { ok: true };
+            const opts = crmOpts(service, (await tokenNow(service)) || token);
+            if (!opts) return { ok: false, message: describeConnectionError('not_connected', label) };
+            const outcome = await sendCrmNote(service, doc, todo, opts);
+            crmSession.markSent(meetingId, service, outcome.sentIds);
+            const summary = crmSendSummary(service, outcome, todo.length, describeConnectionError);
+            return summary.ok ? { ok: true } : { ok: false, message: summary.message };
+        } catch (err) {
+            return { ok: false, message: failOn(err, service).message };
+        }
+    };
+    registerConnectorsDeliveryIpc({
+        safeHandle,
+        guard,
+        userDataDir: app.getPath('userData'),
+        loadDoc,
+        foldersOfMeeting: (meetingId: string) => {
+            const { organiseStore } = require('../organise/organiseService') as typeof import('../organise/organiseService');
+            return organiseStore()?.foldersOfMeeting(meetingId) ?? [];
+        },
+        listFolders: () => {
+            const { organiseStore } = require('../organise/organiseService') as typeof import('../organise/organiseService');
+            return (organiseStore()?.listFolders() ?? []).map((f) => ({ id: f.id, name: f.name }));
+        },
+        autoSendSender,
+    });
+    // Gmail: briefs read recent threads with attendees; follow-ups send from the user's Gmail on press.
+    registerGmailIpc({
+        safeHandle,
+        guard,
+        userDataDir: app.getPath('userData'),
+        safeStorage,
+        openExternal: (url: string) => shell.openExternal(url),
+        platform: process.platform,
+        loadFollowUpContext: (meetingId: string) => loadDoc(meetingId),
+    });
+    // Personal API keys: the local, read-only API over the same meetings the MCP server reads.
+    registerLocalApiIpc({
+        safeHandle,
+        guard,
+        userDataDir: app.getPath('userData'),
+        safeStorage,
+        source: databaseMeetingSource(),
+        selfName: () => selfIdentity().name || undefined,
+    });
 
     // MCP
     safeHandle('outputs:mcp-set-enabled', guard(MCP_OFF, async (_e, enabled: unknown) => {
@@ -692,21 +892,29 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
         return mcpStatus();
     }));
 
-    // Writing style
-    const ws = () => getWritingStyleService();
-    safeHandle('outputs:style-get', guard(null, async () => ws().status()));
-    safeHandle('outputs:style-set-enabled', guard(null, async (_e, enabled: unknown) => { ws().setEnabled(enabled === true); return ws().status(); }));
-    safeHandle('outputs:style-list', guard([], async () => ws().listSamples()));
-    safeHandle('outputs:style-add', guard(FORBIDDEN, async (_e, text: unknown) => {
-        const sample = ws().addSample(typeof text === 'string' ? text : '', 'pasted');
+    // Writing style, per mode: every call names the mode (the Modes Manager's open one).
+    const ws = (modeId: string) => getWritingStyleService(modeId);
+    const NO_MODE = { ok: false, kind: 'invalid_input', message: 'Pick a mode first.' };
+    safeHandle('outputs:style-get', guard(null, async (_e, modeId: unknown) => (isModeId(modeId) ? ws(modeId).status() : null)));
+    safeHandle('outputs:style-list', guard([], async (_e, modeId: unknown) => (isModeId(modeId) ? ws(modeId).listSamples() : [])));
+    safeHandle('outputs:style-add', guard(FORBIDDEN, async (_e, modeId: unknown, text: unknown) => {
+        if (!isModeId(modeId)) return NO_MODE;
+        const sample = ws(modeId).addSample(typeof text === 'string' ? text : '', 'pasted');
         if (!sample) return { ok: false, kind: 'invalid_input', message: 'Paste a longer piece of your own writing (a few sentences), one you have not added already.' };
-        return { ok: true, status: ws().status() };
+        return { ok: true, status: ws(modeId).status() };
     }));
-    safeHandle('outputs:style-remove', guard(null, async (_e, id: unknown) => { if (typeof id === 'string') ws().removeSample(id); return ws().status(); }));
+    safeHandle('outputs:style-remove', guard(null, async (_e, modeId: unknown, id: unknown) => {
+        if (!isModeId(modeId)) return null;
+        if (typeof id === 'string') ws(modeId).removeSample(id);
+        return ws(modeId).status();
+    }));
+    // The old follow-up modal: kept under the mode of the meeting it was written for.
     safeHandle('outputs:style-record-followup', guard(false, async (_e, payload: any) => {
         const finalText = typeof payload?.finalText === 'string' ? payload.finalText : '';
         const draftText = typeof payload?.draftText === 'string' ? payload.draftText : undefined;
-        return ws().recordFollowUp(finalText, draftText);
+        const meetingId = typeof payload?.meetingId === 'string' ? payload.meetingId : '';
+        const modeId = meetingId ? meetingStyleModeId(db().getMeetingDetails(meetingId)?.detailedSummary) : undefined;
+        return modeId ? ws(modeId).recordFollowUp(finalText, draftText, meetingId) : false;
     }));
     // The follow-up email edited in place on the meeting page. Saved with the meeting;
     // when the user copies or opens it (`used`), an edited body becomes a writing sample.
@@ -724,15 +932,17 @@ export function registerOutputsIpc(appState: AppState, safeHandle: SafeHandle): 
         let recorded = false;
         if (payload?.used === true) {
             const sample = followUpSample(currentDraft(res.detailed));
-            if (sample) recorded = ws().recordFollowUp(sample.finalText, sample.draftText, meetingId);
+            const modeId = meetingStyleModeId(m.detailedSummary);
+            if (sample && modeId) recorded = ws(modeId).recordFollowUp(sample.finalText, sample.draftText, meetingId);
         }
         return { ok: true, draft: res.draft, recorded };
     }));
 
-    safeHandle('outputs:style-refresh', guard(FORBIDDEN, async () => {
-        const profile = await ws().derive(styleModelCall(llm()));
+    safeHandle('outputs:style-refresh', guard(FORBIDDEN, async (_e, modeId: unknown) => {
+        if (!isModeId(modeId)) return NO_MODE;
+        const profile = await ws(modeId).derive(styleModelCall(llm()));
         if (!profile) return { ok: false, kind: 'invalid_input', message: 'Add a sample of your writing first.' };
-        return { ok: true, status: ws().status() };
+        return { ok: true, status: ws(modeId).status() };
     }));
 
     // Open a Notion page the user just made (https on notion only).

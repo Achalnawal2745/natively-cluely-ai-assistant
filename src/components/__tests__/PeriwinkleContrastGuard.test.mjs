@@ -89,7 +89,15 @@ const PAIRINGS = [
   { label: 'PI dark: --pi-on-accent on --pi-accent fill',                   fg: '#14102A', bg: '#95AFF6', min: AA_TEXT },
   { label: 'PI light: --pi-on-accent on --pi-accent fill',                  fg: '#FFFFFF', bg: '#4967D3', min: AA_TEXT },
 
-  // Meeting notes → Usage tab question bubble (MeetingDetails.tsx, .lg-bubble
+  // Meeting notes → Usage tab question (MeetingDetails.tsx,
+  // .lg-bubble.lg-bubble-lavender in src/ui-components/LiquidGlassButton.css):
+  // the website's lavender glass. The fill is the tint composited over the
+  // MeetingDetails pane: rgba(156,111,243,.24) over #EBEBF0 in light (the
+  // website's value), rgba(156,111,243,.30) over #151515 in dark.
+  { label: 'Usage question light: #3F2593 on the .24 lavender tint over #EBEBF0', fg: '#3F2593', bg: '#D8CDF1', min: AA_TEXT },
+  { label: 'Usage question dark: #E6DDFD on the .30 lavender tint over #151515',  fg: '#E6DDFD', bg: '#3E3058', min: AA_TEXT },
+
+  // Meeting chat → your messages ("ask about this meeting", MeetingChatOverlay.tsx, .lg-bubble
   // in src/ui-components/LiquidGlassButton.css, fed by the --bubble-user-bg /
   // --bubble-user-fg pair in index.css). The fill is --toggle-on (#6688F5, the
   // Settings toggle's ON colour) in dark mode and that colour mixed 75/25 with

@@ -1,4 +1,5 @@
 import { CODING_CONTRACT } from "./codingContract";
+import { MEETING_TITLE_RULE } from "../services/meeting/MeetingSummaryV3";
 
 // ==========================================
 // CORE IDENTITY & SHARED GUIDELINES
@@ -962,29 +963,19 @@ export const BRAINSTORM_MODE_PROMPT = `
 // ==========================================
 
 /**
- * GROQ: Title Generation
- * Tuned for Llama 3.3 to be concise and follow instructions
- */
-export const GROQ_TITLE_PROMPT = `Generate a concise 3-6 word title for this meeting context.
-   RULES:
-   - Output ONLY the title text.
-   - No quotes, no markdown, no "Here is the title".
-   - Just the raw text.
-   `;
-
-/**
  * GROQ: Structured Summary (JSON)
  * Tuned for Llama 3.3 to ensure valid JSON output
  */
 export const GROQ_SUMMARY_JSON_PROMPT = `You are a silent meeting summarizer. Convert this conversation into concise internal meeting notes.
 
-   Output a JSON object with EXACTLY these four keys, using these exact names:
+   Output a JSON object with EXACTLY these five keys, using these exact names:
+   - ${MEETING_TITLE_RULE}
    - "overview" (string): one paragraph covering the whole meeting: purpose, what was discussed, outcomes, where things landed
    - "keyPoints" (array of strings): bullet list of key points
    - "actionItems" (array of strings): owner-prefixed action items when the transcript names the owner, e.g. "Bob: Draft invite copy by Wednesday"
    - "decisions" (array of strings): explicit decisions made
 
-   Do NOT use "summary", "highlights", or any synonym for these keys. The four keys above are required and must be present even if empty arrays.
+   Do NOT use "summary", "highlights", or any synonym for these keys. The five keys above are required and must be present even if empty arrays.
 
    RULES:
    - Do NOT invent information, owners or dates.
@@ -994,6 +985,7 @@ export const GROQ_SUMMARY_JSON_PROMPT = `You are a silent meeting summarizer. Co
 
    Response Format (JSON ONLY):
    {
+   "title": "the meeting's name",
    "overview": "one-paragraph overview",
    "keyPoints": ["3-6 specific bullets"],
    "actionItems": ["Owner: specific next step", "..."],
