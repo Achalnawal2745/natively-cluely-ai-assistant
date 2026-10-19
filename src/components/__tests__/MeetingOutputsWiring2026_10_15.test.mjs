@@ -14,10 +14,11 @@ import { dirname, resolve } from 'node:path';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = (p) => readFileSync(resolve(ROOT, p), 'utf8');
 
-test('Settings: connections sits after calendar in SETTINGS_NAV_ORDER, with a nav button and a panel', () => {
+test('Settings: connections sits between audio and help in SETTINGS_NAV_ORDER, with a nav button and a panel', () => {
     const src = read('src/components/SettingsOverlay.tsx');
     const order = src.match(/const SETTINGS_NAV_ORDER = \[([\s\S]*?)\];/)[1].match(/'([^']+)'/g).map((s) => s.slice(1, -1));
-    assert.equal(order[order.indexOf('calendar') + 1], 'connections');
+    assert.ok(order.indexOf('connections') > order.indexOf('audio'));
+    assert.ok(order.indexOf('connections') < order.indexOf('help'));
     assert.match(src, /onClick=\{\(\) => setActiveTab\('connections'\)\}/);
     assert.match(src, /\{activeTab === 'connections' && <ConnectionsSettings \/>\}/);
 });

@@ -571,11 +571,11 @@ const SETTINGS_NAV_ORDER = [
     'ai-providers',
     'retrieval',
     'audio',
-    'calendar',
-    'connections',
     'skills',
+    'calendar',
     'keybinds',
     'phone-mirror',
+    'connections',
     'intelligence',
     'help',
     'about',
@@ -2359,15 +2359,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                         <div className="w-64 bg-bg-sidebar flex flex-col border-r border-border-subtle">
                             <button
                                 onClick={onClose}
-                                className="self-start ml-2 mt-2 mb-1 p-1.5 rounded-md text-text-tertiary hover:text-text-primary transition-colors"
+                                className="self-start ml-2 mt-2 p-1.5 rounded-md text-text-tertiary hover:text-text-primary transition-colors"
                                 title={t('Close')}
                                 aria-label={t('Close')}
                             >
                                 <X size={15} />
                             </button>
-                            <div className="px-5 pt-2 pb-3 overflow-y-auto flex-1 min-h-0">
-                                <h2 className="mb-0 text-[13px] font-bold uppercase tracking-[0.01em] text-text-primary">{t('Settings')}</h2>
-                                <nav className="mt-2 space-y-1">
+                            <div className="px-5 pt-0 pb-3 overflow-y-auto flex-1 min-h-0">
+                                <nav className="space-y-1" aria-label={t('Settings')}>
                                     <button
                                         onClick={() => setActiveTab('general')}
                                         className={navItemClass(activeTab === 'general')}
@@ -2410,11 +2409,32 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         <Mic size={16} /> {t('Audio')}
                                     </button>
                                     <button
+                                        onClick={() => setActiveTab('skills')}
+                                        className={navItemClass(activeTab === 'skills')}
+                                    >
+                                        {activeTab === 'skills' && navActivePill}
+                                        <Folder size={16} /> {t('Skills')}
+                                    </button>
+                                    <button
                                         onClick={() => setActiveTab('calendar')}
                                         className={navItemClass(activeTab === 'calendar')}
                                     >
                                         {activeTab === 'calendar' && navActivePill}
                                         <Calendar size={16} /> {t('Calendar')}
+                                    </button>
+                                    <button
+                                        onClick={() => setActiveTab('keybinds')}
+                                        className={navItemClass(activeTab === 'keybinds')}
+                                    >
+                                        {activeTab === 'keybinds' && navActivePill}
+                                        <Keyboard size={16} /> {t('Keybinds')}
+                                    </button>
+                                    <button
+                                        onClick={() => setActiveTab('phone-mirror')}
+                                        className={navItemClass(activeTab === 'phone-mirror')}
+                                    >
+                                        {activeTab === 'phone-mirror' && navActivePill}
+                                        <Smartphone size={16} /> {t('Companion')}
                                     </button>
                                     <button
                                         onClick={() => setActiveTab('connections')}
@@ -2424,37 +2444,12 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         <Plug size={16} /> {t('Connectors')}
                                     </button>
                                     <button
-                                        onClick={() => setActiveTab('skills')}
-                                        className={navItemClass(activeTab === 'skills')}
-                                    >
-                                        {activeTab === 'skills' && navActivePill}
-                                        <Folder size={16} /> {t('Skills')}
-                                    </button>
-                                    <button
-                                        onClick={() => setActiveTab('keybinds')}
-                                        className={navItemClass(activeTab === 'keybinds')}
-                                    >
-                                        {activeTab === 'keybinds' && navActivePill}
-                                        <Keyboard size={16} /> {t('Keybinds')}
-                                    </button>
-
-                                    <button
-                                        onClick={() => setActiveTab('phone-mirror')}
-                                        className={navItemClass(activeTab === 'phone-mirror')}
-                                    >
-                                        {activeTab === 'phone-mirror' && navActivePill}
-                                        <Smartphone size={16} /> {t('Companion')}
-                                    </button>
-
-                                    <button
                                         onClick={() => setActiveTab('intelligence')}
                                         className={navItemClass(activeTab === 'intelligence')}
                                     >
                                         {activeTab === 'intelligence' && navActivePill}
                                         <Cpu size={16} /> {t('Intelligence')}
                                     </button>
-
-
                                     <button
                                         onClick={() => setActiveTab('help')}
                                         className={navItemClass(activeTab === 'help', 'text-[13px]')}
@@ -2462,7 +2457,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         {activeTab === 'help' && navActivePill}
                                         <HelpCircle size={16} /> {t('Setup & Help')}
                                     </button>
-
                                     <button
                                         onClick={() => setActiveTab('about')}
                                         className={navItemClass(activeTab === 'about')}
@@ -2473,7 +2467,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                 </nav>
                             </div>
 
-                            <div className="mt-auto py-4 px-6 border-t border-border-subtle">
+                            <div className="mt-auto py-4 px-6">
                                 <button
                                     onClick={() => window.electronAPI.quitApp()}
                                     className="w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-red-400 hover:bg-red-500/10 transition-colors flex items-center gap-3"
