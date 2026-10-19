@@ -94,7 +94,22 @@ export interface NativeModule {
     start(callback: (...args: any[]) => any, onSpeechEnded?: (...args: any[]) => any): void;
     stop(): void;
   };
+  captureForegroundTreeGdi?: (maxWidth?: number | null) => any;
+  capture_foreground_tree_gdi?: (maxWidth?: number | null) => any;
+  captureWindowTreeGdi?: (hwnd: Buffer, maxWidth?: number | null) => any;
+  capture_window_tree_gdi?: (hwnd: Buffer, maxWidth?: number | null) => any;
+  getForegroundWindowRect?: () => any;
+  get_foreground_window_rect?: () => any;
+  isWindowCaptureProtected?: (hwnd?: Buffer | null) => boolean;
+  is_window_capture_protected?: (hwnd?: Buffer | null) => boolean;
+  captureRegionGdi?: (rect: any, maxWidth?: number | null) => any;
+  capture_region_gdi?: (rect: any, maxWidth?: number | null) => any;
+  getVirtualScreenBounds?: () => any;
+  get_virtual_screen_bounds?: () => any;
+  isCapturableWindow?: (hwnd: Buffer) => boolean;
+  is_capturable_window?: (hwnd: Buffer) => boolean;
 }
+
 
 export interface OverlayBoundsInput {
   x: number;

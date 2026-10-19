@@ -394,10 +394,18 @@ export interface GdiCaptureResult {
   blank: boolean
 }
 
+export declare function captureForegroundTreeGdi(maxWidth?: number | null): GdiCaptureResult | null
 export declare function capture_foreground_tree_gdi(maxWidth?: number | null): GdiCaptureResult | null
+export declare function captureWindowTreeGdi(hwnd: Buffer, maxWidth?: number | null): GdiCaptureResult | null
 export declare function capture_window_tree_gdi(hwnd: Buffer, maxWidth?: number | null): GdiCaptureResult | null
+export declare function getForegroundWindowRect(): CaptureRect | null
 export declare function get_foreground_window_rect(): CaptureRect | null
+export declare function isWindowCaptureProtected(hwnd?: Buffer | null): boolean
 export declare function is_window_capture_protected(hwnd?: Buffer | null): boolean
+export declare function captureRegionGdi(rect: CaptureRect, maxWidth?: number | null): GdiCaptureResult | null
 export declare function capture_region_gdi(rect: CaptureRect, maxWidth?: number | null): GdiCaptureResult | null
+export declare function getVirtualScreenBounds(): CaptureRect
 export declare function get_virtual_screen_bounds(): CaptureRect
+export declare function isCapturableWindow(hwnd: Buffer): boolean
 export declare function is_capturable_window(hwnd: Buffer): boolean
+

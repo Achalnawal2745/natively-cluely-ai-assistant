@@ -57,10 +57,17 @@ interface GdiCaptureRaw {
  * Same pattern as services/foreignWindowCaptureGuard.ts.
  */
 interface GdiCaptureNative {
+  captureForegroundTreeGdi?: (maxWidth?: number | null) => GdiCaptureRaw | null
   capture_foreground_tree_gdi?: (maxWidth?: number | null) => GdiCaptureRaw | null
+  captureWindowTreeGdi?: (hwnd: Buffer, maxWidth?: number | null) => GdiCaptureRaw | null
+  capture_window_tree_gdi?: (hwnd: Buffer, maxWidth?: number | null) => GdiCaptureRaw | null
+  getForegroundWindowRect?: () => GdiRect | null
   get_foreground_window_rect?: () => GdiRect | null
+  captureRegionGdi?: (rect: GdiRect, maxWidth?: number | null) => GdiCaptureRaw | null
   capture_region_gdi?: (rect: GdiRect, maxWidth?: number | null) => GdiCaptureRaw | null
+  getVirtualScreenBounds?: () => GdiRect | null
   get_virtual_screen_bounds?: () => GdiRect | null
+  isWindowCaptureProtected?: (hwnd?: Buffer | null) => boolean
   is_window_capture_protected?: (hwnd?: Buffer | null) => boolean
 }
 
@@ -93,20 +100,52 @@ function loadGdiNative(): GdiCaptureNative | null {
     const { loadNativeModule } = require('./audio/nativeModuleLoader') as {
       loadNativeModule: () => unknown
     }
-    const native = loadNativeModule() as unknown as GdiCaptureNative | null
-    cached =
-      native && typeof native.capture_foreground_tree_gdi === 'function' ? native : null
-    if (!cached) {
-      logCapture('loadGdiNative: native module loaded but capture_foreground_tree_gdi is missing')
-    } else {
-      logCapture('loadGdiNative: native module loaded successfully with GDI exports')
+    const native = loadNativeModule() as any
+    if (!native) {
+      logCapture('loadGdiNative: loadNativeModule returned null')
+      cached = null
+      return null
     }
+
+    const keys = Object.keys(native)
+    logCapture(`loadGdiNative: native module loaded (${keys.length} keys: ${keys.slice(0, 15).join(', ')}...)`)
+
+    const captureFn = native.captureForegroundTreeGdi || native.capture_foreground_tree_gdi
+    if (typeof captureFn !== 'function') {
+      logCapture(`loadGdiNative: native module loaded but captureForegroundTreeGdi is missing. Available keys: ${keys.join(', ')}`)
+      cached = null
+      return null
+    }
+
+    // Normalize methods so both camelCase and snake_case properties exist on native
+    native.capture_foreground_tree_gdi = captureFn
+    native.captureForegroundTreeGdi = captureFn
+
+    const rectFn = native.getForegroundWindowRect || native.get_foreground_window_rect
+    native.get_foreground_window_rect = rectFn
+    native.getForegroundWindowRect = rectFn
+
+    const protectFn = native.isWindowCaptureProtected || native.is_window_capture_protected
+    native.is_window_capture_protected = protectFn
+    native.isWindowCaptureProtected = protectFn
+
+    const regionFn = native.captureRegionGdi || native.capture_region_gdi
+    native.capture_region_gdi = regionFn
+    native.captureRegionGdi = regionFn
+
+    const boundsFn = native.getVirtualScreenBounds || native.get_virtual_screen_bounds
+    native.get_virtual_screen_bounds = boundsFn
+    native.getVirtualScreenBounds = boundsFn
+
+    logCapture('loadGdiNative: native module loaded successfully with GDI exports')
+    cached = native as GdiCaptureNative
   } catch (err) {
     logCapture(`loadGdiNative error: ${err}`)
     cached = null
   }
   return cached
 }
+
 
 /** True only on Windows with a native binary that has the GDI exports. */
 export function isGdiCaptureAvailable(): boolean {
