@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useT } from '../i18n';
-import { ToggleLeft, ToggleRight, Search, Calendar, Globe, Clock, ChevronRight, Settings, LayoutGrid, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, X, Bell, DownloadCloud, CheckCircle, AlertCircle, User, UserSearch, Sparkles, ArrowUpRight } from 'lucide-react';
+import { ToggleLeft, ToggleRight, Search, Calendar, Globe, Clock, ChevronRight, Settings, LayoutGrid, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, Bell, DownloadCloud, CheckCircle, AlertCircle, User, UserSearch, Sparkles, ArrowUpRight } from 'lucide-react';
 import icon from "./icon.png";
 import mainui from "../UI_comp/mainui.png";
 import UpcomingCalendarCard from './ui/UpcomingCalendarCard';
@@ -389,16 +389,6 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
     // meetings" hit). Cleared by any other navigation so a later open starts on
     // the summary as usual.
     const [selectedMomentMs, setSelectedMomentMs] = useState<number | null>(null);
-    // The meeting row whose delete button has been clicked once and waits for
-    // the confirming second click.
-    const [armedDeleteId, setArmedDeleteId] = useState<string | null>(null);
-
-    // A click anywhere else disarms the delete button
-    useEffect(() => {
-        const handleClickOutside = () => setArmedDeleteId(null);
-        window.addEventListener('click', handleClickOutside);
-        return () => window.removeEventListener('click', handleClickOutside);
-    }, []);
 
     // Notify parent if we are on the main launcher list view; also feed the
     // orchestrator's homepage-mounted clock.
@@ -1236,11 +1226,18 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                                             <section key={label}>
                                                 <h3 className="text-[13px] font-medium text-text-secondary mb-3 pl-1">{label}</h3>
                                                 <div className="space-y-1">
+                                                    {/* A deleted row fades and folds its height away (a close:
+                                                        --duration-fast on --ease-smooth-out) so the rows below
+                                                        slide up instead of jumping. Reduced motion just fades. */}
+                                                    <AnimatePresence initial={false}>
                                                     {groupedMeetings[label].map((m) => (
                                                         <motion.div
                                                             key={m.id}
                                                             layoutId={`meeting-${m.id}`}
-                                                            className="group relative flex items-center justify-between px-3 py-2 rounded-lg bg-transparent hover:bg-bg-elevated transition-colors"
+                                                            exit={prefersReducedMotion
+                                                                ? { opacity: 0, pointerEvents: 'none', transition: { duration: 0.15 } }
+                                                                : { opacity: 0, height: 0, paddingTop: 0, paddingBottom: 0, marginTop: 0, pointerEvents: 'none', transition: { duration: 0.25, ease: [0.22, 1, 0.36, 1] } }}
+                                                            className="group relative flex items-center justify-between px-3 py-2 rounded-lg bg-transparent hover:bg-bg-elevated transition-colors overflow-hidden"
                                                             onClick={() => handleOpenMeeting(m)}
                                                         >
                                                             <div className={`font-medium text-[14px] max-w-[60%] truncate ${m.title === 'Processing...' ? 'text-blue-400 italic animate-pulse' : 'text-text-primary'}`}>
@@ -1250,7 +1247,7 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                                                             {/* Time & Duration Section */}
                                                             <div className="flex items-center gap-4">
                                                                 {m.title === 'Processing...' ? (
-                                                                    <div className="flex items-center gap-2 transition-all duration-200 ease-out group-hover:opacity-0 group-hover:translate-x-2 delayed-hover-exit">
+                                                                    <div className="flex items-center gap-2 transition-[opacity,transform] duration-[250ms] ease-sculpted group-hover:duration-150 group-hover:opacity-0 group-hover:translate-x-1 motion-reduce:group-hover:translate-x-0">
                                                                         <RefreshCw size={12} className="animate-spin text-blue-500" />
                                                                         <span className="text-xs text-blue-500 font-medium">{t('Finalizing...')}</span>
                                                                     </div>
@@ -1261,7 +1258,7 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                                                                         </span>
 
                                                                         {/* Time Text (Should fade out on hover) */}
-                                                                        <span className="text-[13px] text-text-secondary font-medium min-w-[60px] text-right transition-all duration-200 ease-out group-hover:opacity-0 group-hover:translate-x-2 delayed-hover-exit">
+                                                                        <span className="text-[13px] text-text-secondary font-medium min-w-[60px] text-right transition-[opacity,transform] duration-[250ms] ease-sculpted group-hover:duration-150 group-hover:opacity-0 group-hover:translate-x-1 motion-reduce:group-hover:translate-x-0">
                                                                             {formatTime(m.date)}
                                                                         </span>
                                                                     </>
@@ -1269,23 +1266,15 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                                                             </div>
 
                                                             {/* Delete (slides in on hover). Export lives inside the meeting
-                                                                note, so the row only carries delete. Deleting cannot be
-                                                                undone, so the first click arms it (the cross grows a red
-                                                                "Delete" label) and the second click deletes. Leaving the
-                                                                row or clicking anywhere else disarms it. */}
-                                                            <div className={`absolute right-3 top-1/2 -translate-y-1/2 transition-all duration-300 ease-out group-hover:opacity-100 group-hover:translate-x-0 ${armedDeleteId === m.id ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-4'}`}>
+                                                                note, so the row only carries delete, and one click deletes.
+                                                                Hover-in is a 250ms slide from 8px with a 2px blur while the
+                                                                time steps 4px aside in 150ms; hover-out is a quick 150ms
+                                                                with no blur so it gets out of the way. */}
+                                                            <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 translate-x-2 blur-[2px] transition-[opacity,transform,filter] duration-150 ease-sculpted group-hover:duration-[250ms] group-hover:opacity-100 group-hover:translate-x-0 group-hover:blur-0 motion-reduce:translate-x-0 motion-reduce:blur-0">
                                                                 <button
-                                                                    aria-label={t('Delete')}
-                                                                    className={`flex items-center h-7 rounded-md transition-all duration-200 ease-out ${armedDeleteId === m.id
-                                                                        ? `px-2 gap-1.5 bg-red-500/10 ${isLight ? 'text-red-500 hover:bg-red-500/15' : 'text-red-400 hover:bg-red-500/20 hover:text-red-300'}`
-                                                                        : 'px-1.5 gap-0 text-text-secondary hover:text-red-400'}`}
+                                                                    className={`h-[23px] px-3 rounded-full text-[12px] font-medium leading-none whitespace-nowrap text-text-secondary transition-[color,background-color,transform] duration-150 ease-sculpted active:scale-[0.96] motion-reduce:active:scale-100 ${isLight ? 'bg-black/[0.05] hover:bg-red-500/10 hover:text-red-500' : 'bg-white/[0.08] hover:bg-red-500/15 hover:text-red-400'}`}
                                                                     onClick={async (e) => {
                                                                         e.stopPropagation();
-                                                                        if (armedDeleteId !== m.id) {
-                                                                            setArmedDeleteId(m.id);
-                                                                            return;
-                                                                        }
-                                                                        setArmedDeleteId(null);
                                                                         if (window.electronAPI && window.electronAPI.deleteMeeting) {
                                                                             const success = await window.electronAPI.deleteMeeting(m.id);
                                                                             if (success) {
@@ -1294,14 +1283,12 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                                                                         }
                                                                     }}
                                                                 >
-                                                                    <X size={15} strokeWidth={1.75} />
-                                                                    <span className={`overflow-hidden whitespace-nowrap text-[12px] font-medium transition-all duration-200 ease-out ${armedDeleteId === m.id ? 'max-w-[60px] opacity-100' : 'max-w-0 opacity-0'}`}>
-                                                                        {t('Delete')}
-                                                                    </span>
+                                                                    {t('Delete')}
                                                                 </button>
                                                             </div>
                                                         </motion.div>
                                                     ))}
+                                                    </AnimatePresence>
                                                 </div>
                                             </section>
                                         ))}
