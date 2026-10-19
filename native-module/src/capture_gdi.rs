@@ -1,118 +1,107 @@
-//! Windows screen capture via a GDI cascade.
+//! Windows screen capture via GDI, with a window-tree cascade.
 //!
 //! # Why this exists
 //!
-//! `desktopCapturer` (Electron) is the current capture path. It wraps
-//! Chromium's Windows Graphics Capture, which on Windows has three failure
-//! modes that show up in real sessions:
+//! `ScreenshotHelper` captures through Electron's `desktopCapturer`, which wraps
+//! Chromium's Windows Graphics Capture. That is the right default — it is the
+//! only path that respects the macOS Screen Recording gate — but on Windows it
+//! has a failure mode with no error to catch: an application can set
+//! `WDA_EXCLUDEFROMCAPTURE`, and `getSources()` then returns a thumbnail with
+//! that window blanked out, silently. Nothing throws. The model is handed a
+//! picture of the desktop and the answer is garbage, with no log line to
+//! explain it. `ScreenshotHelper.getDisplaysIntersectingSelection` already
+//! documents this as issue #133.
 //!
-//!   1. **Black frames on hardware-accelerated surfaces.** WGC hands back a
-//!      black (or partly black) texture when the target surface is composited
-//!      on a discrete GPU, during a display mode change, or right after a
-//!      fullscreen app takes over. Natively already guards the macOS side of
-//!      this bug class with `assertScreenRecordingPermission()`, which exists
-//!      precisely because `getSources()` returns black thumbnails *silently*
-//!      (issue #133).
-//!   2. **Layered / transparent windows are dropped.** A plain `SRCCOPY` blit
-//!      from the desktop DC skips `WS_EX_LAYERED` windows. `CAPTUREBLT` is
-//!      required to include them.
-//!   3. **DPI / thumbnail-ratio drift.** `ScreenshotHelper` carries a
-//!      `MAX_THUMBNAIL_RATIO` guard and a shared `computeThumbnailCrop()`
-//!      helper because the single-display and multi-display paths diverged on
-//!      exactly this math. GDI has no such ambiguity: you ask for a rect in
-//!      screen coordinates and you get those pixels.
+//! This module is the fallback for that case.
 //!
-//! This module is an *alternative and fallback*, not a replacement. It reads
-//! the composited desktop the same way the Print Screen key does, and it
-//! validates every frame it produces before handing it back.
+//! # The cascade, and the part that actually matters
 //!
-//! # The cascade
+//! A GDI blit of the whole screen does NOT solve it — a window with
+//! `WDA_EXCLUDEFROMCAPTURE` is blank in that too. What does solve it, on
+//! Chromium-family apps, is the window TREE:
 //!
-//!   1. `BitBlt` over the whole virtual screen with `SRCCOPY | CAPTUREBLT`
-//!   2. if the frame is blank → `PrintWindow(PW_RENDERFULLCONTENT)` on the
-//!      foreground window (asks the window to paint itself into our DC, which
-//!      survives the GPU compositing that defeats a desktop blit)
-//!   3. if still blank → `BitBlt` from the foreground window's own DC
+//! ```text
+//!   Chrome_WidgetWin_1                    <- top level, protected, black
+//!     ├── Chrome_RenderWidgetHostHWND     <- black
+//!     ├── Chrome_RenderWidgetHostHWND     <- black, SAME SIZE as the winner
+//!     └── Intermediate D3D Window         <- holds the actual pixels
+//! ```
 //!
-//! Every step's output goes through `frame_is_blank()`; a blank frame is
-//! treated exactly like a failure and the next method is tried. That
-//! validation loop is the single biggest robustness difference from a
-//! single-method capture: the caller gets a usable frame or `None`, never a
-//! silently black PNG.
+//! The protection is not applied uniformly across the tree, and one child still
+//! holds the composited content.
+//!
+//! The catch — and this is the entire lesson from getting it wrong twice — is
+//! that **size cannot tell you which child**. On the app this was debugged
+//! against, two children were both 1920x1080; one was solid black and one was
+//! the real frame. An implementation that picks `max(by area)` gets the black
+//! one and gives up. So this walks EVERY child, tries two capture methods on
+//! each, and returns the first frame that is not blank.
+//!
+//! Validation is the other half. Every frame goes through `frame_luma()`; a
+//! near-black or single-flat-colour frame is treated as a failure and the next
+//! attempt runs. A capture that returns "success" with black pixels is worse
+//! than one that reports failure, because the caller cannot tell them apart.
 //!
 //! # What this deliberately does NOT do
 //!
-//!   * It never calls `SetWindowDisplayAffinity` on a window it does not own.
-//!     Disabling another application's capture protection is not a capture
-//!     technique, it is tampering. Natively's own `capture_exclusion.rs`
-//!     touches only windows belonging to this process, and that boundary is
-//!     respected here too.
-//!   * It never enumerates windows by title to locate a specific application
-//!     (no "find the browser/assessment window" logic). The only window
-//!     lookup is `GetForegroundWindow()` — whatever the user is currently
-//!     looking at, which is the only sane default for a capture the user
-//!     triggered.
-//!   * It does not read another application's accessibility / UIA tree.
+//!   * It never calls `SetWindowDisplayAffinity`. Disabling another
+//!     application's capture protection is not a capture technique — and it
+//!     does not work cross-process anyway, since Windows only permits the
+//!     owning process to change it.
+//!   * It never enumerates windows by title or class name to locate a specific
+//!     application. The caller chooses the window; this only walks its
+//!     children.
+//!   * It does not inject into, or read the memory of, any other process.
+//!   * It does not read another application's UI Automation tree.
 //!
-//! # Entry points
-//!
-//! `capture_region_gdi(rect, max_width)` is the one the app uses: it captures
-//! a rectangle of the virtual screen, which is what `ScreenshotHelper` wants —
-//! it captures one display or one cropper selection, not the whole virtual
-//! screen. It runs the BitBlt step only, because a whole-window capture is a
-//! different shape from the rect the caller asked for.
-//!
-//! `capture_screen_gdi` and `capture_foreground_window_gdi` capture the whole
-//! virtual screen / the foreground window and run the full three-step cascade.
-//! They are for the case where no rect is known.
+//! The boundary is the same one `capture_exclusion.rs` draws: this crate
+//! touches only what the OS will serve through a documented capture call.
 //!
 //! # Output format
 //!
-//! Raw **BGRA**, top-down, 32bpp — the byte layout `GetDIBits` produces and
-//! the layout `nativeImage.toBitmap()` returns on Windows, which makes
-//! `nativeImage.createFromBitmap()` its exact inverse. Note that
-//! `sharp(buf, { raw: { channels: 4 } })` reads that same buffer as **RGBA**,
-//! so it is *not* a drop-in here; see electron/ScreenshotGdi.ts. Encoding to
-//! PNG happens in JS so we reuse the image stack already in the app instead of
-//! shipping a second encoder.
+//! Raw **BGRA**, top-down, 32bpp — the layout `GetDIBits` produces and the
+//! layout `nativeImage.toBitmap()` returns on Windows, which makes
+//! `nativeImage.createFromBitmap()` its exact inverse. Note `sharp(buf, { raw:
+//! { channels: 4 } })` reads that as RGBA, so it is not a drop-in.
 //!
 //! # Threading
 //!
-//! Main-thread only, like every other napi function in this crate. Each call
-//! is synchronous and self-contained: every HDC/HBITMAP is released by a
-//! `Drop` guard, including on the error paths, because GDI object leaks are
-//! the classic way a long-running capture loop takes down a process.
+//! Main-thread only, like every other napi function here. Every HDC/HBITMAP is
+//! released by a `Drop` guard, including on error paths.
 
 #![cfg(target_os = "windows")]
 
 use std::time::Instant;
 
 use napi::bindgen_prelude::*;
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT, TRUE};
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits,
-    GetDC, ReleaseDC, SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO,
-    BITMAPINFOHEADER, DIB_RGB_COLORS, HALFTONE, HDC, HBITMAP, HGDIOBJ, ROP_CODE, SRCCOPY,
+    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetDC,
+    GetWindowDC, ReleaseDC, SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER,
+    DIB_RGB_COLORS, HALFTONE, HDC, HBITMAP, HGDIOBJ, ROP_CODE, SRCCOPY,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetSystemMetrics, GetWindowRect, IsIconic, IsWindow,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    EnumChildWindows, GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowRect,
+    IsIconic, IsWindow, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN,
 };
 
-/// `CAPTUREBLT` — include layered/transparent windows in the blit.
-/// Declared locally: the `windows` crate does not export this one.
+/// Include layered/transparent windows in the blit. Without it, `WS_EX_LAYERED`
+/// windows silently vanish from the capture.
 const CAPTUREBLT: u32 = 0x4000_0000;
 
-/// `PW_RENDERFULLCONTENT` — ask the window to render its full content,
-/// including hardware-accelerated surfaces, rather than only what the DWM
-/// compositor would hand us. The crate exports `PW_CLIENTONLY` (1) but not
-/// this value (2).
+/// Ask the window to render its full content, including hardware-accelerated
+/// surfaces. Exported as `PW_CLIENTONLY`; the crate does not export this one.
 const PW_RENDERFULLCONTENT: PRINT_WINDOW_FLAGS = PRINT_WINDOW_FLAGS(0x0002);
 
-/// Frames at or below this mean luminance count as blank. A real desktop is
-/// never this dark; a failed GPU blit is exactly this dark.
-const BLANK_LUMA_THRESHOLD: u32 = 8;
+/// At or below this peak luma, a frame is considered black.
+const BLANK_LUMA_MAX: u32 = 15;
+/// Below this spread between min and max luma, a frame is one flat colour.
+const BLANK_LUMA_SPREAD: u32 = 6;
+
+/// Minimum size for a child window to be worth trying.
+const MIN_CHILD_EDGE: i32 = 50;
 
 #[napi(object)]
 pub struct CaptureRect {
@@ -129,10 +118,11 @@ pub struct GdiCaptureResult {
     pub data: Buffer,
     pub width: u32,
     pub height: u32,
-    /// Which cascade step produced this frame: bitblt | printwindow | windowdc
+    /// Which attempt produced it, e.g. `child:Intermediate D3D Window/PrintWindow`.
     pub method: String,
     pub duration_ms: f64,
-    /// `true` when the frame validated as blank — callers should fall back.
+    /// `true` when the frame validated as blank. Callers must treat this as a
+    /// failure and fall back — never send it on.
     pub blank: bool,
 }
 
@@ -140,14 +130,16 @@ pub struct GdiCaptureResult {
 
 /// Owns an HDC from `CreateCompatibleDC`; deletes it on drop.
 struct MemDc(HDC);
-
 impl MemDc {
     fn new(screen: HDC) -> Option<Self> {
         let hdc = unsafe { CreateCompatibleDC(screen) };
-        (!hdc.is_invalid()).then_some(MemDc(hdc))
+        if hdc.is_invalid() {
+            None
+        } else {
+            Some(MemDc(hdc))
+        }
     }
 }
-
 impl Drop for MemDc {
     fn drop(&mut self) {
         unsafe {
@@ -158,14 +150,16 @@ impl Drop for MemDc {
 
 /// Owns an HBITMAP; deletes it on drop.
 struct Bitmap(HBITMAP);
-
 impl Bitmap {
     fn new(hdc: HDC, w: i32, h: i32) -> Option<Self> {
-        let handle = unsafe { CreateCompatibleBitmap(hdc, w, h) };
-        (!handle.is_invalid()).then_some(Bitmap(handle))
+        let bmp = unsafe { CreateCompatibleBitmap(hdc, w, h) };
+        if bmp.is_invalid() {
+            None
+        } else {
+            Some(Bitmap(bmp))
+        }
     }
 }
-
 impl Drop for Bitmap {
     fn drop(&mut self) {
         unsafe {
@@ -174,13 +168,51 @@ impl Drop for Bitmap {
     }
 }
 
-/// Owns an HDC from `GetDC`/`GetWindowDC`; releases it on drop.
-struct ScreenDc {
+/// Unselects an object from an HDC when dropped. In Win32 GDI, calling
+/// DeleteObject on a bitmap while it is selected into a DC fails silently
+/// and leaks the GDI handle in the Windows kernel table.
+struct SelectGuard {
+    hdc: HDC,
+    old: HGDIOBJ,
+}
+impl Drop for SelectGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = SelectObject(self.hdc, self.old);
+        }
+    }
+}
+
+/// Owns a DC obtained with `GetDC(hwnd)`; releases it on drop.
+struct DcGuard {
     hdc: HDC,
     hwnd: HWND,
 }
-
-impl Drop for ScreenDc {
+impl DcGuard {
+    /// The screen DC (the whole virtual screen) when `hwnd` is null.
+    fn screen() -> Option<Self> {
+        let hdc = unsafe { GetDC(HWND(0)) };
+        if hdc.is_invalid() {
+            None
+        } else {
+            Some(DcGuard { hdc, hwnd: HWND(0) })
+        }
+    }
+    /// A window's DC via `GetDC` (client area) or `GetWindowDC` (whole window).
+    fn window(hwnd: HWND, whole_window: bool) -> Option<Self> {
+        let hdc = if whole_window {
+            unsafe { GetWindowDC(hwnd) }
+        } else {
+            unsafe { GetDC(hwnd) }
+        };
+        if hdc.is_invalid() {
+            None
+        } else {
+            Some(DcGuard { hdc, hwnd })
+        }
+    }
+}
+impl Drop for DcGuard {
     fn drop(&mut self) {
         unsafe {
             _ = ReleaseDC(self.hwnd, self.hdc);
@@ -188,36 +220,193 @@ impl Drop for ScreenDc {
     }
 }
 
-// ── Public API ──────────────────────────────────────────────────────────────
+// ── Pixel validation ────────────────────────────────────────────────────────
 
-/// Bounding box of every monitor, in screen coordinates.
+/// Returns (min, max, mean) luma for a top-down BGRA buffer.
 ///
-/// `x`/`y` can be negative — a monitor arranged above or left of the primary
-/// has negative virtual-screen coordinates, and callers that clamp to `>= 0`
-/// silently crop those displays out.
+/// Stride-sampled: we only need to know whether a frame is blank, not produce a
+/// histogram, and a full pass over a 4K frame on every attempt would be slow.
+fn frame_luma(data: &[u8], width: u32, height: u32) -> (u32, u32, f64) {
+    if data.is_empty() || width == 0 || height == 0 {
+        return (0, 0, 0.0);
+    }
+    let w = width as usize;
+    let h = height as usize;
+    let row_step = (h / 400).max(1);
+    let col_step = (w / 400).max(1);
+
+    let mut lo = 255u32;
+    let mut hi = 0u32;
+    let mut total = 0u64;
+    let mut count = 0u64;
+
+    for y in (0..h).step_by(row_step) {
+        let base = y * w * 4;
+        for x in (0..w).step_by(col_step) {
+            let i = base + x * 4;
+            if i + 2 >= data.len() {
+                break;
+            }
+            let b = data[i] as u32;
+            let g = data[i + 1] as u32;
+            let r = data[i + 2] as u32;
+            // Rec. 601 luma.
+            let luma = (r * 299 + g * 587 + b * 114) / 1000;
+            lo = lo.min(luma);
+            hi = hi.max(luma);
+            total += luma as u64;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return (0, 0, 0.0);
+    }
+    (lo, hi, total as f64 / count as f64)
+}
+
+/// A frame is blank if it is near-black OR one flat colour.
+///
+/// The flat-colour case matters: some failures produce a solid plate rather
+/// than pure black, and a max-only test passes those.
+fn is_blank(lo: u32, hi: u32) -> bool {
+    hi <= BLANK_LUMA_MAX || hi.saturating_sub(lo) < BLANK_LUMA_SPREAD
+}
+
+// ── Pixel readback ──────────────────────────────────────────────────────────
+
+/// Read the bitmap back as top-down BGRA, optionally downscaling first.
+fn read_back(
+    src_hdc: HDC,
+    mem: &MemDc,
+    bitmap: &Bitmap,
+    w: i32,
+    h: i32,
+    max_width: Option<u32>,
+) -> Option<Vec<u8>> {
+    let (out_w, out_h) = downscale_target(w, h, max_width);
+
+    if (out_w, out_h) != (w, h) {
+        let dst = MemDc::new(src_hdc)?;
+        let scaled = Bitmap::new(src_hdc, out_w, out_h)?;
+        let _guard = SelectGuard {
+            hdc: dst.0,
+            old: unsafe { SelectObject(dst.0, scaled.0) },
+        };
+        unsafe {
+            SetStretchBltMode(dst.0, HALFTONE);
+            let stretched = StretchBlt(
+                dst.0, 0, 0, out_w, out_h,
+                mem.0, 0, 0, w, h,
+                ROP_CODE(SRCCOPY.0 | CAPTUREBLT),
+            );
+            if !stretched.as_bool() {
+                return None;
+            }
+        }
+        read_dibits(dst.0, &scaled, out_w, out_h)
+    } else {
+        read_dibits(mem.0, bitmap, w, h)
+    }
+}
+
+fn downscale_target(w: i32, h: i32, max_width: Option<u32>) -> (i32, i32) {
+    match max_width {
+        Some(cap) if cap > 0 && w > cap as i32 => {
+            let scale = cap as f64 / w as f64;
+            let out_w = (w as f64 * scale) as i32;
+            let out_h = (h as f64 * scale) as i32;
+            (out_w.max(1), out_h.max(1))
+        }
+        _ => (w, h),
+    }
+}
+
+fn read_dibits(hdc: HDC, bitmap: &Bitmap, w: i32, h: i32) -> Option<Vec<u8>> {
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let mut pixels = vec![0u8; (w as usize) * (h as usize) * 4];
+
+    let mut bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            // Negative height = top-down, so no vertical flip is needed.
+            biHeight: -h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: 0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let got = unsafe {
+        GetDIBits(
+            hdc,
+            bitmap.0,
+            0,
+            h as u32,
+            Some(pixels.as_mut_ptr() as *mut std::ffi::c_void),
+            &mut bmi,
+            DIB_RGB_COLORS,
+        )
+    };
+    if got != h {
+        return None;
+    }
+    Some(pixels)
+}
+
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
+}
+
+fn virtual_screen() -> (i32, i32, i32, i32) {
+    unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
+    }
+}
+
+/// Build a result, validating the frame before handing it back.
+fn finish(
+    pixels: Vec<u8>,
+    w: i32,
+    h: i32,
+    method: &str,
+    started: Instant,
+) -> Option<GdiCaptureResult> {
+    let (lo, hi, _mean) = frame_luma(&pixels, w as u32, h as u32);
+    let blank = is_blank(lo, hi);
+    Some(GdiCaptureResult {
+        data: pixels.into(),
+        width: w as u32,
+        height: h as u32,
+        method: method.to_string(),
+        duration_ms: elapsed_ms(started),
+        blank,
+    })
+}
+
+// ── Screen capture ──────────────────────────────────────────────────────────
+
 #[napi]
 pub fn get_virtual_screen_bounds() -> CaptureRect {
     let (x, y, w, h) = virtual_screen();
     CaptureRect { x, y, width: w, height: h }
 }
 
-/// Capture an explicit rectangle of the virtual screen.
+/// Capture a rectangle of the virtual screen with `SRCCOPY | CAPTUREBLT`.
 ///
-/// Coordinates are in virtual-screen space, which is NOT "display space": on a
-/// multi-monitor layout where a secondary display sits left of or above the
-/// primary, `x`/`y` are negative. Electron's `Display.bounds` and
-/// `screen.getCursorScreenPoint()` are already in this space, so
-/// `preferredDisplay.bounds` can be handed over unchanged.
-///
-/// The rect is clamped to the virtual screen, so one that overhangs an edge (a
-/// display bounds rounded past the edge, or a cropper selection dragged
-/// off-screen) yields the intersecting part instead of failing. The returned
-/// `width`/`height` are the real captured size — callers that care should
-/// compare them against what they asked for.
-///
-/// Unlike `capture_screen_gdi`, no PrintWindow cascade runs: the caller asked
-/// for a region, and a whole-window capture is a different shape, so a blank
-/// frame here is reported with `blank: true` rather than substituted.
+/// Coordinates are virtual-screen space, which is negative on multi-monitor
+/// layouts where a display sits left of or above the primary. Electron's
+/// `Display.bounds` is already in this space. The rect is clamped, so an
+/// overhanging rect yields the intersection rather than failing.
 #[napi]
 pub fn capture_region_gdi(rect: CaptureRect, max_width: Option<u32>) -> Option<GdiCaptureResult> {
     let started = Instant::now();
@@ -236,152 +425,18 @@ pub fn capture_region_gdi(rect: CaptureRect, max_width: Option<u32>) -> Option<G
         return None;
     }
 
-    let mut result = capture_region(x1, y1, w, h, max_width)?;
-    result.method = "bitblt".to_string();
-    result.duration_ms = elapsed_ms(started);
-    Some(result)
-}
-
-/// Capture the whole virtual screen, running the cascade internally.
-///
-/// `max_width`: when non-zero and smaller than the capture width, the frame is
-/// downscaled with `StretchBlt` (HALFTONE) so the long edge is at most this
-/// many pixels. Downscaling in GDI costs microseconds; doing it in JS would
-/// mean dragging a 4K BGRA buffer across the napi boundary first.
-///
-/// Returns `None` only if every method failed outright. If the cascade ran but
-/// produced only blank frames, the last frame is returned with
-/// `blank: true` so the caller can fall back rather than losing the
-/// diagnostic.
-#[napi]
-pub fn capture_screen_gdi(max_width: Option<u32>) -> Option<GdiCaptureResult> {
-    let started = Instant::now();
-    let (x, y, w, h) = virtual_screen();
-    if w <= 0 || h <= 0 {
-        return None;
-    }
-
-    // Step 1 — desktop blit with CAPTUREBLT.
-    if let Some(mut result) = capture_region(x, y, w, h, max_width) {
-        if !result.blank {
-            result.method = "bitblt".to_string();
-            result.duration_ms = elapsed_ms(started);
-            return Some(result);
-        }
-    }
-
-    // Step 2 — ask the foreground window to render itself.
-    if let Some(mut result) = capture_foreground_window_inner(max_width, false) {
-        if !result.blank {
-            result.duration_ms = elapsed_ms(started);
-            return Some(result);
-        }
-    }
-
-    // Step 3 — blit from the foreground window's own DC.
-    if let Some(mut result) = capture_foreground_window_inner(max_width, true) {
-        if !result.blank {
-            result.duration_ms = elapsed_ms(started);
-            return Some(result);
-        }
-    }
-
-    // Nothing usable. Return the desktop frame flagged blank so the caller can
-    // fall back to desktopCapturer with evidence of what went wrong.
-    capture_region(x, y, w, h, max_width).map(|mut result| {
-        result.method = "bitblt".to_string();
-        result.blank = true;
-        result.duration_ms = elapsed_ms(started);
-        result
-    })
-}
-
-/// Capture only the foreground window, bypassing the desktop compositor.
-///
-/// Used when the caller already knows the desktop blit returns black for this
-/// window (a GPU-composited fullscreen app, typically) and wants to skip
-/// straight to the reliable method.
-#[napi]
-pub fn capture_foreground_window_gdi(max_width: Option<u32>) -> Option<GdiCaptureResult> {
-    let started = Instant::now();
-    let mut result = capture_foreground_window_inner(max_width, false)
-        .filter(|r| !r.blank)
-        .or_else(|| capture_foreground_window_inner(max_width, true))?;
-    result.duration_ms = elapsed_ms(started);
-    Some(result)
-}
-
-/// Native handle of the window the user is currently interacting with.
-///
-/// Returned as a `Buffer` holding one pointer-sized integer, matching the
-/// convention used elsewhere in this crate so JS can pass it straight back in.
-#[napi]
-pub fn get_foreground_window_handle() -> Option<Buffer> {
-    let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.0 == 0 {
-        return None;
-    }
-    let raw = hwnd.0 as usize;
-    Some(raw.to_ne_bytes().as_ref().into())
-}
-
-/// True when a BGRA frame is effectively black.
-///
-/// Samples on a stride rather than every pixel: a 4K frame is 8 MP and we only
-/// need to know whether *anything* is lit. Checking ~64k pixels is
-/// indistinguishable in practice and keeps this well under a millisecond.
-#[napi]
-pub fn is_frame_blank(data: Buffer, width: u32, height: u32) -> bool {
-    frame_is_blank(data.as_ref(), width, height)
-}
-
-// ── Internals ───────────────────────────────────────────────────────────────
-
-fn elapsed_ms(started: Instant) -> f64 {
-    started.elapsed().as_secs_f64() * 1000.0
-}
-
-fn virtual_screen() -> (i32, i32, i32, i32) {
-    unsafe {
-        (
-            GetSystemMetrics(SM_XVIRTUALSCREEN),
-            GetSystemMetrics(SM_YVIRTUALSCREEN),
-            GetSystemMetrics(SM_CXVIRTUALSCREEN),
-            GetSystemMetrics(SM_CYVIRTUALSCREEN),
-        )
-    }
-}
-
-fn capture_region(
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    max_width: Option<u32>,
-) -> Option<GdiCaptureResult> {
-    if w <= 0 || h <= 0 {
-        return None;
-    }
-
-    let screen = ScreenDc { hdc: unsafe { GetDC(HWND(0)) }, hwnd: HWND(0) };
-    if screen.hdc.is_invalid() {
-        return None;
-    }
-
+    let screen = DcGuard::screen()?;
     let mem = MemDc::new(screen.hdc)?;
     let bitmap = Bitmap::new(screen.hdc, w, h)?;
-    let _old: HGDIOBJ = unsafe { SelectObject(mem.0, bitmap.0) };
+    let _guard = SelectGuard {
+        hdc: mem.0,
+        old: unsafe { SelectObject(mem.0, bitmap.0) },
+    };
 
     let blitted = unsafe {
         BitBlt(
-            mem.0,
-            0,
-            0,
-            w,
-            h,
-            screen.hdc,
-            x,
-            y,
+            mem.0, 0, 0, w, h,
+            screen.hdc, x1, y1,
             ROP_CODE(SRCCOPY.0 | CAPTUREBLT),
         )
     };
@@ -389,230 +444,220 @@ fn capture_region(
         return None;
     }
 
-    read_back(screen.hdc, mem.0, bitmap.0, w, h, max_width)
+    let pixels = read_back(screen.hdc, &mem, &bitmap, w, h, max_width)?;
+    let (pw, ph) = downscale_target(w, h, max_width);
+    finish(pixels, pw, ph, "screen/bitblt", started)
 }
 
-fn capture_foreground_window_inner(
+// ── Window tree capture ─────────────────────────────────────────────────────
+
+/// One way of pulling pixels out of a child window.
+type ChildCaptureFn = fn(&ChildInfo, Option<u32>) -> Option<Vec<u8>>;
+
+struct ChildInfo {
+    hwnd: HWND,
+    class: String,
+    width: i32,
+    height: i32,
+}
+
+unsafe extern "system" fn enum_child_proc(hwnd: HWND, lparam: LPARAM) -> windows::Win32::Foundation::BOOL {
+    let list = &mut *(lparam.0 as *mut Vec<ChildInfo>);
+
+    let mut name = [0u16; 256];
+    let len = GetClassNameW(hwnd, &mut name);
+    let class = String::from_utf16_lossy(&name[..len.max(0) as usize]);
+
+    let mut rect = RECT::default();
+    if GetWindowRect(hwnd, &mut rect).is_ok() {
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
+        if w > MIN_CHILD_EDGE && h > MIN_CHILD_EDGE {
+            list.push(ChildInfo { hwnd, class, width: w, height: h });
+        }
+    }
+    TRUE
+}
+
+/// Turn a Node `Buffer` (from `BrowserWindow.getNativeWindowHandle()`) into an HWND.
+fn buffer_to_hwnd(buf: &Buffer) -> HWND {
+    if buf.len() >= 8 {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&buf[..8]);
+        HWND(i64::from_le_bytes(b) as isize)
+    } else if buf.len() >= 4 {
+        let mut b = [0u8; 4];
+        b.copy_from_slice(&buf[..4]);
+        HWND(i32::from_le_bytes(b) as isize)
+    } else {
+        HWND(0)
+    }
+}
+
+/// `PrintWindow(PW_RENDERFULLCONTENT)` against a child, using its window DC.
+fn child_printwindow(child: &ChildInfo, max_width: Option<u32>) -> Option<Vec<u8>> {
+    let dc = DcGuard::window(child.hwnd, true)?;
+    let mem = MemDc::new(dc.hdc)?;
+    let bitmap = Bitmap::new(dc.hdc, child.width, child.height)?;
+    let _guard = SelectGuard {
+        hdc: mem.0,
+        old: unsafe { SelectObject(mem.0, bitmap.0) },
+    };
+
+    let ok = unsafe { PrintWindow(child.hwnd, mem.0, PW_RENDERFULLCONTENT) };
+    if !ok.as_bool() {
+        // Some apps return FALSE here; the buffer may still hold something, so
+        // read it back and let the luma check decide rather than bailing out.
+    }
+
+    read_back(dc.hdc, &mem, &bitmap, child.width, child.height, max_width)
+}
+
+/// `GetDC(child)` + `BitBlt` — the client DC, a different source than
+/// `GetWindowDC` and a different one again from the screen DC.
+fn child_client_dc(child: &ChildInfo, max_width: Option<u32>) -> Option<Vec<u8>> {
+    let dc = DcGuard::window(child.hwnd, false)?;
+    let mem = MemDc::new(dc.hdc)?;
+    let bitmap = Bitmap::new(dc.hdc, child.width, child.height)?;
+    let _guard = SelectGuard {
+        hdc: mem.0,
+        old: unsafe { SelectObject(mem.0, bitmap.0) },
+    };
+
+    let ok = unsafe {
+        BitBlt(
+            mem.0, 0, 0, child.width, child.height,
+            dc.hdc, 0, 0,
+            ROP_CODE(SRCCOPY.0 | CAPTUREBLT),
+        )
+    };
+    if ok.is_err() {
+        return None;
+    }
+
+    read_back(dc.hdc, &mem, &bitmap, child.width, child.height, max_width)
+}
+
+/// Capture a window by walking its child windows.
+///
+/// For every child, in descending order of area, tries
+/// `PrintWindow(PW_RENDERFULLCONTENT)` then a client-DC `BitBlt`, and returns
+/// the first frame that is not blank.
+///
+/// Ordering by area is only a heuristic — on the app this was written against,
+/// two children were the same size and the larger-looking one was solid black,
+/// so ordering cannot be trusted to find the good one. Every child gets a turn.
+///
+/// `hwnd` is a Node Buffer as returned by
+/// `BrowserWindow.getNativeWindowHandle()`.
+///
+/// Returns `None` if the window has no usable children or every attempt came
+/// back blank. The caller should then fall back to `desktopCapturer`.
+#[napi]
+pub fn capture_window_tree_gdi(
+    hwnd: Buffer,
     max_width: Option<u32>,
-    use_window_dc: bool,
 ) -> Option<GdiCaptureResult> {
+    let started = Instant::now();
+    let parent = buffer_to_hwnd(&hwnd);
+    if parent.0 == 0 {
+        return None;
+    }
+
+    let mut children: Vec<ChildInfo> = Vec::new();
+    unsafe {
+        let _ = EnumChildWindows(
+            parent,
+            Some(enum_child_proc),
+            LPARAM(&mut children as *mut Vec<ChildInfo> as isize),
+        );
+    }
+    if children.is_empty() {
+        return None;
+    }
+
+    children.sort_by_key(|c| -((c.width as i64) * (c.height as i64)));
+
+    for child in &children {
+        let attempts: [(&str, ChildCaptureFn); 2] = [
+            ("PrintWindow", child_printwindow),
+            ("GetDC+BitBlt", child_client_dc),
+        ];
+
+        for (label, capture) in attempts {
+            if let Some(pixels) = capture(child, max_width) {
+                let (ow, oh) = downscale_target(child.width, child.height, max_width);
+                let (lo, hi, _mean) = frame_luma(&pixels, ow as u32, oh as u32);
+                if !is_blank(lo, hi) {
+                    return finish(
+                        pixels,
+                        ow,
+                        oh,
+                        &format!("child:{}/{}", child.class, label),
+                        started,
+                    );
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Convenience: walk the child windows of whatever window has focus.
+#[napi]
+pub fn capture_foreground_tree_gdi(max_width: Option<u32>) -> Option<GdiCaptureResult> {
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.0 == 0 {
         return None;
     }
-    // Null handle can mean "another session" or "the shell is still starting".
-    if !unsafe { IsWindow(hwnd) }.as_bool() {
-        return None;
-    }
-    // A minimised window renders nothing useful.
-    if unsafe { IsIconic(hwnd) }.as_bool() {
-        return None;
-    }
+    let buf: Buffer = {
+        let bytes = (hwnd.0 as i64).to_le_bytes();
+        bytes.to_vec().into()
+    };
+    capture_window_tree_gdi(buf, max_width)
+}
 
+/// The foreground window's rectangle, in physical screen pixels.
+///
+/// Exists so the caller can measure that region inside a `desktopCapturer`
+/// frame and tell whether the window actually made it into the capture.
+/// Checking the whole image instead is useless here: when a window is excluded
+/// the desktop shows through it, so the frame is full of pixels and looks
+/// healthy while the thing you wanted is missing.
+#[napi]
+pub fn get_foreground_window_rect() -> Option<CaptureRect> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.0 == 0 {
+        return None;
+    }
     let mut rect = RECT::default();
     if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
         return None;
     }
     let w = rect.right - rect.left;
     let h = rect.bottom - rect.top;
-    if w < 16 || h < 16 {
-        return None;
-    }
-
-    let screen = ScreenDc { hdc: unsafe { GetDC(hwnd) }, hwnd };
-    if screen.hdc.is_invalid() {
-        return None;
-    }
-
-    let mem = MemDc::new(screen.hdc)?;
-    let bitmap = Bitmap::new(screen.hdc, w, h)?;
-    let _old: HGDIOBJ = unsafe { SelectObject(mem.0, bitmap.0) };
-
-    let ok = if use_window_dc {
-        unsafe {
-            BitBlt(
-                mem.0,
-                0,
-                0,
-                w,
-                h,
-                screen.hdc,
-                0,
-                0,
-                ROP_CODE(SRCCOPY.0 | CAPTUREBLT),
-            )
-        }
-        .is_ok()
-    } else {
-        unsafe { PrintWindow(hwnd, mem.0, PW_RENDERFULLCONTENT) }.as_bool()
-    };
-
-    if !ok {
-        return None;
-    }
-
-    let mut result = read_back(screen.hdc, mem.0, bitmap.0, w, h, max_width)?;
-    result.method = if use_window_dc { "windowdc" } else { "printwindow" }.to_string();
-    Some(result)
-}
-
-/// Pull pixels out of a bitmap, optionally downscaling first.
-///
-/// `bitmap` must be the bitmap currently selected into `mem_hdc` — `GetDIBits`
-/// reads from the bitmap, not the DC, so passing the wrong handle silently
-/// yields an all-zero buffer (which then correctly reports as blank, but for
-/// the wrong reason).
-fn read_back(
-    screen_hdc: HDC,
-    mem_hdc: HDC,
-    bitmap: HBITMAP,
-    w: i32,
-    h: i32,
-    max_width: Option<u32>,
-) -> Option<GdiCaptureResult> {
-    if downscale_target(w, h, max_width) == (w, h) {
-        let pixels = read_dibits(mem_hdc, bitmap, w, h)?;
-        let blank = frame_is_blank(&pixels, w as u32, h as u32);
-        return Some(GdiCaptureResult {
-            data: pixels.into(),
-            width: w as u32,
-            height: h as u32,
-            method: "bitblt".to_string(),
-            duration_ms: 0.0,
-            blank,
-        });
-    }
-
-    // Downscale in GDI. `small_dc` / `small_bmp` must outlive the GetDIBits
-    // call below, so they stay in scope until after it returns; the Drop
-    // guards then release them in reverse declaration order.
-    let (dw, dh) = downscale_target(w, h, max_width);
-    let small_dc = MemDc::new(screen_hdc)?;
-    let small_bmp = Bitmap::new(screen_hdc, dw, dh)?;
-    let _old: HGDIOBJ = unsafe { SelectObject(small_dc.0, small_bmp.0) };
-    unsafe {
-        SetStretchBltMode(small_dc.0, HALFTONE);
-    }
-    let stretched = unsafe {
-        StretchBlt(
-            small_dc.0,
-            0,
-            0,
-            dw,
-            dh,
-            mem_hdc,
-            0,
-            0,
-            w,
-            h,
-            ROP_CODE(SRCCOPY.0),
-        )
-    };
-    if !stretched.as_bool() {
-        return None;
-    }
-
-    let pixels = read_dibits(small_dc.0, small_bmp.0, dw, dh)?;
-    let blank = frame_is_blank(&pixels, dw as u32, dh as u32);
-    Some(GdiCaptureResult {
-        data: pixels.into(),
-        width: dw as u32,
-        height: dh as u32,
-        method: "bitblt".to_string(),
-        duration_ms: 0.0,
-        blank,
-    })
-}
-
-fn downscale_target(w: i32, h: i32, max_width: Option<u32>) -> (i32, i32) {
-    match max_width {
-        Some(limit) if limit > 0 && w > limit as i32 => {
-            let scale = limit as f64 / w as f64;
-            let dh = (h as f64 * scale).round() as i32;
-            (limit as i32, dh.max(1))
-        }
-        _ => (w, h),
-    }
-}
-
-/// `GetDIBits` into a fresh `Vec<u8>`, top-down, 32bpp.
-fn read_dibits(hdc: HDC, bitmap: HBITMAP, w: i32, h: i32) -> Option<Vec<u8>> {
     if w <= 0 || h <= 0 {
         return None;
     }
-    let stride = (w as usize) * 4;
-    let mut pixels = vec![0u8; stride * (h as usize)];
-
-    let mut info = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: w,
-            // Negative height = top-down DIB. Omitting the sign yields a
-            // bottom-up image and the capture comes out vertically flipped —
-            // which is exactly the kind of bug that survives a glance at a
-            // screenshot of a mostly-uniform desktop.
-            biHeight: -h,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: 0,
-            biSizeImage: 0,
-            biXPelsPerMeter: 0,
-            biYPelsPerMeter: 0,
-            biClrUsed: 0,
-            biClrImportant: 0,
-        },
-        bmiColors: [Default::default()],
-    };
-
-    let lines = unsafe {
-        GetDIBits(
-            hdc,
-            bitmap,
-            0,
-            h as u32,
-            Some(pixels.as_mut_ptr() as *mut std::ffi::c_void),
-            &mut info,
-            DIB_RGB_COLORS,
-        )
-    };
-    if lines != h {
-        return None;
-    }
-    Some(pixels)
+    Some(CaptureRect { x: rect.left, y: rect.top, width: w, height: h })
 }
 
-/// Mean-luminance blank check on a stride-sampled subset.
-fn frame_is_blank(data: &[u8], width: u32, height: u32) -> bool {
-    if data.is_empty() || width == 0 || height == 0 {
-        return true;
+/// Is this window usable as a capture target at all?
+#[napi]
+pub fn is_capturable_window(hwnd: Buffer) -> bool {
+    let h = buffer_to_hwnd(&hwnd);
+    if h.0 == 0 {
+        return false;
     }
-    let expected = (width as usize) * (height as usize) * 4;
-    if data.len() < expected {
-        return true;
+    unsafe {
+        if !IsWindow(h).as_bool() {
+            return false;
+        }
+        // A minimised window has nothing to capture.
+        if IsIconic(h).as_bool() {
+            return false;
+        }
     }
-
-    let pixels = (width as u64) * (height as u64);
-    // Sample at most ~65k pixels, evenly strided.
-    let step = ((pixels / 65_536).max(1)) as usize;
-    let total_pixels = (width as usize) * (height as usize);
-    let mut total: u64 = 0;
-    let mut count: u64 = 0;
-    let mut index = 0usize;
-
-    while index < total_pixels {
-        let base = index * 4;
-        // BGRA layout. Any channel being lit is enough, so the max of B/G/R
-        // is the cheapest "is something there" test.
-        let b = data[base] as u32;
-        let g = data[base + 1] as u32;
-        let r = data[base + 2] as u32;
-        total += b.max(g).max(r) as u64;
-        count += 1;
-        index += step;
-    }
-
-    if count == 0 {
-        return true;
-    }
-    (total / count) as u32 <= BLANK_LUMA_THRESHOLD
+    true
 }

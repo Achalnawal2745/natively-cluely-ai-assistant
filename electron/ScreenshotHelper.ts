@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from "uuid"
 import util from "util"
 import sharp, { type OverlayOptions } from "sharp"
 import { exec as execShell } from "child_process"
-import { captureGdiToPng } from "./ScreenshotGdi"
+import { repairBlankedWindowCapture } from './ScreenshotGdi'
 
 // Module-level: promisified shell exec created once per process lifetime.
 // Uses the shell-capable exec variant (not execFile) because Linux screenshot
@@ -72,18 +72,18 @@ function assertScreenRecordingPermission(): void {
  */
 function getDisplayContainingRect(rect: Electron.Rectangle): Electron.Display {
   const displays = screen.getAllDisplays();
-  
+
   // Find display that contains the center point
   const centerX = rect.x + rect.width / 2;
   const centerY = rect.y + rect.height / 2;
-  
+
   for (const display of displays) {
     const { x: dx, y: dy, width, height } = display.bounds;
     if (centerX >= dx && centerX < dx + width && centerY >= dy && centerY < dy + height) {
       return display;
     }
   }
-  
+
   // Check if any part of the rect is on this display
   for (const display of displays) {
     const { x: dx, y: dy, width, height } = display.bounds;
@@ -91,13 +91,13 @@ function getDisplayContainingRect(rect: Electron.Rectangle): Electron.Display {
     const displayBottom = dy + height;
     const rectRight = rect.x + rect.width;
     const rectBottom = rect.y + rect.height;
-    
+
     // Check for overlap
     if (rect.x < displayRight && rectRight > dx && rect.y < displayBottom && rectBottom > dy) {
       return display;
     }
   }
-  
+
   return screen.getPrimaryDisplay();
 }
 
@@ -223,9 +223,9 @@ async function getDisplaysIntersectingSelection(
     console.error('[ScreenshotHelper] Failed to get desktop sources:', error);
     throw error;
   }
-  
+
   console.log(`[ScreenshotHelper] Found ${sources.length} screen sources for ${displays.length} displays`);
-  
+
   // Build a map of source by display_id for reliable matching
   // On Windows, source.display_id is a string representation of the display id
   const sourceByDisplayId = new Map<string, Electron.DesktopCapturerSource>();
@@ -235,23 +235,23 @@ async function getDisplaysIntersectingSelection(
       console.log(`[ScreenshotHelper] Registered source: ${src.name} with display_id: ${src.display_id}`);
     }
   }
-  
+
   const captures: DisplayCapture[] = [];
-  
+
   // For each display, check if selection intersects with it
   for (const display of displays) {
     const { x: dx, y: dy, width: dWidth, height: dHeight } = display.bounds;
     const displayRight = dx + dWidth;
     const displayBottom = dy + dHeight;
-    
+
     // Check if selection intersects with this display
     const intersectsX = selection.x < displayRight && selectionRight > dx;
     const intersectsY = selection.y < displayBottom && selectionBottom > dy;
-    
+
     if (!intersectsX || !intersectsY) {
       continue;
     }
-    
+
     // Calculate intersection
     const intersection: Electron.Rectangle = {
       x: Math.max(selection.x, dx),
@@ -259,15 +259,15 @@ async function getDisplaysIntersectingSelection(
       width: Math.min(selectionRight, displayRight) - Math.max(selection.x, dx),
       height: Math.min(selectionBottom, displayBottom) - Math.max(selection.y, dy)
     };
-    
+
     console.log(`[ScreenshotHelper] Selection intersects with display ${display.id}:`, intersection);
-    
+
     const scaleFactor = display.scaleFactor;
-    
+
     // Find the corresponding source using the pre-built map
     const displayIdStr = display.id.toString();
     let source = sourceByDisplayId.get(displayIdStr);
-    
+
     // Fallback: index-based matching (less reliable)
     if (!source) {
       console.warn(`[ScreenshotHelper] display_id ${displayIdStr} not found in sources, using index-based fallback`);
@@ -281,13 +281,13 @@ async function getDisplaysIntersectingSelection(
       }
       source = sources[displayIndex] || sources[0];
     }
-    
+
     if (!source) {
       source = sources[0];
     }
-    
+
     console.log(`[ScreenshotHelper] Final source for display ${display.id}: ${source.name}`);
-    
+
     // Get source thumbnail info
     const sourceSize = source.thumbnail.getSize();
     console.log(`[ScreenshotHelper] Source thumbnail size: ${sourceSize.width}x${sourceSize.height}, display bounds: ${display.bounds.width}x${display.bounds.height}`);
@@ -305,14 +305,14 @@ async function getDisplaysIntersectingSelection(
     console.log(`[ScreenshotHelper] Crop params: x=${clampedCrop.x}, y=${clampedCrop.y}, w=${clampedCrop.width}, h=${clampedCrop.height}`);
 
     const cropped = source.thumbnail.crop(clampedCrop);
-    
+
     captures.push({
       display,
       intersection,
       imageBuffer: cropped.toPNG()
     });
   }
-  
+
   return captures;
 }
 
@@ -321,26 +321,26 @@ async function getDisplaysIntersectingSelection(
  */
 function isMultiDisplaySelection(selection: Electron.Rectangle): boolean {
   const displays = screen.getAllDisplays();
-  
+
   if (displays.length < 2) {
     return false;
   }
-  
+
   let displaysHit = 0;
-  
+
   for (const display of displays) {
     const { x: dx, y: dy, width: dWidth, height: dHeight } = display.bounds;
     const displayRight = dx + dWidth;
     const displayBottom = dy + dHeight;
-    
+
     const intersectsX = selection.x < displayRight && (selection.x + selection.width) > dx;
     const intersectsY = selection.y < displayBottom && (selection.y + selection.height) > dy;
-    
+
     if (intersectsX && intersectsY) {
       displaysHit++;
     }
   }
-  
+
   return displaysHit > 1;
 }
 
@@ -352,72 +352,72 @@ async function stitchImages(captures: DisplayCapture[], selection: Electron.Rect
   if (captures.length === 0) {
     throw new Error('No captures to stitch');
   }
-  
+
   if (captures.length === 1) {
     // Single display - no stitching needed
     return captures[0].imageBuffer;
   }
-  
+
   console.log(`[ScreenshotHelper] Stitching ${captures.length} display captures`);
   console.log(`[ScreenshotHelper] Selection bounds: x=${selection.x}, y=${selection.y}, width=${selection.width}, height=${selection.height}`);
-  
+
   // Memory consideration: All capture buffers are held in memory until stitchImages completes.
   // For 4K monitors, this could mean ~33MB per capture × number of captures.
   // Example: 4 monitors × 4K × RGBA = ~132MB peak memory usage during stitching.
   // Future optimization: Process captures one at a time to reduce peak memory.
-  
+
   // Log each capture's details
   for (let i = 0; i < captures.length; i++) {
     const cap = captures[i];
     console.log(`[ScreenshotHelper] Capture ${i}: display=${cap.display.id}, displayBounds=(${cap.display.bounds.x}, ${cap.display.bounds.y}, ${cap.display.bounds.width}x${cap.display.bounds.height})`);
     console.log(`[ScreenshotHelper] Capture ${i}: intersection=(${cap.intersection.x}, ${cap.intersection.y}, ${cap.intersection.width}x${cap.intersection.height})`);
   }
-  
+
   // Output dimensions in physical pixels (same as selection)
   const outputWidth = Math.round(selection.width);
   const outputHeight = Math.round(selection.height);
-  
+
   console.log(`[ScreenshotHelper] Output dimensions: ${outputWidth}x${outputHeight}`);
-  
+
   // Process each capture: resize to fit the output scale
   const composites: OverlayOptions[] = [];
-  
+
   try {
     for (const capture of captures) {
       // Calculate where this capture goes in output coordinates (physical pixels)
       const outputOffsetX = Math.round(capture.intersection.x - selection.x);
       const outputOffsetY = Math.round(capture.intersection.y - selection.y);
-      
+
       // Calculate the target size for this capture in output coordinates
       const targetWidth = Math.round(capture.intersection.width);
       const targetHeight = Math.round(capture.intersection.height);
-      
+
       // Get current image dimensions
       const metadata = await sharp(capture.imageBuffer).metadata();
       const srcWidth = metadata.width || 1;
       const srcHeight = metadata.height || 1;
-      
+
       console.log(`[ScreenshotHelper] Capture at (${outputOffsetX}, ${outputOffsetY}), source: ${srcWidth}x${srcHeight}, target: ${targetWidth}x${targetHeight}`);
-      
+
       // Resize the capture to target dimensions to normalize DPI scales
       const resizedBuffer = await sharp(capture.imageBuffer)
         .resize(targetWidth, targetHeight, { fit: 'fill' })
         .png()
         .toBuffer();
-      
+
       composites.push({
         input: resizedBuffer,
         left: outputOffsetX,
         top: outputOffsetY
       });
-      
+
       console.log(`[ScreenshotHelper] Resized capture to ${targetWidth}x${targetHeight}`);
     }
   } catch (error) {
     console.error('[ScreenshotHelper] Error processing capture buffers:', error);
     throw new Error(`Failed to process screenshot buffers: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
-  
+
   // Create a transparent canvas of the output size and composite all images
   let stitched: Buffer;
   try {
@@ -429,16 +429,16 @@ async function stitchImages(captures: DisplayCapture[], selection: Electron.Rect
         background: { r: 0, g: 0, b: 0, alpha: 0 }
       }
     })
-    .composite(composites)
-    .png()
-    .toBuffer();
+      .composite(composites)
+      .png()
+      .toBuffer();
   } catch (error) {
     console.error('[ScreenshotHelper] Error creating stitched image:', error);
     throw new Error(`Failed to create stitched screenshot: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
-  
+
   console.log(`[ScreenshotHelper] Stitched image created: ${outputWidth}x${outputHeight}`);
-  
+
   return stitched;
 }
 
@@ -534,39 +534,12 @@ export class ScreenshotHelper {
     } else {
       targetDisplay = screen.getPrimaryDisplay();
     }
-    
-    // Win32 GDI fast path (electron/ScreenshotGdi.ts ->
-    // native-module/src/capture_gdi.rs). desktopCapturer is a Windows weak
-    // spot: getSources() can hand back black thumbnails *silently* (the
-    // behaviour getDisplaysIntersectingSelection documents as issue #133),
-    // and there is no error to catch. GDI reads the composited desktop with
-    // CAPTUREBLT and validates the frame, so a black result is a failure we
-    // can detect. Everything below is untouched and still runs whenever GDI
-    // declines or hands back a blank frame.
-    if (process.platform === 'win32') {
-      const gdiRect = area ?? targetDisplay.bounds;
-      const gdi = captureGdiToPng(
-        {
-          x: Math.round(gdiRect.x),
-          y: Math.round(gdiRect.y),
-          width: Math.round(gdiRect.width),
-          height: Math.round(gdiRect.height),
-        },
-        Math.round(gdiRect.width)
-      );
-      if (gdi) {
-        await fs.promises.writeFile(outputPath, gdi.png);
-        console.log(`[ScreenshotHelper] Wrote GDI capture (${gdi.width}x${gdi.height}) to ${outputPath}`);
-        return;
-      }
-      console.log('[ScreenshotHelper] GDI capture declined; using desktopCapturer');
-    }
 
     const { scaleFactor } = targetDisplay;
     const displayBounds = targetDisplay.bounds;
-    
+
     console.log(`[ScreenshotHelper] Target display bounds: ${JSON.stringify(displayBounds)}, scale: ${scaleFactor}`);
-    
+
     let sources: Electron.DesktopCapturerSource[];
 
     try {
@@ -625,7 +598,7 @@ export class ScreenshotHelper {
     // Find the source matching our target display using reliable display_id mapping
     const targetDisplayId = targetDisplay.id.toString();
     let selectedSource: Electron.DesktopCapturerSource | null = null;
-    
+
     // Build a map of sources by display_id (same logic as in getDisplaysIntersectingSelection)
     for (const source of sources) {
       if ('display_id' in source && source.display_id) {
@@ -636,7 +609,7 @@ export class ScreenshotHelper {
         }
       }
     }
-    
+
     // Last resort: use first source. This means we may be capturing the WRONG
     // display — surface it at error level with the counts so a mismatch is obvious
     // in field logs (control flow unchanged: sources[0] is the only fallback we have).
@@ -647,9 +620,9 @@ export class ScreenshotHelper {
       );
       selectedSource = sources[0];
     }
-    
+
     console.log(`[ScreenshotHelper] Final source: ${selectedSource.name} (id: ${selectedSource.id})`);
-    
+
     let image = selectedSource.thumbnail;
 
     if (area) {
@@ -696,6 +669,19 @@ export class ScreenshotHelper {
     } catch (writeError) {
       console.error('[ScreenshotHelper] Failed to write screenshot to disk:', writeError);
       throw new Error(`Failed to save screenshot: ${(writeError as Error).message}`);
+    }
+
+    // Windows: desktopCapturer silently blanks any window whose app set
+    // WDA_EXCLUDEFROMCAPTURE — nothing throws, the window is just a black hole
+    // in an otherwise healthy frame (issue #133; the guard in
+    // getDisplaysIntersectingSelection only covers the macOS permission cause).
+    // If the foreground window did not make it into the frame, GDI can often
+    // still read it through that window's child windows. Non-fatal either way:
+    // a failure here leaves the desktopCapturer frame exactly as it was.
+    try {
+      await repairBlankedWindowCapture(outputPath, targetDisplay);
+    } catch (gdiError) {
+      console.error('[ScreenshotHelper] GDI fallback failed, keeping original frame:', gdiError);
     }
   }
 

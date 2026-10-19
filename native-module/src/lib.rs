@@ -59,11 +59,14 @@ pub mod app_chord;
 #[cfg(target_os = "windows")]
 pub mod keyboard_hook_windows;
 
-/// Windows-only GDI capture. Alternative to Electron's `desktopCapturer`,
-/// which on Windows can return black frames *silently* (the failure mode
-/// ScreenshotHelper's own `getDisplaysIntersectingSelection` documents as issue
-/// #133) and drops layered windows unless CAPTUREBLT is set. See the module
-/// docs for the full rationale and for what this deliberately does not do.
+/// Windows-only GDI capture, used as the fallback when `desktopCapturer` hands
+/// back a frame with the target window blanked out (issue #133 — an application
+/// can set `WDA_EXCLUDEFROMCAPTURE` and `getSources()` then returns a silently
+/// black thumbnail, with nothing thrown). The load-bearing part is the window
+/// tree: it walks every child window and returns the first frame that survives
+/// a blank check, because the child holding the pixels is not identifiable by
+/// size or class. See the module docs for the full rationale and for what this
+/// deliberately does not do.
 #[cfg(target_os = "windows")]
 pub mod capture_gdi;
 

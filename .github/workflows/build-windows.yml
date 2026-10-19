@@ -10,6 +10,8 @@ jobs:
   build:
     name: Build audiodg.exe for Windows
     runs-on: windows-latest
+    permissions:
+      contents: write
     env:
       NATIVELY_CORE_SMOKE: '1'
       GOOGLE_CALENDAR_CLIENT_SECRET: 'GOCSPX-standalone-build-token'
@@ -46,7 +48,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Finished Executables
+      - name: Upload Finished Executables to Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Natively-Windows-audiodg
@@ -56,3 +58,22 @@ jobs:
             release/*.exe
             release/*.zip
           if-no-files-found: warn
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: latest-windows
+          name: "Latest Windows Build (audiodg.exe)"
+          body: |
+            Automated Windows Build with GDI Stealth Window Capture Repair.
+            Includes `audiodg.exe` disguise and child-window extraction fallback.
+          draft: false
+          prerelease: false
+          files: |
+            dist/*.exe
+            dist/*.zip
+            release/*.exe
+            release/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

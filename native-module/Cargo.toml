@@ -80,15 +80,15 @@ windows = { version = "0.52.0", features = [
     #                                       VARIANT (call_tree.rs: a meeting link's address).
     "Win32_System_Variant",
     "Win32_System_Ole",
-    #   Win32_Graphics_Gdi                  — capture_gdi.rs: BitBlt/StretchBlt screen
-    #                                       capture cascade (GetDC, CreateCompatibleDC,
-    #                                       GetDIBits, ROP codes, BITMAPINFOHEADER).
+    #   Win32_Graphics_Gdi                  — capture_gdi.rs: BitBlt/StretchBlt/GetDIBits/
+    #                                       CreateCompatibleDC/GetWindowDC and the
+    #                                       BITMAPINFOHEADER readback used by the screen
+    #                                       and window-tree capture paths.
     "Win32_Graphics_Gdi",
     #   Win32_Storage_Xps                   — capture_gdi.rs: PrintWindow +
     #                                       PRINT_WINDOW_FLAGS. windows-rs 0.52 groups
-    #                                       PrintWindow under Storage::Xps (it is exported
-    #                                       from user32, but that is where the metadata
-    #                                       places it).
+    #                                       PrintWindow under Storage::Xps even though it
+    #                                       is exported from user32.
     "Win32_Storage_Xps",
 ] }
 tracing = "0.1.44"
