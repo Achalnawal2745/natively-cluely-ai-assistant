@@ -10158,6 +10158,115 @@ html[data-platform="linux"][data-window="launcher"] body {
   .mn-fu-tone .mn-fu-tone-mark { translate: none !important; }
   .mn-fu-tool .mn-fu-turn { rotate: none !important; }
 }
+/* ── Success check (transitions.dev 10) ──────────────────────────────
+   Verbatim from 10-success-check.md: fade + rotate + blur + Y-bob on the
+   wrapper, the path stroke-drawn after an 80ms delay. Used by the follow-up
+   sheet's send when a Gmail send goes. */
+:root {
+  --check-opacity-dur: 500ms;
+  --check-rotate-dur: 500ms;
+  --check-rotate-from: 80deg;
+  --check-bob-dur: 500ms;
+  --check-y-amount: 40px;
+  --check-blur-dur: 500ms;
+  --check-blur-from: 10px;
+  --check-path-dur: 500ms;
+  --check-path-delay: 80ms;
+  --check-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --check-ease-opacity: cubic-bezier(0.22, 1, 0.36, 1);
+  --check-ease-rotate: cubic-bezier(0.22, 1, 0.36, 1);
+  --check-ease-bob: cubic-bezier(0.34, 1.35, 0.64, 1);
+  --check-ease-path: cubic-bezier(0.22, 1, 0.36, 1);
+}
+.t-success-check {
+  display: inline-block;
+  transform-origin: center;
+  opacity: 0;
+  will-change: transform, opacity, filter;
+}
+.t-success-check svg { display: block; overflow: visible; }
+.t-success-check svg path {
+  stroke-dasharray: 20;
+  stroke-dashoffset: 20;
+}
+.t-success-check[data-state="in"] {
+  animation:
+    t-check-fade   var(--check-opacity-dur) var(--check-ease-opacity) forwards,
+    t-check-rotate var(--check-rotate-dur)  var(--check-ease-rotate)  forwards,
+    t-check-blur   var(--check-blur-dur)    var(--check-ease-out)     forwards,
+    t-check-bob    var(--check-bob-dur)     var(--check-ease-bob)     forwards;
+}
+.t-success-check[data-state="in"] svg path {
+  animation: t-check-draw var(--check-path-dur) var(--check-ease-path) var(--check-path-delay, 0ms) forwards;
+}
+@keyframes t-check-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes t-check-rotate {
+  from { transform: rotate(var(--check-rotate-from)); }
+  to   { transform: rotate(0deg); }
+}
+@keyframes t-check-blur {
+  from { filter: blur(var(--check-blur-from)); }
+  to   { filter: blur(0); }
+}
+@keyframes t-check-bob {
+  from { translate: 0 var(--check-y-amount); }
+  to   { translate: 0 0; }
+}
+@keyframes t-check-draw { to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .t-success-check { animation: none !important; opacity: 1; }
+  .t-success-check svg path { animation: none !important; stroke-dashoffset: 0 !important; }
+}
+
+/* The send's check, in a 13px slot inside a 32px pill: the recipe's 40px bob
+   and 10px blur are for a standalone badge, so they come down to the icon's
+   scale (6px, 3px). The path is 13.46 long (4.24 + 9.22), so 15, not the
+   recipe's placeholder 20. Green that holds on the lavender glass. */
+.mn-fu-sent-check { --check-y-amount: 6px; --check-blur-from: 3px; color: #4ADE80; }
+[data-theme='light'] .mn-fu-sent-check { color: #16A34A; }
+.mn-fu-sent-check svg path { stroke-dasharray: 15; stroke-dashoffset: 15; }
+
+/* Press feedback on the sheet's quiet controls (the X, Regenerate, the tone):
+   a small squeeze under the finger, on `scale` so Regenerate's hover turn and
+   the tone ^'s lift keep their own properties. Their transition lists carry
+   `scale` (MeetingDetails.tsx). */
+.mn-fu-tool:not(:disabled):active { scale: 0.92; }
+.mn-fu-tone:not(:disabled):active { scale: 0.97; }
+@media (prefers-reduced-motion: reduce) {
+  .mn-fu-tool:not(:disabled):active,
+  .mn-fu-tone:not(:disabled):active { scale: none; }
+}
+
+/* The note under the email ("Written in your style", a send or save error,
+   "Add who it goes to.") rises in on #04's values (4px, 2px blur) rather than
+   popping in. Keyed on its text, so a new note replays it. */
+@keyframes mn-fu-note-in { from { opacity: 0; translate: 0 4px; filter: blur(2px); } }
+.mn-fu-note { animation: mn-fu-note-in 250ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .mn-fu-note { animation: none; }
+}
+
+/* The message fades out where it scrolls, instead of a line over the toolbar:
+   a 32px fade at the foot while there is more below, and 24px at the head
+   once it has scrolled down from the top. A scroll-driven animation sets the
+   two lengths, so an email that fits (no scroll, so the timeline is inactive)
+   gets none, and each fade goes as its end is reached. */
+@property --fu-fade-top { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --fu-fade-bottom { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@keyframes mn-fu-msg-fade {
+  0%   { --fu-fade-top: 0px;  --fu-fade-bottom: 32px; }
+  8%   { --fu-fade-top: 24px; }
+  92%  { --fu-fade-bottom: 32px; }
+  100% { --fu-fade-top: 24px; --fu-fade-bottom: 0px; }
+}
+.mn-fu-msg {
+  --fu-fade-top: 0px;
+  --fu-fade-bottom: 0px;
+  animation: mn-fu-msg-fade linear both;
+  animation-timeline: scroll(self y);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fu-fade-top), #000 calc(100% - var(--fu-fade-bottom)), transparent 100%);
+          mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fu-fade-top), #000 calc(100% - var(--fu-fade-bottom)), transparent 100%);
+}
 @keyframes mn-fu-sheet-in { from { opacity: 0; scale: 0.96; translate: 0 8px; } }
 @keyframes mn-fu-sheet-out { to { opacity: 0; scale: 0.98; } }
 @keyframes mn-fu-fade-in { from { opacity: 0; } }
@@ -10177,6 +10286,12 @@ html[data-platform="linux"][data-window="launcher"] body {
   animation-delay: calc(var(--i, 0) * var(--fu-step));
 }
 .mn-fu-writing-out { animation: mn-fu-sink 150ms var(--fu-ease) forwards; }
+/* With the genie (MeetingDetails, GenieModal) the card pours out whole: no
+   scale-up of its own, and the rows are at rest from the first frame, since
+   the genie cuts its bands from the live card and rows still rising would pour
+   out blank. The variables above stay, for a first draft's landing. */
+.mn-fu-sheet.mn-fu-genie[data-state] { animation: none; }
+.mn-fu-sheet.mn-fu-genie[data-state] .mn-fu-row { animation: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .mn-fu-sheet[data-state='open'] { animation-name: mn-fu-fade-in; }

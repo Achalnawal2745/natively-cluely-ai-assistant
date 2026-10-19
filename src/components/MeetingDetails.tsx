@@ -33,6 +33,8 @@ import { groupTranscriptTurns, isHiddenQualityNote } from '../lib/meetingNotesVi
 import { CalendarLinkChip, type CalendarEventSnapshot } from './meeting/CalendarLinkChip';
 // Your notes, earlier versions, Source and rating (2026-10-15).
 import { ConfirmDialog } from './ui/ConfirmDialog';
+import { GenieModal } from './ui/GenieModal';
+import { useGenieAnimationEnabled } from '../lib/genieAnimationSetting';
 import { ShareMenu } from './meeting/ShareMenu';
 import { followUpChanges, settleFollowUpSave, type FollowUpText } from './meeting/outputsView';
 import { NotesVersionTabs } from './meeting/NotesVersionTabs';
@@ -1294,7 +1296,7 @@ const ToneDropdown: React.FC<{
         <div ref={rootRef} className="relative">
             <button
                 type="button"
-                className={`mn-fu-tone h-8 flex items-center text-[13px] font-medium transition-[color,opacity] duration-150 disabled:opacity-40 ${open ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}
+                className={`mn-fu-tone h-8 flex items-center text-[13px] font-medium transition-[color,opacity,scale] duration-150 disabled:opacity-40 ${open ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}
                 disabled={isRegeneratingFollowUp}
                 onClick={() => (open ? close(false) : openMenu())}
                 onKeyDown={(e) => { if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !open) { e.preventDefault(); openMenu(); } }}
@@ -1321,15 +1323,17 @@ const ToneDropdown: React.FC<{
                     />
                 </span>
             </button>
-            {/* Above the trigger, from its left edge, with the tone names left-aligned
-                over the trigger's label (the rows' 10px inset, pulled back by -left-2.5). */}
+            {/* Above the trigger and exactly its width plus the rows' 10px inset each
+                side (pulled back by -left-2.5): the tone names start over the label and
+                the selected one's check ends under the ^. The trigger is as wide as the
+                longest tone, so every name fits. */}
             <div
                 id={menuId}
                 role="menu"
                 data-origin="bottom-left"
                 inert={!open}
                 onKeyDown={onMenuKeyDown}
-                className={`t-dropdown${open ? ' is-open' : closing ? ' is-closing' : ''} absolute -left-2.5 bottom-full mb-1.5 min-w-[140px] z-50 p-[3px] rounded-[10px] border ${isLight
+                className={`t-dropdown${open ? ' is-open' : closing ? ' is-closing' : ''} absolute -left-2.5 bottom-full mb-1.5 w-[calc(100%+20px)] z-50 p-[3px] rounded-[10px] border ${isLight
                     ? 'bg-white border-black/[0.08] shadow-[0_6px_20px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.06)]'
                     : 'bg-[#2C2C2E] border-white/[0.08] shadow-[0_6px_20px_rgba(0,0,0,0.5),0_1px_2px_rgba(0,0,0,0.3)]'}`}
             >
@@ -1344,14 +1348,14 @@ const ToneDropdown: React.FC<{
                             aria-checked={selected}
                             tabIndex={-1}
                             onClick={() => { close(true); if (!selected) onSelect(opt.value); }}
-                            className={`w-full h-7 flex items-center px-[7px] rounded-[7px] text-left text-[13px] font-medium whitespace-nowrap focus-visible:outline-none transition-colors ${selected
+                            className={`w-full h-7 flex items-center gap-1.5 px-[7px] rounded-[7px] text-left text-[13px] font-medium whitespace-nowrap focus-visible:outline-none transition-colors ${selected
                                 ? 'text-text-primary'
                                 : 'text-text-secondary hover:text-text-primary focus-visible:text-text-primary'} ${isLight
                                 ? 'hover:bg-black/[0.05] focus-visible:bg-black/[0.05]'
                                 : 'hover:bg-white/[0.06] focus-visible:bg-white/[0.06]'}`}
                         >
                             <span>{opt.label}</span>
-                            {selected && <Check className="ml-auto pl-3 w-[26px] h-3.5 shrink-0" strokeWidth={2.5} aria-hidden="true" />}
+                            {selected && <Check className="ml-auto w-3.5 h-3.5 shrink-0" strokeWidth={2.5} aria-hidden="true" />}
                         </button>
                     );
                 })}
@@ -1405,8 +1409,15 @@ const MicrosoftMark: React.FC<{ size: number }> = ({ size }) => (
 // opens the other ways to send it: Outlook (on the web), and the computer's own
 // mail app by its real name and icon (mail-app-info; "Mail app" when the system
 // has none to report). One lavender glass pill (.mn-fu-send, index.css); the menu is the tone menu's dropdown, grown upward from the right corner.
+// The note the send leaves when Gmail is connected and the To line is empty.
+const FU_NO_RECIPIENTS = 'Add who it goes to.';
+
 const FollowUpSendButton: React.FC<{
     label: string;
+    /** Every label the send can show (Gmail connected: ask, sending, sent), so the pill holds the widest. */
+    labels: string[];
+    /** A Gmail send just went: the G turns into a drawn check for a moment. */
+    sent: boolean;
     /** The whole control: no draft to send yet. */
     disabled: boolean;
     /** Gmail alone: a send in flight, or no one to send it to. */
@@ -1416,7 +1427,7 @@ const FollowUpSendButton: React.FC<{
     onGmail: () => void;
     onOutlook: () => void;
     onMailApp: () => void;
-}> = ({ label, disabled, gmailDisabled, gmailTitle, mailApp, onGmail, onOutlook, onMailApp }) => {
+}> = ({ label, labels, sent, disabled, gmailDisabled, gmailTitle, mailApp, onGmail, onOutlook, onMailApp }) => {
     const t = useT();
     const isLight = useResolvedTheme() === 'light';
     const [open, setOpen] = useState(false);
@@ -1503,8 +1514,23 @@ const FollowUpSendButton: React.FC<{
                         disabled={disabled || gmailDisabled}
                         title={gmailTitle}
                     >
-                        <GoogleG size={13} />
-                        <span>{label}</span>
+                        {/* G → check when a send goes (#09's icon swap, the check drawn by
+                            #10's success check, sized down for the pill in index.css), and the
+                            label changes in place (#04's text swap) at the widest label's width,
+                            so the pill never jumps. */}
+                        <span className="t-icon-swap w-[13px] h-[13px]" data-state={sent ? 'b' : 'a'} aria-hidden="true">
+                            <span className="t-icon grid place-items-center" data-icon="a"><GoogleG size={13} /></span>
+                            <span className="t-icon grid place-items-center" data-icon="b">
+                                {sent && (
+                                    <span className="t-success-check mn-fu-sent-check" data-state="in">
+                                        <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                                            <path d="M3.5 8.5l3 3 6-7" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+                                        </svg>
+                                    </span>
+                                )}
+                            </span>
+                        </span>
+                        <SwapText value={label} sizers={labels}>{label}</SwapText>
                     </button>
                     <button
                         type="button"
@@ -2479,6 +2505,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     // The sheet's To line: the invite's people to start with, then whatever is
     // typed there. Sends go to the addresses in it (comma or space separated).
     const [fuToDraft, setFuToDraft] = useState<string | null>(null);
+    const fuToRowRef = useRef<HTMLSpanElement>(null);
+    const fuToInputRef = useRef<HTMLInputElement>(null);
     useEffect(() => { setFuToDraft(null); }, [meeting.id]);
     const fuToShown = fuToDraft ?? followUpTo.map((r) => r.email).join(', ');
     const fuToList = () => fuToShown.split(/[,;\s]+/).filter((a) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a));
@@ -2490,6 +2518,15 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         // the second sends what is on screen.
         if (gmailSend.connected) {
             if (gmailSend.state === 'sending') return;
+            // No one to send it to: say so where it is fixed (#12's shake on the To
+            // line, the cursor put in it) rather than greying the button out.
+            if (fuToList().length === 0) {
+                setGmailSend((g) => ({ ...g, state: 'idle', message: FU_NO_RECIPIENTS }));
+                const row = fuToRowRef.current;
+                if (row) { row.classList.remove('t-notice-shake'); void row.offsetWidth; row.classList.add('t-notice-shake'); }
+                fuToInputRef.current?.focus();
+                return;
+            }
             if (gmailSend.state !== 'confirm') {
                 setGmailSend((g) => ({ ...g, state: 'confirm', message: undefined }));
                 window.setTimeout(() => setGmailSend((g) => (g.state === 'confirm' ? { ...g, state: 'idle' } : g)), 5000);
@@ -2502,6 +2539,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
             setGmailSend((g) => (res?.ok
                 ? { ...g, state: 'sent', message: undefined }
                 : { ...g, state: 'idle', message: res?.message || 'The email was not sent. Try again.' }));
+            // "Sent" and its check stay a moment, then the button is the send again.
+            if (res?.ok) window.setTimeout(() => setGmailSend((g) => (g.state === 'sent' ? { ...g, state: 'idle' } : g)), 2400);
             return;
         }
         // Read before the await: the text on screen when the button was pressed.
@@ -2550,6 +2589,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     // yet it opens the dialog and starts writing one (in "Your style" or the mode's
     // tone, as Generate did), and the dialog shows it being written.
     const [followUpOpen, setFollowUpOpen] = useState(false);
+    // Settings › Advanced › Genie animation: the sheet opens with the genie, or its own scale-up.
+    const genieOn = useGenieAnimationEnabled();
     // The computer's own mail app by name and icon, for the send menu; read once,
     // the first time the sheet opens.
     const [mailApp, setMailApp] = useState<{ name: string; icon?: string } | null>(null);
@@ -4007,9 +4048,10 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                 const rule = isLight ? 'border-black/[0.07]' : 'border-white/[0.07]';
                 // The toolbar's icon tools (and the close): no fill behind them, the glyph
                 // brightens, and Regenerate's arrows turn on hover (.mn-fu-tool, index.css).
-                const tool = `mn-fu-tool grid place-items-center w-8 h-8 rounded-lg text-text-tertiary hover:text-text-primary transition-[color,opacity] duration-150 disabled:opacity-40 disabled:hover:text-text-tertiary`;
+                const tool = `mn-fu-tool grid place-items-center w-8 h-8 rounded-lg text-text-tertiary hover:text-text-primary transition-[color,opacity,scale] duration-150 disabled:opacity-40 disabled:hover:text-text-tertiary`;
                 const writingFirst = !hasFollowUpDraft || followUpEntrance === 'armed';
                 const toCount = fuToList().length;
+                const noRecipients = gmailSend.message === FU_NO_RECIPIENTS;
                 const gmailLabel = !gmailSend.connected ? 'Send with Gmail'
                     : gmailSend.state === 'confirm' ? `Send to ${toCount === 1 ? '1 person' : `${toCount} people`}?`
                     : gmailSend.state === 'sending' ? 'Sending…'
@@ -4023,6 +4065,156 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                             </button>
                         </>
                     ) : followUpStyled && hasFollowUpDraft && !writingFirst ? t('Written in your style') : null;
+                const sheetBody = (
+                    <>
+                        {/* Title and close, in the row (an animating
+                            row painted over a floated close button and swallowed its clicks). */}
+                        {/* Up near the top: the X's glyph sits 24px from the top and 24px from
+                            the right edge, square in the corner (the 28px button holds a 15px
+                            glyph 6.5px in from its edges, so the button sits 17.5px in each
+                            way), and the title shares its centre line on the content's 40px
+                            inset; 8px below them to the To line. */}
+                        <div className="mn-fu-row shrink-0 flex items-center justify-between gap-4 pt-[17.5px] pb-2 pl-10 pr-[17.5px]" style={{ '--i': 0 } as React.CSSProperties}>
+                            <DialogPrimitive.Title className="min-w-0 text-[15px] leading-7 font-semibold tracking-[-0.01em] text-text-primary">{t('Follow-up email')}</DialogPrimitive.Title>
+                            <DialogPrimitive.Close aria-label={t('Close')} className={`${tool} rounded-full w-7 h-7 text-text-tertiary`}>
+                                <X size={15} strokeWidth={2.2} />
+                            </DialogPrimitive.Close>
+                        </div>
+
+                        <label className={`mn-fu-row flex items-center gap-3 h-11 shrink-0 px-10 border-t ${rule}`} style={{ '--i': 1 } as React.CSSProperties}>
+                            {/* The shake runs on this inner line, not the row: the row's
+                                entrance owns its `animation` and would replay. */}
+                            <span
+                                ref={fuToRowRef}
+                                onAnimationEnd={(e) => e.currentTarget.classList.remove('t-notice-shake')}
+                                className="flex min-w-0 flex-1 items-center gap-3"
+                            >
+                                <span className={`w-[52px] shrink-0 text-[13px] transition-colors duration-150 ${noRecipients ? 'text-red-500' : 'text-text-tertiary'}`}>{t('To')}</span>
+                                <input
+                                    ref={fuToInputRef}
+                                    type="text"
+                                    value={fuToShown}
+                                    onChange={(e) => {
+                                        setFuToDraft(e.target.value);
+                                        if (noRecipients) setGmailSend((g) => (g.message === FU_NO_RECIPIENTS ? { ...g, message: undefined } : g));
+                                    }}
+                                    placeholder="name@example.com"
+                                    aria-invalid={noRecipients || undefined}
+                                    spellCheck={false}
+                                    autoComplete="off"
+                                    className="min-w-0 flex-1 bg-transparent p-0 border-0 outline-none text-[13px] text-text-primary placeholder:text-text-tertiary/70"
+                                />
+                            </span>
+                        </label>
+                        <label className={`mn-fu-row flex items-center gap-3 h-11 shrink-0 px-10 border-y ${rule}`} style={{ '--i': 2 } as React.CSSProperties}>
+                            <span className="w-[52px] shrink-0 text-[13px] text-text-tertiary">{t('Subject')}</span>
+                            <input
+                                type="text"
+                                value={writingFirst ? '' : fuShownSubject}
+                                disabled={writingFirst}
+                                readOnly={isRegeneratingFollowUp}
+                                onChange={(e) => editFollowUp({ subject: e.target.value })}
+                                onBlur={() => { if (fuText) void saveFollowUp(false); }}
+                                spellCheck
+                                className={`min-w-0 flex-1 bg-transparent p-0 border-0 outline-none text-[13px] font-semibold text-text-primary transition-opacity ${isRegeneratingFollowUp && hasFollowUpDraft ? 'opacity-50' : ''}${followUpEntrance === 'reveal' ? ' mn-fu-land' : ''}`}
+                            />
+                        </label>
+
+                        {/* The message, sized to its text (field-sizing) and at least the
+                            space left, so a click anywhere in it writes; a long one scrolls
+                            inside the card's fixed height. While a first draft is written
+                            the space says so (the shimmer), then fades; the message rises in.
+                            A rewrite dims what is there, then the new text settles in. */}
+                        {/* The row (its entrance) around the scroller (its fade): the fade is a
+                            scroll-driven animation, and the row's entrance owns `animation`. */}
+                        <div className="mn-fu-row relative min-h-0 flex-auto flex flex-col" style={{ '--i': 3 } as React.CSSProperties}>
+                        <div className="mn-fu-msg custom-scrollbar min-h-0 flex-1 overflow-y-auto">
+                            {writingFirst ? (
+                                <div className={`px-10 pt-4 text-[14px] leading-[1.7] text-text-tertiary${hasFollowUpDraft ? ' mn-fu-writing-out' : ''}`}>
+                                    {followUpFailed ? (
+                                        <p>
+                                            {t("Couldn't write the email.")}{' '}
+                                            <button type="button" className="font-medium text-text-secondary hover:text-text-primary transition-colors" onClick={() => { void handleRegenerateFollowUp(); }}>
+                                                {t('Try again')}
+                                            </button>
+                                        </p>
+                                    ) : isRegeneratingFollowUp || hasFollowUpDraft ? (
+                                        <p className="t-shimmer" data-text={t('Writing the email from these notes…')}>{t('Writing the email from these notes…')}</p>
+                                    ) : (
+                                        <p>
+                                            <button type="button" className="font-medium text-text-secondary hover:text-text-primary transition-colors" onClick={() => { void handleRegenerateFollowUp(); }}>
+                                                {t('Write a follow-up email from these notes')}
+                                            </button>
+                                        </p>
+                                    )}
+                                </div>
+                            ) : (
+                                <textarea
+                                    key={followUpBodyKey}
+                                    value={fuShownBody}
+                                    readOnly={isRegeneratingFollowUp}
+                                    onChange={(e) => editFollowUp({ body: e.target.value })}
+                                    onBlur={() => { if (fuText) void saveFollowUp(false); }}
+                                    aria-label={t('Follow-up email')}
+                                    spellCheck
+                                    className={`block w-full min-h-full [field-sizing:content] resize-none overflow-hidden bg-transparent px-10 pt-4 pb-4 border-0 outline-none font-sans text-[14px] leading-[1.7] text-text-primary transition-opacity${isRegeneratingFollowUp ? ' opacity-50' : ''}${followUpBodyKey > 0 ? ' mn-fu-body-in' : followUpEntrance === 'reveal' ? ' mn-fu-land' : ''}`}
+                                    style={followUpBodyKey > 0 ? undefined : { '--i': 1 } as React.CSSProperties}
+                                />
+                            )}
+                        </div>
+                        </div>
+                        {/* Keyed on what it says, so each new note rises in (.mn-fu-note). */}
+                        {note && <p key={gmailSend.message || fuSaveError || 'style'} className="mn-fu-note shrink-0 px-10 pb-3 text-[12px] text-text-tertiary">{note}</p>}
+
+                        {/* One toolbar: tone and Regenerate on the left; the system's
+                            Gmail as the one filled button, its ^ for every other way to send. */}
+                        <div className="mn-fu-row shrink-0 flex items-center pl-10 pr-6 py-3" style={{ '--i': 4 } as React.CSSProperties}>
+                            {hasFollowUpDraft && !writingFirst && (
+                                <>
+                                    <ToneDropdown
+                                        followUpTone={followUpTone}
+                                        isRegeneratingFollowUp={isRegeneratingFollowUp}
+                                        onSelect={(tone) => { setFollowUpTone(tone); setFuText(null); handleRegenerateFollowUp(tone); }}
+                                        offerYourStyle={modeHasStyle}
+                                    />
+                                    {/* 20px from the tone's chevrons to the glyph, which sits 8.5px
+                                        inside its 32px button. */}
+                                    <button
+                                        type="button"
+                                        className={`ml-[11.5px] ${tool}`}
+                                        onClick={resetFollowUp}
+                                        disabled={isRegeneratingFollowUp}
+                                        aria-busy={isRegeneratingFollowUp}
+                                        aria-label={t('Regenerate')}
+                                        title={t('Regenerate')}
+                                    >
+                                        <RefreshCw className={`mn-fu-turn w-[15px] h-[15px] ${isRegeneratingFollowUp && !prefersReducedMotion ? 'animate-spin' : ''}`} aria-hidden="true" />
+                                    </button>
+                                </>
+                            )}
+                            <div className="ml-auto">
+                                <FollowUpSendButton
+                                    label={t(gmailLabel)}
+                                    labels={gmailSend.connected
+                                        ? ['Send with Gmail', `Send to ${toCount === 1 ? '1 person' : `${toCount} people`}?`, 'Sending…', 'Sent'].map((l) => t(l))
+                                        : [t(gmailLabel)]}
+                                    sent={gmailSend.state === 'sent'}
+                                    disabled={writingFirst}
+                                    gmailDisabled={gmailSend.state === 'sending'}
+                                    mailApp={mailApp}
+                                    onGmail={() => { void emailFollowUp(); }}
+                                    onOutlook={() => { void outlookFollowUp(); }}
+                                    onMailApp={() => { void mailFollowUp(); }}
+                                />
+                            </div>
+                        </div>
+                    </>
+                );
+                // The sheet's surface, on the Radix panel or, with the genie, on its card
+                // (`shadow` is the stand-in's while the card is cut into bands).
+                const surface = isLight ? 'bg-white border-black/[0.06]' : 'bg-[#1C1C1E] border-white/[0.08]';
+                const shadow = isLight ? '0 24px 70px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.05)' : '0 24px 70px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.35)';
+                const keepMenuEscape = (e: KeyboardEvent) => { if ((e.target as HTMLElement | null)?.closest?.('[role="menu"]')) e.preventDefault(); };
                 return (
                 <DialogPrimitive.Root
                     open={followUpOpen}
@@ -4033,137 +4225,54 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                         setFollowUpOpen(open);
                     }}
                 >
+                    {genieOn ? (
+                        // Genie on (Settings › Advanced, the default): the sheet pours out of
+                        // the window's bottom edge and back into it, as every other card in
+                        // the app (GenieModal). Radix still owns the dialog: focus trap,
+                        // Escape, outside click, title. Its Content is force-mounted so it
+                        // stays on the card while the genie drains it away; GenieModal
+                        // unmounts it once the close has played. No pictures kept: the
+                        // sheet shows a different meeting's email each time.
+                        <DialogPrimitive.Portal forceMount>
+                            <GenieModal
+                                open={followUpOpen}
+                                label="Follow-up email"
+                                keepPictures={false}
+                                zIndex={FOLLOW_UP_DIALOG_LAYER}
+                                backdropClassName={isLight ? 'bg-black/[0.16]' : 'bg-black/55'}
+                                wrapClassName="w-[600px] max-w-[92vw] h-[min(440px,86vh)]"
+                                cardClassName={`border ${surface} ${isLight
+                                    ? 'shadow-[0_24px_70px_rgba(0,0,0,0.16),0_2px_8px_rgba(0,0,0,0.05)]'
+                                    : 'shadow-[0_24px_70px_rgba(0,0,0,0.6),0_2px_8px_rgba(0,0,0,0.35)]'}`}
+                                shadow={shadow}
+                                radius={20}
+                            >
+                                <DialogPrimitive.Content
+                                    forceMount
+                                    aria-describedby={undefined}
+                                    onEscapeKeyDown={keepMenuEscape}
+                                    className="mn-followup mn-fu-sheet mn-fu-genie h-full flex flex-col outline-none"
+                                >
+                                    {sheetBody}
+                                </DialogPrimitive.Content>
+                            </GenieModal>
+                        </DialogPrimitive.Portal>
+                    ) : (
+                    // Genie off: the sheet's own scale-up and staggered rows (.mn-fu-sheet).
                     <DialogPrimitive.Portal>
                         <DialogPrimitive.Overlay className={`mn-fu-dim fixed inset-0 ${isLight ? 'bg-black/[0.16]' : 'bg-black/55'}`} style={{ zIndex: FOLLOW_UP_DIALOG_LAYER }} />
                         <DialogPrimitive.Content
                             aria-describedby={undefined}
-                            onEscapeKeyDown={(e) => { if ((e.target as HTMLElement | null)?.closest?.('[role="menu"]')) e.preventDefault(); }}
-                            className={`mn-followup mn-fu-sheet fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] max-w-[92vw] h-[min(440px,86vh)] flex flex-col rounded-[20px] border outline-none ${isLight
-                                ? 'bg-white border-black/[0.06] shadow-[0_24px_70px_rgba(0,0,0,0.16),0_2px_8px_rgba(0,0,0,0.05)]'
-                                : 'bg-[#1C1C1E] border-white/[0.08] shadow-[0_24px_70px_rgba(0,0,0,0.6),0_2px_8px_rgba(0,0,0,0.35)]'}`}
+                            onEscapeKeyDown={keepMenuEscape}
+                            className={`mn-followup mn-fu-sheet fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] max-w-[92vw] h-[min(440px,86vh)] flex flex-col rounded-[20px] border outline-none ${surface} ${isLight
+                                ? 'shadow-[0_24px_70px_rgba(0,0,0,0.16),0_2px_8px_rgba(0,0,0,0.05)]'
+                                : 'shadow-[0_24px_70px_rgba(0,0,0,0.6),0_2px_8px_rgba(0,0,0,0.35)]'}`}
                             style={{ zIndex: FOLLOW_UP_DIALOG_LAYER }}
                         >
-                            {/* Title and close, in the row (an animating
-                                row painted over a floated close button and swallowed its clicks). */}
-                            {/* Centred in its band (as much room above the title as below it,
-                                down to the To line), and the X's glyph ends on the same 40px
-                                inset the title starts on: the 28px button holds a 15px glyph,
-                                6.5px in from its edge, so the button sits 33.5px in. */}
-                            <div className="mn-fu-row shrink-0 flex items-center justify-between gap-4 h-[68px] pl-10 pr-[33.5px]" style={{ '--i': 0 } as React.CSSProperties}>
-                                <DialogPrimitive.Title className="min-w-0 text-[15px] leading-7 font-semibold tracking-[-0.01em] text-text-primary">{t('Follow-up email')}</DialogPrimitive.Title>
-                                <DialogPrimitive.Close aria-label={t('Close')} className={`${tool} rounded-full w-7 h-7 text-text-tertiary`}>
-                                    <X size={15} strokeWidth={2.2} />
-                                </DialogPrimitive.Close>
-                            </div>
-
-                            <label className={`mn-fu-row flex items-center gap-3 h-11 shrink-0 px-10 border-t ${rule}`} style={{ '--i': 1 } as React.CSSProperties}>
-                                <span className="w-[52px] shrink-0 text-[13px] text-text-tertiary">{t('To')}</span>
-                                <input
-                                    type="text"
-                                    value={fuToShown}
-                                    onChange={(e) => setFuToDraft(e.target.value)}
-                                    placeholder="name@example.com"
-                                    spellCheck={false}
-                                    autoComplete="off"
-                                    className="min-w-0 flex-1 bg-transparent p-0 border-0 outline-none text-[13px] text-text-primary placeholder:text-text-tertiary/70"
-                                />
-                            </label>
-                            <label className={`mn-fu-row flex items-center gap-3 h-11 shrink-0 px-10 border-y ${rule}`} style={{ '--i': 2 } as React.CSSProperties}>
-                                <span className="w-[52px] shrink-0 text-[13px] text-text-tertiary">{t('Subject')}</span>
-                                <input
-                                    type="text"
-                                    value={writingFirst ? '' : fuShownSubject}
-                                    disabled={writingFirst}
-                                    readOnly={isRegeneratingFollowUp}
-                                    onChange={(e) => editFollowUp({ subject: e.target.value })}
-                                    onBlur={() => { if (fuText) void saveFollowUp(false); }}
-                                    spellCheck
-                                    className={`min-w-0 flex-1 bg-transparent p-0 border-0 outline-none text-[13px] font-semibold text-text-primary transition-opacity ${isRegeneratingFollowUp && hasFollowUpDraft ? 'opacity-50' : ''}${followUpEntrance === 'reveal' ? ' mn-fu-land' : ''}`}
-                                />
-                            </label>
-
-                            {/* The message, sized to its text (field-sizing) and at least the
-                                space left, so a click anywhere in it writes; a long one scrolls
-                                inside the card's fixed height. While a first draft is written
-                                the space says so (the shimmer), then fades; the message rises in.
-                                A rewrite dims what is there, then the new text settles in. */}
-                            <div className="mn-fu-row custom-scrollbar relative min-h-0 flex-auto overflow-y-auto" style={{ '--i': 3 } as React.CSSProperties}>
-                                {writingFirst ? (
-                                    <div className={`px-10 pt-4 text-[14px] leading-[1.7] text-text-tertiary${hasFollowUpDraft ? ' mn-fu-writing-out' : ''}`}>
-                                        {followUpFailed ? (
-                                            <p>
-                                                {t("Couldn't write the email.")}{' '}
-                                                <button type="button" className="font-medium text-text-secondary hover:text-text-primary transition-colors" onClick={() => { void handleRegenerateFollowUp(); }}>
-                                                    {t('Try again')}
-                                                </button>
-                                            </p>
-                                        ) : isRegeneratingFollowUp || hasFollowUpDraft ? (
-                                            <p className="t-shimmer" data-text={t('Writing the email from these notes…')}>{t('Writing the email from these notes…')}</p>
-                                        ) : (
-                                            <p>
-                                                <button type="button" className="font-medium text-text-secondary hover:text-text-primary transition-colors" onClick={() => { void handleRegenerateFollowUp(); }}>
-                                                    {t('Write a follow-up email from these notes')}
-                                                </button>
-                                            </p>
-                                        )}
-                                    </div>
-                                ) : (
-                                    <textarea
-                                        key={followUpBodyKey}
-                                        value={fuShownBody}
-                                        readOnly={isRegeneratingFollowUp}
-                                        onChange={(e) => editFollowUp({ body: e.target.value })}
-                                        onBlur={() => { if (fuText) void saveFollowUp(false); }}
-                                        aria-label={t('Follow-up email')}
-                                        spellCheck
-                                        className={`block w-full min-h-full [field-sizing:content] resize-none overflow-hidden bg-transparent px-10 pt-4 pb-4 border-0 outline-none font-sans text-[14px] leading-[1.7] text-text-primary transition-opacity${isRegeneratingFollowUp ? ' opacity-50' : ''}${followUpBodyKey > 0 ? ' mn-fu-body-in' : followUpEntrance === 'reveal' ? ' mn-fu-land' : ''}`}
-                                        style={followUpBodyKey > 0 ? undefined : { '--i': 1 } as React.CSSProperties}
-                                    />
-                                )}
-                            </div>
-                            {note && <p className="shrink-0 px-10 pb-3 text-[12px] text-text-tertiary">{note}</p>}
-
-                            {/* One toolbar: tone and Regenerate on the left; the system's
-                                Gmail as the one filled button, its ^ for every other way to send. */}
-                            <div className={`mn-fu-row shrink-0 flex items-center pl-10 pr-6 py-3 border-t ${rule}`} style={{ '--i': 4 } as React.CSSProperties}>
-                                {hasFollowUpDraft && !writingFirst && (
-                                    <>
-                                        <ToneDropdown
-                                            followUpTone={followUpTone}
-                                            isRegeneratingFollowUp={isRegeneratingFollowUp}
-                                            onSelect={(tone) => { setFollowUpTone(tone); setFuText(null); handleRegenerateFollowUp(tone); }}
-                                            offerYourStyle={modeHasStyle}
-                                        />
-                                        {/* 20px from the tone's chevrons to the glyph, which sits 8.5px
-                                            inside its 32px button. */}
-                                        <button
-                                            type="button"
-                                            className={`ml-[11.5px] ${tool}`}
-                                            onClick={resetFollowUp}
-                                            disabled={isRegeneratingFollowUp}
-                                            aria-busy={isRegeneratingFollowUp}
-                                            aria-label={t('Regenerate')}
-                                            title={t('Regenerate')}
-                                        >
-                                            <RefreshCw className={`mn-fu-turn w-[15px] h-[15px] ${isRegeneratingFollowUp && !prefersReducedMotion ? 'animate-spin' : ''}`} aria-hidden="true" />
-                                        </button>
-                                    </>
-                                )}
-                                <div className="ml-auto">
-                                    <FollowUpSendButton
-                                        label={t(gmailLabel)}
-                                        disabled={writingFirst}
-                                        gmailDisabled={gmailSend.state === 'sending' || (gmailSend.connected && toCount === 0)}
-                                        gmailTitle={gmailSend.connected && toCount === 0 ? t('Add who it goes to') : undefined}
-                                        mailApp={mailApp}
-                                        onGmail={() => { void emailFollowUp(); }}
-                                        onOutlook={() => { void outlookFollowUp(); }}
-                                        onMailApp={() => { void mailFollowUp(); }}
-                                    />
-                                </div>
-                            </div>
+                            {sheetBody}
                         </DialogPrimitive.Content>
                     </DialogPrimitive.Portal>
+                    )}
                 </DialogPrimitive.Root>
                 );
             })()}
