@@ -74,7 +74,7 @@
 use std::time::Instant;
 
 use napi::bindgen_prelude::*;
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, TRUE};
+use windows::Win32::Foundation::{BOOL, FALSE, HWND, LPARAM, RECT, TRUE};
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetDC,
     GetWindowDC, ReleaseDC, SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER,
@@ -82,8 +82,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowRect,
-    IsIconic, IsWindow, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    EnumChildWindows, GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowDisplayAffinity,
+    GetWindowRect, IsIconic, IsWindow, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
     SM_YVIRTUALSCREEN,
 };
 
@@ -513,6 +513,30 @@ fn child_printwindow(child: &ChildInfo, max_width: Option<u32>) -> Option<Vec<u8
     read_back(dc.hdc, &mem, &bitmap, child.width, child.height, max_width)
 }
 
+/// `GetWindowDC(child)` + `BitBlt` — the entire window DC (ShadowMind's method2).
+fn child_window_dc(child: &ChildInfo, max_width: Option<u32>) -> Option<Vec<u8>> {
+    let dc = DcGuard::window(child.hwnd, true)?;
+    let mem = MemDc::new(dc.hdc)?;
+    let bitmap = Bitmap::new(dc.hdc, child.width, child.height)?;
+    let _guard = SelectGuard {
+        hdc: mem.0,
+        old: unsafe { SelectObject(mem.0, bitmap.0) },
+    };
+
+    let ok = unsafe {
+        BitBlt(
+            mem.0, 0, 0, child.width, child.height,
+            dc.hdc, 0, 0,
+            ROP_CODE(SRCCOPY.0 | CAPTUREBLT),
+        )
+    };
+    if ok.is_err() {
+        return None;
+    }
+
+    read_back(dc.hdc, &mem, &bitmap, child.width, child.height, max_width)
+}
+
 /// `GetDC(child)` + `BitBlt` — the client DC, a different source than
 /// `GetWindowDC` and a different one again from the screen DC.
 fn child_client_dc(child: &ChildInfo, max_width: Option<u32>) -> Option<Vec<u8>> {
@@ -538,21 +562,15 @@ fn child_client_dc(child: &ChildInfo, max_width: Option<u32>) -> Option<Vec<u8>>
     read_back(dc.hdc, &mem, &bitmap, child.width, child.height, max_width)
 }
 
-/// Capture a window by walking its child windows.
+/// Capture a window by testing both the parent window itself AND all of its
+/// child windows (like ShadowMind's multi-method approach).
 ///
-/// For every child, in descending order of area, tries
-/// `PrintWindow(PW_RENDERFULLCONTENT)` then a client-DC `BitBlt`, and returns
-/// the first frame that is not blank.
+/// For every candidate, tries:
+///   1. `PrintWindow(PW_RENDERFULLCONTENT)`
+///   2. `GetWindowDC + BitBlt(CAPTUREBLT)`
+///   3. `GetDC + BitBlt(CAPTUREBLT)`
 ///
-/// Ordering by area is only a heuristic — on the app this was written against,
-/// two children were the same size and the larger-looking one was solid black,
-/// so ordering cannot be trusted to find the good one. Every child gets a turn.
-///
-/// `hwnd` is a Node Buffer as returned by
-/// `BrowserWindow.getNativeWindowHandle()`.
-///
-/// Returns `None` if the window has no usable children or every attempt came
-/// back blank. The caller should then fall back to `desktopCapturer`.
+/// Returns the first frame that is not blank/flat.
 #[napi]
 pub fn capture_window_tree_gdi(
     hwnd: Buffer,
@@ -564,6 +582,24 @@ pub fn capture_window_tree_gdi(
         return None;
     }
 
+    let mut targets: Vec<ChildInfo> = Vec::new();
+
+    // 1. Always include the parent window itself first (so non-Chromium apps and
+    //    top-level windows are captured directly without needing children).
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(parent, &mut rect) }.is_ok() {
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
+        if w > 0 && h > 0 {
+            let mut name = [0u16; 256];
+            let len = unsafe { GetClassNameW(parent, &mut name) };
+            let class = String::from_utf16_lossy(&name[..len.max(0) as usize]);
+            targets.push(ChildInfo { hwnd: parent, class, width: w, height: h });
+        }
+    }
+
+    // 2. Enumerate all child windows (for Chromium/Electron apps where the child
+    //    window like `Intermediate D3D Window` holds the unmasked pixels).
     let mut children: Vec<ChildInfo> = Vec::new();
     unsafe {
         let _ = EnumChildWindows(
@@ -572,28 +608,30 @@ pub fn capture_window_tree_gdi(
             LPARAM(&mut children as *mut Vec<ChildInfo> as isize),
         );
     }
-    if children.is_empty() {
+    children.sort_by_key(|c| -((c.width as i64) * (c.height as i64)));
+    targets.extend(children);
+
+    if targets.is_empty() {
         return None;
     }
 
-    children.sort_by_key(|c| -((c.width as i64) * (c.height as i64)));
-
-    for child in &children {
-        let attempts: [(&str, ChildCaptureFn); 2] = [
+    for target in &targets {
+        let attempts: [(&str, ChildCaptureFn); 3] = [
             ("PrintWindow", child_printwindow),
-            ("GetDC+BitBlt", child_client_dc),
+            ("WindowDC+BitBlt", child_window_dc),
+            ("ClientDC+BitBlt", child_client_dc),
         ];
 
         for (label, capture) in attempts {
-            if let Some(pixels) = capture(child, max_width) {
-                let (ow, oh) = downscale_target(child.width, child.height, max_width);
+            if let Some(pixels) = capture(target, max_width) {
+                let (ow, oh) = downscale_target(target.width, target.height, max_width);
                 let (lo, hi, _mean) = frame_luma(&pixels, ow as u32, oh as u32);
                 if !is_blank(lo, hi) {
                     return finish(
                         pixels,
                         ow,
                         oh,
-                        &format!("child:{}/{}", child.class, label),
+                        &format!("target:{}/{}", target.class, label),
                         started,
                     );
                 }
@@ -604,7 +642,7 @@ pub fn capture_window_tree_gdi(
     None
 }
 
-/// Convenience: walk the child windows of whatever window has focus.
+/// Convenience: walk the window and child tree of whatever window has focus.
 #[napi]
 pub fn capture_foreground_tree_gdi(max_width: Option<u32>) -> Option<GdiCaptureResult> {
     let hwnd = unsafe { GetForegroundWindow() };
@@ -616,6 +654,47 @@ pub fn capture_foreground_tree_gdi(max_width: Option<u32>) -> Option<GdiCaptureR
         bytes.to_vec().into()
     };
     capture_window_tree_gdi(buf, max_width)
+}
+
+unsafe extern "system" fn check_child_affinity_proc(
+    hwnd: HWND,
+    lparam: LPARAM,
+) -> BOOL {
+    let mut affinity = 0u32;
+    if GetWindowDisplayAffinity(hwnd, &mut affinity).is_ok() && affinity != 0 {
+        let found = &mut *(lparam.0 as *mut bool);
+        *found = true;
+        return FALSE;
+    }
+    TRUE
+}
+
+/// Checks whether the foreground window (or any of its children) has set
+/// `WDA_EXCLUDEFROMCAPTURE` or `WDA_MONITOR`.
+#[napi]
+pub fn is_window_capture_protected(hwnd: Option<Buffer>) -> bool {
+    let target = match hwnd {
+        Some(buf) => buffer_to_hwnd(&buf),
+        None => unsafe { GetForegroundWindow() },
+    };
+    if target.0 == 0 {
+        return false;
+    }
+
+    let mut affinity = 0u32;
+    if unsafe { GetWindowDisplayAffinity(target, &mut affinity) }.is_ok() && affinity != 0 {
+        return true;
+    }
+
+    let mut child_protected = false;
+    unsafe {
+        let _ = EnumChildWindows(
+            target,
+            Some(check_child_affinity_proc),
+            LPARAM(&mut child_protected as *mut bool as isize),
+        );
+    }
+    child_protected
 }
 
 /// The foreground window's rectangle, in physical screen pixels.

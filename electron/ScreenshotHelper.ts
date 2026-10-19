@@ -693,6 +693,15 @@ export class ScreenshotHelper {
     const stitchedBuffer = await stitchImages(captures, area);
     await fs.promises.writeFile(outputPath, stitchedBuffer);
     console.log(`[ScreenshotHelper] Stitched screenshot saved to: ${outputPath}`);
+
+    if (process.platform === 'win32') {
+      try {
+        const primary = screen.getPrimaryDisplay();
+        await repairBlankedWindowCapture(outputPath, primary);
+      } catch (err) {
+        console.error('[ScreenshotHelper] GDI repair on stitched capture failed:', err);
+      }
+    }
   }
 
   /**

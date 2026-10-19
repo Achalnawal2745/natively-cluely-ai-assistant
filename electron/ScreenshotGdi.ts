@@ -61,6 +61,7 @@ interface GdiCaptureNative {
   get_foreground_window_rect?: () => GdiRect | null
   capture_region_gdi?: (rect: GdiRect, maxWidth?: number | null) => GdiCaptureRaw | null
   get_virtual_screen_bounds?: () => GdiRect | null
+  is_window_capture_protected?: (hwnd?: Buffer | null) => boolean
 }
 
 /** Peak luma at or below this = black. */
@@ -262,37 +263,70 @@ export async function repairBlankedWindowCapture(
   const region = windowRectToImageCoords(rect, display, imgW, imgH)
   if (!region) return false
 
+  // 1. Detect if the foreground window (or any child) is protected via WDA_EXCLUDEFROMCAPTURE or WDA_MONITOR
+  const isProtected = native.is_window_capture_protected?.() ?? false
+
+  // 2. Check if the region is blank/black
+  const blank = await regionIsBlank(png, region)
+
   const coverage = (region.width * region.height) / (imgW * imgH)
-  if (coverage < MIN_WINDOW_COVERAGE) {
-    console.log(
-      `[ScreenshotGdi] foreground window covers ${(coverage * 100).toFixed(0)}% of the ` +
-      `frame; below the ${MIN_WINDOW_COVERAGE * 100}% bar, leaving the capture alone`
-    )
+
+  // Trigger repair if:
+  // - forced by env
+  // - window is protected (WDA_EXCLUDEFROMCAPTURE / WDA_MONITOR) - THIS FIXES THE WALLPAPER TRANSPARENCY BUG
+  // - region in desktop capture came back blank/black
+  // - OR if the window covers substantial area (>= 40%)
+  const shouldRepair = force || isProtected || blank || (coverage >= 0.4)
+
+  if (!shouldRepair) {
+    console.log('[ScreenshotGdi] foreground window looks normal and unprotected; keeping desktopCapturer frame')
     return false
   }
 
-  if (!force) {
-    const blank = await regionIsBlank(png, region)
-    if (!blank) {
-      console.log('[ScreenshotGdi] foreground window present in frame; nothing to repair')
-      return false
-    }
-    console.warn(
-      '[ScreenshotGdi] foreground window is blank in the desktopCapturer frame — ' +
-      'likely WDA_EXCLUDEFROMCAPTURE; retrying with GDI'
-    )
-  }
+  console.log(
+    `[ScreenshotGdi] triggering GDI capture (protected=${isProtected}, blank=${blank}, coverage=${(coverage * 100).toFixed(0)}%)`
+  )
 
   const gdi = captureForegroundWindowGdi()
-  if (!gdi) return false
+  if (!gdi) {
+    console.warn('[ScreenshotGdi] GDI capture produced no frame; keeping original')
+    return false
+  }
 
   try {
-    await fs.promises.writeFile(pngPath, gdi.png)
-    console.log(`[ScreenshotGdi] replaced ${pngPath} with a ${gdi.width}x${gdi.height} GDI frame`)
+    // If the window is near fullscreen (>= 70%), writing the clean window capture directly gives the AI full fidelity
+    if (coverage >= 0.7) {
+      await fs.promises.writeFile(pngPath, gdi.png)
+      console.log(`[ScreenshotGdi] replaced ${pngPath} with full ${gdi.width}x${gdi.height} GDI frame (${gdi.method})`)
+      return true
+    }
+
+    // Otherwise, composite the window capture onto the desktop frame at the window's exact coordinates!
+    const resizedGdi = await sharp(gdi.png)
+      .resize(Math.max(1, region.width), Math.max(1, region.height), { fit: 'fill' })
+      .toBuffer()
+
+    const composited = await sharp(png)
+      .composite([{
+        input: resizedGdi,
+        left: Math.max(0, region.x),
+        top: Math.max(0, region.y),
+      }])
+      .png()
+      .toBuffer()
+
+    await fs.promises.writeFile(pngPath, composited)
+    console.log(`[ScreenshotGdi] composited ${gdi.method} frame onto desktop at (${region.x}, ${region.y})`)
     return true
   } catch (error) {
-    console.error('[ScreenshotGdi] failed to write GDI frame:', error)
-    return false
+    console.error('[ScreenshotGdi] failed to composite/write GDI frame:', error)
+    // Fallback: overwrite with gdi.png
+    try {
+      await fs.promises.writeFile(pngPath, gdi.png)
+      return true
+    } catch {
+      return false
+    }
   }
 }
 
