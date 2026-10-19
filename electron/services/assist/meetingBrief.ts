@@ -43,6 +43,14 @@ export interface BriefPerson {
   theirOpenItems: Array<{ text: string; meetingId: string; deadline?: string }>;
 }
 
+/** An email thread with the attendees, from Gmail when it is connected (outputs/gmailIpc.gmailBriefContext). */
+export interface BriefEmail {
+  subject: string;
+  from: string;
+  date: string;
+  snippet: string;
+}
+
 export interface MeetingBrief {
   eventId: string;
   title: string;
@@ -54,7 +62,11 @@ export interface MeetingBrief {
   /** 'model' when the model wrote the talking points; 'notes' when drawn from the items. */
   talkingPointsFrom: 'model' | 'notes';
   generatedAt: number;
+  /** Recent email threads with these people, newest first. Only when Gmail is connected and has some. */
+  recentEmails?: BriefEmail[];
 }
+
+export const BRIEF_MAX_EMAILS = 8;
 
 export const BRIEF_LOOKBACK_DAYS = ASSIST_LONGEST_LOOKBACK_DAYS;
 export const BRIEF_MAX_PEOPLE = 8;
@@ -185,6 +197,15 @@ export function briefPromptInput(brief: MeetingBrief, description?: string): str
   if (brief.yourOpenItems.length) {
     lines.push('The user still owes:');
     for (const it of brief.yourOpenItems) lines.push(`- ${clip(it.text, 160)}${it.deadline ? ` (by ${it.deadline})` : ''}${it.overdue ? ' (overdue)' : ''}`);
+  }
+  if (brief.recentEmails?.length) {
+    lines.push('Recent emails with these people:');
+    for (const m of brief.recentEmails.slice(0, BRIEF_MAX_EMAILS)) {
+      const day = Number.isFinite(Date.parse(m.date)) ? ` (${new Date(Date.parse(m.date)).toISOString().slice(0, 10)})` : '';
+      const from = clip(String(m.from ?? ''), 60);
+      const snippet = clip(String(m.snippet ?? ''), 200);
+      lines.push(`- "${clip(String(m.subject ?? ''), 100)}"${from ? ` from ${from}` : ''}${day}${snippet ? `: ${snippet}` : ''}`);
+    }
   }
   return lines.join('\n');
 }

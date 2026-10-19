@@ -1,12 +1,14 @@
 // owedItems.ts
 //
-// "You owe": the open action items the user owns, across recent meetings.
+// The open action items the user owns, across recent meetings: Brief me's
+// "Yours to do" (meetingBrief). The launcher's own list of them ("You owe",
+// then Loose Ends) came out 2026-10-17.
 //
 // An item is the user's when its owner is the user ("Me", their name or first
 // name, their address: assistPeople.ownerIsUser). Items the notes already mark
-// done are left out, and so is anything the user ticked here (kept locally,
-// AssistService). A ticked item comes back only when a LATER meeting raises it
-// again, which is a new promise, not the old one.
+// done are left out, and so is anything ticked in that list before it came out
+// (kept locally, AssistService). A ticked item comes back only when a LATER
+// meeting raises it again, which is a new promise, not the old one.
 //
 // The same promise carried from meeting to meeting (a weekly sync) shows once:
 // linked to the newest meeting that mentions it, aged from the first.
@@ -125,13 +127,4 @@ export function collectOwedItems(meetings: AssistMeeting[], identity: UserIdenti
     });
   }
   return out.sort(compareOwed).slice(0, opts.limit ?? OWED_MAX_ITEMS);
-}
-
-/** Drops ticks older than the longest assist lookback (nothing they could hide is still read). */
-export function pruneDone(done: DoneMap, nowMs: number, lookbackDays: number = ASSIST_LONGEST_LOOKBACK_DAYS): DoneMap {
-  const out: DoneMap = {};
-  for (const [k, v] of Object.entries(done || {})) {
-    if (typeof v === 'number' && nowMs - v <= lookbackDays * DAY_MS) out[k] = v;
-  }
-  return out;
 }

@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Check, ChevronDown, Copy, Mail, RefreshCw, X } from 'lucide-react';
+import { ChevronDown, Copy, Mail, RefreshCw, X } from 'lucide-react';
 import { useT } from '../../i18n';
 import { buildReminderDraft, clipboardText, mailtoUrl, reminderGmailUrl, type ReminderDraft, type ReminderKind } from '../../lib/reminderDrafts.mjs';
-import { ASSIST_REFRESH_MS, clearReopenedTicks, msUntilNextLocalMidnight } from '../../lib/assistRefresh.mjs';
-import type { AssistCatchUp, AssistDailyBrief, AssistEvent, AssistMeetingBrief, AssistOwedItem, AssistSender } from '../../types/assist';
+import { ASSIST_REFRESH_MS, msUntilNextLocalMidnight } from '../../lib/assistRefresh.mjs';
+import type { AssistCatchUp, AssistDailyBrief, AssistEvent, AssistMeetingBrief, AssistSender } from '../../types/assist';
 
 /**
  * The launcher's assist sections (main: electron/services/assist):
@@ -14,9 +14,6 @@ import type { AssistCatchUp, AssistDailyBrief, AssistEvent, AssistMeetingBrief, 
  *                     "Brief me" opens the pre-meeting brief under the row;
  *                     the mail button drafts "running late", "are you
  *                     joining?" or "can we move it?" for the user to send.
- *   You owe           the user's open action items across recent meetings,
- *                     overdue first; ticking one is kept on this computer
- *                     only; the text opens its meeting.
  *   Catch up          after back-to-back meetings: what was decided and what
  *                     the user took on, across them (Settings › Calendar).
  *
@@ -27,7 +24,6 @@ import type { AssistCatchUp, AssistDailyBrief, AssistEvent, AssistMeetingBrief, 
 
 const ROW = 'group relative flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-transparent hover:bg-bg-elevated transition-colors';
 const HEADING = 'text-[13px] font-medium text-text-secondary mb-3 pl-1';
-const PILL = 'bg-bg-elevated text-text-secondary text-[9px] px-1.5 py-0.5 rounded-full font-medium tracking-wide whitespace-nowrap';
 const SMALL_BUTTON = 'inline-flex items-center gap-1.5 text-[12px] font-medium px-2.5 h-7 rounded-md text-text-primary transition-colors';
 
 const timeOf = (iso: string) => {
@@ -51,9 +47,6 @@ export const AssistToday: React.FC<AssistTodayProps> = ({ events, isLight, isMee
   const api = window.electronAPI;
   const [brief, setBrief] = useState<AssistDailyBrief | null>(null);
   const [catchUp, setCatchUp] = useState<AssistCatchUp | null>(null);
-  const [owedAll, setOwedAll] = useState<AssistOwedItem[] | null>(null);
-  // Ticked here: key -> when (cleared when a later read lists the item open again).
-  const [ticked, setTicked] = useState<Record<string, number>>({});
   const [openBrief, setOpenBrief] = useState<string | null>(null);
   const [draftFor, setDraftFor] = useState<{ eventId: string; kind: ReminderKind; event?: AssistEvent } | null>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -62,24 +55,9 @@ export const AssistToday: React.FC<AssistTodayProps> = ({ events, isLight, isMee
   eventsRef.current = events;
   const hover = isLight ? 'bg-black/[0.05] hover:bg-black/[0.09]' : 'bg-white/[0.06] hover:bg-white/[0.1]';
 
-  // "Show all" expanded: the full list reads again with the rest.
-  const owedExpandedRef = useRef(false);
-  owedExpandedRef.current = owedAll !== null;
   const refresh = useCallback(() => {
-    const requestedAt = Date.now();
-    api?.assistGetDailyBrief?.(eventsRef.current ?? []).then((b) => {
-      setBrief(b ?? null);
-      if (b?.owed) setTicked((prev) => clearReopenedTicks(prev, b.owed, requestedAt));
-    }).catch(() => {});
+    api?.assistGetDailyBrief?.(eventsRef.current ?? []).then((b) => setBrief(b ?? null)).catch(() => {});
     api?.assistGetCatchUp?.().then((c) => setCatchUp(c ?? null)).catch(() => {});
-    if (owedExpandedRef.current) {
-      api?.assistGetOwed?.().then((all) => {
-        if (!owedExpandedRef.current) return;
-        const list = Array.isArray(all) ? all : [];
-        setOwedAll(list);
-        setTicked((prev) => clearReopenedTicks(prev, list, requestedAt));
-      }).catch(() => {});
-    }
   }, [api]);
 
   // A launcher left open: read again just after local midnight (a new
@@ -126,28 +104,12 @@ export const AssistToday: React.FC<AssistTodayProps> = ({ events, isLight, isMee
 
   const eventById = useCallback((id: string) => (events ?? []).find((e) => e.id === id), [events]);
 
-  const setTick = (key: string, on: boolean) => setTicked((prev) => {
-    const next = { ...prev };
-    if (on) next[key] = Date.now();
-    else delete next[key];
-    return next;
-  });
-  const toggleOwed = (item: AssistOwedItem) => {
-    const next = !(item.key in ticked);
-    setTick(item.key, next);
-    api?.assistSetOwedDone?.(item.key, next)
-      .then((r) => { if (!r?.ok) setTick(item.key, !next); })
-      .catch(() => setTick(item.key, !next));
-  };
-
-  const owed = owedAll ?? brief?.owed ?? [];
-  const owedTotal = owedAll ? owedAll.length : brief?.owedTotal ?? 0;
   const todays = brief?.meetings ?? [];
 
   // A draft asked for from the calendar reminder for an event not listed here.
   const orphanDraft = draftFor && !todays.some((m) => m.eventId === draftFor.eventId) ? (eventById(draftFor.eventId) ?? draftFor.event ?? null) : null;
 
-  if (todays.length === 0 && owed.length === 0 && !catchUp && !orphanDraft) return null;
+  if (todays.length === 0 && !catchUp && !orphanDraft) return null;
 
   return (
     <div className="space-y-8">
@@ -296,54 +258,6 @@ export const AssistToday: React.FC<AssistTodayProps> = ({ events, isLight, isMee
         </section>
       )}
 
-      {owed.length > 0 && (
-        <section>
-          <h3 className={HEADING}>{t('You owe')}</h3>
-          <div className="space-y-1">
-            {owed.map((item) => {
-              const done = item.key in ticked;
-              return (
-                <div key={item.key} className={ROW}>
-                  <div className="flex items-start gap-2.5 min-w-0 flex-1">
-                    <button
-                      type="button"
-                      role="checkbox"
-                      aria-checked={done}
-                      aria-label={done ? t('Mark as not done') : t('Mark as done')}
-                      onClick={() => toggleOwed(item)}
-                      className={`mt-[3px] w-[14px] h-[14px] shrink-0 rounded-full border flex items-center justify-center transition-colors ${done ? 'bg-text-secondary border-text-secondary' : 'border-text-tertiary hover:border-text-secondary'}`}
-                    >
-                      {done && <Check size={10} strokeWidth={3} className={isLight ? 'text-white' : 'text-black'} />}
-                    </button>
-                    <button type="button" onClick={() => onOpenMeeting(item.meetingId)} className="min-w-0 text-left">
-                      <div className={`text-[14px] leading-snug ${done ? 'text-text-tertiary line-through' : 'text-text-primary'}`}>{item.text}</div>
-                      <div className="text-[12px] text-text-secondary truncate">
-                        {item.meetingTitle} · {dayOf(item.meetingStartMs)}
-                      </div>
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {item.overdue && !done ? (
-                      <span className="bg-red-500/10 text-red-400 text-[9px] px-1.5 py-0.5 rounded-full font-medium tracking-wide whitespace-nowrap">{t('Overdue')}</span>
-                    ) : item.deadline ? (
-                      <span className={PILL}>{item.deadline}</span>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
-            {!owedAll && owedTotal > owed.length && (
-              <button
-                type="button"
-                onClick={() => api?.assistGetOwed?.().then((all) => setOwedAll(Array.isArray(all) ? all : null)).catch(() => {})}
-                className="px-3 py-1.5 text-[12px] font-medium text-text-secondary hover:text-text-primary transition-colors"
-              >
-                {t('Show all')} ({owedTotal})
-              </button>
-            )}
-          </div>
-        </section>
-      )}
     </div>
   );
 };

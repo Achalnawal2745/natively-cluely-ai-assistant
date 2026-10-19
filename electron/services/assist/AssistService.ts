@@ -6,7 +6,7 @@
 // table, no new schema), and holds the "Last time" recap of the meeting that
 // is running.
 //
-//   Daily brief + You owe        dailyBrief.ts / owedItems.ts, no model
+//   Daily brief                  dailyBrief.ts, no model
 //   Brief me (pre-meeting)       meetingBrief.ts; talking points by the model
 //                                only on the button, only when the notes may
 //                                go to the configured model, cached per event
@@ -21,15 +21,15 @@
 
 import { getLastTimeRecap, type LastTimeRecap } from '../meeting/recurringMeetings';
 import type { UserIdentity } from './assistPeople';
-import { ASSIST_LONGEST_LOOKBACK_DAYS, type AssistMeeting } from './assistNotes';
+import type { AssistMeeting } from './assistNotes';
 import { buildCatchUp, catchUpGapMs, findCatchUpBlock, type CatchUp } from './backToBack';
 import { buildDailyBrief, type DailyBrief } from './dailyBrief';
 import {
   assembleMeetingBrief, briefInputHash, briefPromptInput,
-  BRIEF_LOOKBACK_DAYS, BRIEF_TALKING_POINTS_SHAPE, BRIEF_TALKING_POINTS_SYSTEM, validateTalkingPoints,
-  type BriefEvent, type MeetingBrief,
+  BRIEF_LOOKBACK_DAYS, BRIEF_MAX_EMAILS, BRIEF_TALKING_POINTS_SHAPE, BRIEF_TALKING_POINTS_SYSTEM, validateTalkingPoints,
+  type BriefEmail, type BriefEvent, type MeetingBrief,
 } from './meetingBrief';
-import { collectOwedItems, owedItemKey, pruneDone, type DoneMap, type OwedItem } from './owedItems';
+import { owedItemKey, type DoneMap } from './owedItems';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -64,6 +64,12 @@ export interface AssistDeps {
   modelAllowed(): boolean;
   /** One small JSON call through the app's provider routing (generateStructured). Null when no model answered. */
   generateTalkingPoints?(system: string, user: string, shape: string, validate: typeof validateTalkingPoints): Promise<string[] | null>;
+  /**
+   * Recent email threads with these addresses (Gmail, when connected and its
+   * brief switch is on: outputs/gmailIpc.gmailBriefContext). [] for none;
+   * never expected to throw, but a throw is treated as none.
+   */
+  recentEmails?(emails: string[]): Promise<BriefEmail[]>;
   /** To every window that listens (the overlay and the notes window). */
   broadcast(channel: string, payload: unknown): void;
   now?(): number;
@@ -107,7 +113,7 @@ export class AssistService {
     return readJson<DoneMap>(this.deps, KV_OWED_DONE, {});
   }
 
-  // ── Daily brief and You owe ───────────────────────────────────────────────
+  // ── Daily brief ───────────────────────────────────────────────
 
   getDailyBrief(events: BriefEvent[]): DailyBrief {
     return buildDailyBrief({
@@ -115,23 +121,7 @@ export class AssistService {
       meetings: this.meetings(BRIEF_LOOKBACK_DAYS),
       identity: this.deps.identity(),
       nowMs: this.now(),
-      done: this.done(),
     });
-  }
-
-  getOwed(): OwedItem[] {
-    // The longest lookback is read so task keys match Brief me's (owedItems.collectOwedItems).
-    return collectOwedItems(this.meetings(ASSIST_LONGEST_LOOKBACK_DAYS + 1), this.deps.identity(), { nowMs: this.now(), done: this.done() });
-  }
-
-  /** Ticks (or unticks) an item here. The meeting's own notes are not changed. */
-  setOwedDone(key: string, done: boolean): boolean {
-    if (typeof key !== 'string' || !key.startsWith('owed:')) return false;
-    const map = pruneDone(this.done(), this.now());
-    if (done) map[key] = this.now();
-    else delete map[key];
-    this.deps.kvSet(KV_OWED_DONE, JSON.stringify(map));
-    return true;
   }
 
   // ── Brief me ──────────────────────────────────────────────────────────────
@@ -152,6 +142,10 @@ export class AssistService {
       nowMs: this.now(),
       done: this.done(),
     });
+    if (this.deps.recentEmails && brief.people.length) {
+      const emails = await this.loadRecentEmails(brief.people.map((p) => p.email));
+      if (emails.length) brief.recentEmails = emails;
+    }
     const input = briefPromptInput(brief, clean.description);
     const hash = briefInputHash(input);
     const cache = readJson<Record<string, { hash: string; points: string[]; at: number }>>(this.deps, KV_BRIEF_CACHE, {});
@@ -160,7 +154,7 @@ export class AssistService {
       return { ...brief, talkingPoints: hit.points, talkingPointsFrom: 'model' };
     }
     // Nothing worth writing about: the points from the items stand (no call).
-    if (brief.people.every((p) => !p.lastMet) && !brief.lastTime && brief.yourOpenItems.length === 0) return brief;
+    if (brief.people.every((p) => !p.lastMet) && !brief.lastTime && brief.yourOpenItems.length === 0 && !brief.recentEmails?.length) return brief;
     if (!this.deps.modelAllowed()) return { ...brief, modelSkipped: 'privacy' };
     if (!this.deps.generateTalkingPoints) return { ...brief, modelSkipped: 'no-model' };
     let points: string[] | null = null;
@@ -175,6 +169,22 @@ export class AssistService {
     for (const k of keys.slice(BRIEF_CACHE_MAX)) delete next[k];
     this.deps.kvSet(KV_BRIEF_CACHE, JSON.stringify(next));
     return { ...brief, talkingPoints: points, talkingPointsFrom: 'model' };
+  }
+
+  /** The brief's emails, bounded and with plain strings only. */
+  private async loadRecentEmails(addresses: string[]): Promise<BriefEmail[]> {
+    let rows: unknown;
+    try {
+      rows = await this.deps.recentEmails!(addresses);
+    } catch {
+      return [];
+    }
+    const s = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '');
+    return (Array.isArray(rows) ? rows : [])
+      .filter((r) => r && typeof r === 'object')
+      .slice(0, BRIEF_MAX_EMAILS)
+      .map((r: any) => ({ subject: s(r.subject, 200), from: s(r.from, 200), date: s(r.date, 64), snippet: s(r.snippet, 300) }))
+      .filter((r) => r.subject || r.snippet);
   }
 
   // ── Catch-up after back-to-back meetings ──────────────────────────────────

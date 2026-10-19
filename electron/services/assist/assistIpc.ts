@@ -39,14 +39,7 @@ export function registerAssistIpc(
   const svc = () => getAssistService();
 
   safeHandle('assist:get-daily-brief', async (_e, events: unknown) => {
-    try { return svc()?.getDailyBrief(events as any) ?? { meetings: [], owed: [], owedTotal: 0 }; } catch { return { meetings: [], owed: [], owedTotal: 0 }; }
-  });
-  safeHandle('assist:get-owed', async () => {
-    try { return svc()?.getOwed() ?? []; } catch { return []; }
-  });
-  safeHandle('assist:set-owed-done', async (_e, key: unknown, done: unknown) => {
-    if (typeof key !== 'string' || typeof done !== 'boolean') return { ok: false };
-    try { return { ok: !!svc()?.setOwedDone(key, done) }; } catch { return { ok: false }; }
+    try { return svc()?.getDailyBrief(events as any) ?? { meetings: [] }; } catch { return { meetings: [] }; }
   });
   safeHandle('assist:get-meeting-brief', async (_e, event: unknown, o?: { refresh?: boolean }) => {
     const s = svc();

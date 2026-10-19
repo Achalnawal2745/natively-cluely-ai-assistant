@@ -23,8 +23,6 @@ interface GlobalChatOverlayProps {
     isOpen: boolean;
     onClose: () => void;
     initialQuery?: string;
-    /** Asked from a folder: only its meetings are searched, and the header says so. */
-    scope?: { folderId: string; name: string } | null;
 }
 
 // ============================================
@@ -149,7 +147,6 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({
     isOpen,
     onClose,
     initialQuery = '',
-    scope = null
 }) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [chatState, setChatState] = useState<ChatState>('idle');
@@ -172,9 +169,6 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({
     // whatever the other call had already buffered, so the eventual
     // completion can render empty. A ref updates immediately, no batching.
     const submitInFlightRef = useRef(false);
-    // Read when a question is sent (submitQuestion is created once).
-    const scopeRef = useRef(scope);
-    scopeRef.current = scope;
 
     // Submit initial query when overlay opens
     useEffect(() => {
@@ -324,7 +318,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({
             // upstream of this call can guarantee the invoke() ever resolves.
             let result: { fallback?: boolean; success?: boolean; error?: string } | undefined;
             try {
-                const call = window.electronAPI?.ragQueryGlobal(question, scopeRef.current ? { folderId: scopeRef.current.folderId } : undefined);
+                const call = window.electronAPI?.ragQueryGlobal(question);
                 result = call
                     ? await withTimeout(call, RAG_QUERY_CLIENT_TIMEOUT_MS, 'ragQueryGlobal')
                     : undefined;
@@ -499,7 +493,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({
                         <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle shrink-0">
                             <div className="flex items-center gap-2 text-text-tertiary">
                                 <img src={nativelyIcon} className="w-3.5 h-3.5 force-black-icon opacity-50" alt="logo" />
-                                <span className="text-[13px] font-medium truncate">{scope ? `Search meetings in ${scope.name}` : 'Search all meetings'}</span>
+                                <span className="text-[13px] font-medium truncate">Search all meetings</span>
                             </div>
                             <button
                                 onClick={onClose}

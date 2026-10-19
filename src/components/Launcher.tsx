@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useT } from '../i18n';
-import { ToggleLeft, ToggleRight, Search, Calendar, MoreHorizontal, Globe, Clock, ChevronRight, Settings, LayoutGrid, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, Trash2, Folder, Bell, Download, DownloadCloud, CheckCircle, AlertCircle, User, UserSearch, Sparkles, ArrowUpRight } from 'lucide-react';
-import { generateMeetingPDF } from '../utils/pdfGenerator';
+import { ToggleLeft, ToggleRight, Search, Calendar, Globe, Clock, ChevronRight, Settings, LayoutGrid, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, X, Bell, DownloadCloud, CheckCircle, AlertCircle, User, UserSearch, Sparkles, ArrowUpRight } from 'lucide-react';
 import icon from "./icon.png";
 import mainui from "../UI_comp/mainui.png";
 import UpcomingCalendarCard from './ui/UpcomingCalendarCard';
@@ -24,13 +23,6 @@ import { APP_FEATURE_VERSION } from '../utils/appVersion';
 import WindowControls from './WindowControls';
 import { LiquidGlassBadge } from '../ui-components/LiquidGlassBadge';
 import { emitOrchestratorEvent, setUserState as setOrchestratorUserState } from './onboarding/OrchestratedToasterHost';
-import { OrganiseBar, type LauncherView, type MeetingFilter } from './organise/OrganiseBar';
-import { FolderDialog } from './organise/FolderDialog';
-import { FolderPickList } from './organise/MeetingOrganiseMenu';
-import { PeopleList, CompaniesList } from './organise/OrganiseLists';
-import { PersonPage } from './organise/PersonPage';
-import { CompanyPage } from './organise/CompanyPage';
-import type { OrganiseFolder, OrganiseTag } from '../types/electron';
 
 interface Meeting {
     id: string;
@@ -134,40 +126,10 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
     // intentionally double-invokes effects to surface this class of bug.
     const mountedOnceRef = useRef<boolean>(false);
 
-    // Folders, tags, People and Companies (components/organise). The filter is
-    // read through a ref: fetchMeetings is captured once by the meetings-updated
-    // listener, and must still see the folder the user is looking at now.
-    const [view, setView] = useState<LauncherView>('meetings');
-    const [filter, setFilter] = useState<MeetingFilter>(null);
-    const filterRef = useRef<MeetingFilter>(null);
-    filterRef.current = filter;
-    const [folders, setFolders] = useState<OrganiseFolder[]>([]);
-    const [tags, setTags] = useState<OrganiseTag[]>([]);
-    const [filteredMeetings, setFilteredMeetings] = useState<Meeting[] | null>(null);
-    const [orgPage, setOrgPage] = useState<{ kind: 'person'; id: string } | { kind: 'company'; domain: string } | null>(null);
-    const [folderDialog, setFolderDialog] = useState<{ open: boolean; folder: OrganiseFolder | null }>({ open: false, folder: null });
-    // The row whose menu shows its folders instead of Export / Delete.
-    const [folderMenuFor, setFolderMenuFor] = useState<string | null>(null);
-    // The folder an Ask was sent from (only its meetings are searched).
-    const [globalScope, setGlobalScope] = useState<{ folderId: string; name: string } | null>(null);
-
-    const fetchOrganise = () => {
-        const api = window.electronAPI?.organise;
-        if (!api) return;
-        api.listFolders().then(setFolders).catch(() => {});
-        api.listTags().then(setTags).catch(() => {});
-        const f = filterRef.current;
-        if (!f) { setFilteredMeetings(null); return; }
-        api.listMeetings(f.kind === 'folder' ? { folderId: f.id } : { tag: f.name })
-            .then((rows) => setFilteredMeetings(rows as Meeting[]))
-            .catch(() => setFilteredMeetings([]));
-    };
-
     const fetchMeetings = () => {
         if (window.electronAPI && window.electronAPI.getRecentMeetings) {
             window.electronAPI.getRecentMeetings().then(setMeetings).catch(err => console.error("Failed to fetch meetings:", err));
         }
-        fetchOrganise();
     };
 
     const fetchEvents = () => {
@@ -402,9 +364,8 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
         analytics.trackModeSelected(newState ? 'launcher' : 'undetectable'); // If visible (detectable), mode is normal/launcher. If not detectable, mode is undetectable.
     };
 
-    // Group meetings (a folder or tag filter lists all of its meetings, not just the latest 50)
-    const listedMeetings = filter ? (filteredMeetings ?? []) : meetings;
-    const groupedMeetings = listedMeetings.reduce((acc, meeting) => {
+    // Group meetings
+    const groupedMeetings = meetings.reduce((acc, meeting) => {
         const label = getGroupLabel(meeting.date);
         if (!acc[label]) acc[label] = [];
         acc[label].push(meeting);
@@ -428,38 +389,21 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
     // meetings" hit). Cleared by any other navigation so a later open starts on
     // the summary as usual.
     const [selectedMomentMs, setSelectedMomentMs] = useState<number | null>(null);
-    const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
-    const [menuEntered, setMenuEntered] = useState(false);
+    // The meeting row whose delete button has been clicked once and waits for
+    // the confirming second click.
+    const [armedDeleteId, setArmedDeleteId] = useState<string | null>(null);
 
+    // A click anywhere else disarms the delete button
     useEffect(() => {
-        setMenuEntered(false);
-        setFolderMenuFor(null);
-    }, [activeMenuId]);
-
-    // Global click listener to close menu
-    useEffect(() => {
-        const handleClickOutside = () => setActiveMenuId(null);
+        const handleClickOutside = () => setArmedDeleteId(null);
         window.addEventListener('click', handleClickOutside);
         return () => window.removeEventListener('click', handleClickOutside);
     }, []);
 
     // Notify parent if we are on the main launcher list view; also feed the
     // orchestrator's homepage-mounted clock.
-    // A new filter lists its meetings.
     useEffect(() => {
-        fetchOrganise();
-        // fetchOrganise reads the filter through its ref.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [filter]);
-
-    // Search and Ask from the top bar look only at the folder being viewed.
-    const viewedFolder = view === 'meetings' && filter?.kind === 'folder' ? folders.find((f) => f.id === filter.id) : undefined;
-    const literalSearchFilters = view === 'meetings' && filter
-        ? (filter.kind === 'folder' ? { folderId: filter.id } : { tag: filter.name })
-        : undefined;
-
-    useEffect(() => {
-        const isMain = !selectedMeeting && !orgPage && !isGlobalChatOpen;
+        const isMain = !selectedMeeting && !isGlobalChatOpen;
         if (onPageChange) onPageChange(isMain);
         if (isMain) {
             emitOrchestratorEvent({ type: 'launcher:mounted' });
@@ -468,7 +412,7 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
         }
         // Cleanup on unmount: ensure unmount is fired
         return () => emitOrchestratorEvent({ type: 'launcher:unmounted' });
-    }, [selectedMeeting, orgPage, isGlobalChatOpen, onPageChange]);
+    }, [selectedMeeting, isGlobalChatOpen, onPageChange]);
 
     const handleOpenMeeting = async (meeting: Meeting) => {
         setSelectedMomentMs(null);
@@ -505,12 +449,6 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
         setSelectedMeeting(null);
         setSelectedMomentMs(null);
     }, [isGlobalChatOpen]);
-    // A person or company page goes back to the list (a meeting opened from it goes back to it).
-    const handleOrgBack = useCallback(() => {
-        if (isGlobalChatOpen) return;
-        setOrgPage(null);
-    }, [isGlobalChatOpen]);
-
     // Open a search hit BY ID at the moment it was said. The hit may be older than
     // the 50 meetings this list holds, so it is fetched directly rather than looked
     // up in `meetings`. Returns false when it cannot be opened (caller falls back).
@@ -712,7 +650,6 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                     onAIQuery={(query) => {
                         analytics.trackCommandExecuted('ai_query_search');
                         emitOrchestratorEvent({ type: 'turn:done', surface: 'chat' });
-                        if (!isGlobalChatOpen) setGlobalScope(viewedFolder ? { folderId: viewedFolder.id, name: viewedFolder.name } : null);
                         setSubmittedGlobalQuery(query);
                         setIsGlobalChatOpen(true);
                     }}
@@ -728,13 +665,12 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                         // runs in an inner IIFE so we never return a floating Promise to the
                         // event-handler prop.
                         const runFallback = () => {
-                            if (!isGlobalChatOpen) setGlobalScope(viewedFolder ? { folderId: viewedFolder.id, name: viewedFolder.name } : null);
                             setSubmittedGlobalQuery(query);
                             setIsGlobalChatOpen(true);
                         };
                         void (async () => {
                             try {
-                                const resp = await window.electronAPI.searchGlobalMeetings?.(query, literalSearchFilters);
+                                const resp = await window.electronAPI.searchGlobalMeetings?.(query);
                                 if (resp?.enabled && Array.isArray(resp.results)) {
                                     // Best hit that is a real meeting (long-term-memory hits
                                     // carry a synthetic id), opened at the matching line.
@@ -1037,36 +973,6 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                                 />
                             </motion.div>
                         </motion.div>
-                    ) : orgPage ? (
-                        // A person or company: the same cover/uncover as the notes.
-                        <motion.div
-                            key={orgPage.kind === 'person' ? `person-${orgPage.id}` : `company-${orgPage.domain}`}
-                            data-page={orgPage.kind}
-                            className="absolute inset-0 overflow-hidden z-20"
-                            variants={panelVariants}
-                            initial="hidden"
-                            animate="shown"
-                            exit="gone"
-                        >
-                            <motion.div data-layer="veil" className={`absolute inset-0 ${NOTES_SURFACE}`} variants={veilVariants} />
-                            <motion.div data-layer="content" className="relative h-full w-full" variants={contentVariants}>
-                                {orgPage.kind === 'person' ? (
-                                    <PersonPage
-                                        personId={orgPage.id}
-                                        onBack={handleOrgBack}
-                                        onOpenMeeting={(id) => { void openMeetingAtMoment(id); }}
-                                        onOpenCompany={(domain) => setOrgPage({ kind: 'company', domain })}
-                                    />
-                                ) : (
-                                    <CompanyPage
-                                        domain={orgPage.domain}
-                                        onBack={handleOrgBack}
-                                        onOpenMeeting={(id) => { void openMeetingAtMoment(id); }}
-                                        onOpenPerson={(id) => setOrgPage({ kind: 'person', id })}
-                                    />
-                                )}
-                            </motion.div>
-                        </motion.div>
                     ) : (
                         <motion.div
                             key="launcher"
@@ -1315,8 +1221,8 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                                 <section className="px-8 py-8 min-h-full">
                                     <div className="max-w-4xl mx-auto space-y-8">
 
-                                        {/* Coming up today (Brief me, reminder drafts), You owe, and
-                                            the catch-up after back-to-back meetings (assist/AssistToday). */}
+                                        {/* Coming up today (Brief me, reminder drafts) and the catch-up
+                                            after back-to-back meetings (assist/AssistToday). */}
                                         <AssistToday
                                             events={upcomingEvents}
                                             isLight={isLight}
@@ -1325,23 +1231,8 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                                             draftRequest={reminderDraftRequest}
                                         />
 
-                                        {/* Meetings / People / Companies, and the folder and tag filters. */}
-                                        <OrganiseBar
-                                            isLight={isLight}
-                                            view={view}
-                                            onView={setView}
-                                            folders={folders}
-                                            tags={tags}
-                                            filter={filter}
-                                            onFilter={setFilter}
-                                            onEditFolder={(folder) => setFolderDialog({ open: true, folder })}
-                                        />
-
-                                        {view === 'people' && <PeopleList onOpen={(id) => setOrgPage({ kind: 'person', id })} />}
-                                        {view === 'companies' && <CompaniesList onOpen={(domain) => setOrgPage({ kind: 'company', domain })} />}
-
                                         {/* Iterating Date Groups */}
-                                        {view === 'meetings' && sortedGroups.map((label) => (
+                                        {sortedGroups.map((label) => (
                                             <section key={label}>
                                                 <h3 className="text-[13px] font-medium text-text-secondary mb-3 pl-1">{label}</h3>
                                                 <div className="space-y-1">
@@ -1377,112 +1268,46 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                                                                 )}
                                                             </div>
 
-                                                            {/* Context Menu Trigger (Slides in on hover) */}
-                                                            <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 translate-x-4 transition-all duration-300 ease-out group-hover:opacity-100 group-hover:translate-x-0">
+                                                            {/* Delete (slides in on hover). Export lives inside the meeting
+                                                                note, so the row only carries delete. Deleting cannot be
+                                                                undone, so the first click arms it (the cross grows a red
+                                                                "Delete" label) and the second click deletes. Leaving the
+                                                                row or clicking anywhere else disarms it. */}
+                                                            <div className={`absolute right-3 top-1/2 -translate-y-1/2 transition-all duration-300 ease-out group-hover:opacity-100 group-hover:translate-x-0 ${armedDeleteId === m.id ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-4'}`}>
                                                                 <button
-                                                                    className="p-1.5 text-text-secondary hover:text-text-primary transition-colors"
-                                                                    onClick={(e) => {
+                                                                    aria-label={t('Delete')}
+                                                                    className={`flex items-center h-7 rounded-md transition-all duration-200 ease-out ${armedDeleteId === m.id
+                                                                        ? `px-2 gap-1.5 bg-red-500/10 ${isLight ? 'text-red-500 hover:bg-red-500/15' : 'text-red-400 hover:bg-red-500/20 hover:text-red-300'}`
+                                                                        : 'px-1.5 gap-0 text-text-secondary hover:text-red-400'}`}
+                                                                    onClick={async (e) => {
                                                                         e.stopPropagation();
-                                                                        setActiveMenuId(activeMenuId === m.id ? null : m.id);
+                                                                        if (armedDeleteId !== m.id) {
+                                                                            setArmedDeleteId(m.id);
+                                                                            return;
+                                                                        }
+                                                                        setArmedDeleteId(null);
+                                                                        if (window.electronAPI && window.electronAPI.deleteMeeting) {
+                                                                            const success = await window.electronAPI.deleteMeeting(m.id);
+                                                                            if (success) {
+                                                                                setMeetings(prev => prev.filter(meeting => meeting.id !== m.id));
+                                                                            }
+                                                                        }
                                                                     }}
                                                                 >
-                                                                    <MoreHorizontal size={16} />
+                                                                    <X size={15} strokeWidth={1.75} />
+                                                                    <span className={`overflow-hidden whitespace-nowrap text-[12px] font-medium transition-all duration-200 ease-out ${armedDeleteId === m.id ? 'max-w-[60px] opacity-100' : 'max-w-0 opacity-0'}`}>
+                                                                        {t('Delete')}
+                                                                    </span>
                                                                 </button>
                                                             </div>
-
-                                                            {/* Dropdown Menu */}
-                                                            <AnimatePresence>
-                                                                {activeMenuId === m.id && (
-                                                                    <motion.div
-                                                                        key={`meeting-menu-${m.id}`}
-                                                                        initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                                                                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                                                                        exit={{ opacity: 0, scale: 0.95, y: 5 }}
-                                                                        transition={{ duration: 0.1 }}
-                                                                        className={`absolute right-0 top-full mt-1 ${folderMenuFor === m.id ? 'w-[220px]' : 'w-[140px]'} backdrop-blur-xl rounded-lg shadow-2xl z-50 overflow-hidden border ${isLight ? 'bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-[#1E1E1E]/80 border-white/10'}`}
-                                                                        onClick={(e) => e.stopPropagation()}
-                                                                        onMouseEnter={() => setMenuEntered(true)}
-                                                                        onMouseLeave={() => {
-                                                                            if (menuEntered) setActiveMenuId(null);
-                                                                        }}
-                                                                    >
-                                                                        {folderMenuFor === m.id ? (
-                                                                            <div className="p-1">
-                                                                                <FolderPickList meetingId={m.id} isLight={isLight} autoFocus onChanged={() => fetchOrganise()} />
-                                                                            </div>
-                                                                        ) : (
-                                                                        <div className="p-1 flex flex-col gap-0.5">
-                                                                            <button
-                                                                                className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-text-primary rounded-lg transition-colors text-left ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`}
-                                                                                onClick={() => setFolderMenuFor(m.id)}
-                                                                            >
-                                                                                <Folder size={13} />
-                                                                                {t('Move to folder')}
-                                                                            </button>
-                                                                            <button
-                                                                                className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-text-primary rounded-lg transition-colors text-left ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`}
-                                                                                onClick={async () => {
-                                                                                    setActiveMenuId(null);
-                                                                                    analytics.trackPdfExported();
-                                                                                    // Resolve full details when available, else fall back to the
-                                                                                    // list item. Wrapped in one try/catch so a failure anywhere —
-                                                                                    // including the CJK-font load inside generateMeetingPDF — is
-                                                                                    // surfaced instead of becoming an unhandled rejection.
-                                                                                    let target = m;
-                                                                                    try {
-                                                                                        if (window.electronAPI && window.electronAPI.getMeetingDetails) {
-                                                                                            const fullMeeting = await window.electronAPI.getMeetingDetails(m.id).catch((e) => {
-                                                                                                console.error("Failed to fetch details for PDF", e);
-                                                                                                return null;
-                                                                                            });
-                                                                                            if (fullMeeting) target = fullMeeting;
-                                                                                        }
-                                                                                        await generateMeetingPDF(target);
-                                                                                    } catch (e) {
-                                                                                        console.error("Failed to export meeting PDF", e);
-                                                                                    }
-                                                                                }}
-                                                                            >
-                                                                                <Download size={13} />
-                                                                                {t('Export')}
-                                                                            </button>
-                                                                            <button
-                                                                                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 rounded-lg transition-colors text-left"
-                                                                                onClick={async () => {
-                                                                                    if (window.electronAPI && window.electronAPI.deleteMeeting) {
-                                                                                        const success = await window.electronAPI.deleteMeeting(m.id);
-                                                                                        if (success) {
-                                                                                            // Optimistic update or refetch
-                                                                                            setMeetings(prev => prev.filter(meeting => meeting.id !== m.id));
-                                                                                            fetchOrganise();
-                                                                                        }
-                                                                                    }
-                                                                                    setActiveMenuId(null);
-                                                                                }}
-                                                                            >
-                                                                                <Trash2 size={13} />
-                                                                                {t('Delete')}
-                                                                            </button>
-                                                                        </div>
-                                                                        )}
-                                                                    </motion.div>
-                                                                )}
-                                                            </AnimatePresence>
                                                         </motion.div>
                                                     ))}
                                                 </div>
                                             </section>
                                         ))}
 
-                                        {view === 'meetings' && !filter && meetings.length === 0 && (
+                                        {meetings.length === 0 && (
                                             <div className="p-4 text-text-tertiary text-sm">{t('No recent meetings.')}</div>
-                                        )}
-                                        {view === 'meetings' && filter && filteredMeetings !== null && filteredMeetings.length === 0 && (
-                                            <div className="p-4 text-text-tertiary text-sm">
-                                                {filter.kind === 'folder'
-                                                    ? t('No meetings in this folder yet. Move one here from its menu, or add a rule in Folder settings.')
-                                                    : t('No meetings with this tag.')}
-                                            </div>
                                         )}
 
                                     </div>
@@ -1541,24 +1366,8 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                     setSubmittedGlobalQuery('');
                 }}
                 initialQuery={submittedGlobalQuery}
-                scope={globalScope}
             />
 
-            {/* A folder's name and rules (components/organise/FolderDialog). */}
-            <FolderDialog
-                open={folderDialog.open}
-                folder={folderDialog.folder}
-                onOpenChange={(open) => setFolderDialog((d) => ({ ...d, open }))}
-                onChanged={(folder) => {
-                    if (folder) {
-                        setFolderDialog((d) => ({ ...d, folder }));
-                        if (!folderDialog.folder) setFilter({ kind: 'folder', id: folder.id });
-                    } else if (filter?.kind === 'folder' && filter.id === folderDialog.folder?.id) {
-                        setFilter(null);
-                    }
-                    fetchOrganise();
-                }}
-            />
         </div >
     );
 };

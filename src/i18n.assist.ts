@@ -1,7 +1,7 @@
 // src/i18n.assist.ts
 //
 // The assist features (2026-10-15): the overlay's live helpers, the launcher's
-// Coming up today / You owe / Catch up (src/components/assist/AssistToday.tsx)
+// Coming up today / Catch up (src/components/assist/AssistToday.tsx)
 // and the catch-up row in Settings › Calendar. English source → [ru, zh, ja,
 // es], one row per sentence, the same shape as src/i18n.trial.ts.
 //
@@ -51,13 +51,6 @@ const ROWS: Record<string, Row> = {
   'Copied. Paste it into your email or chat.': ['Скопировано. Вставьте в письмо или чат.', '已复制。粘贴到邮件或聊天中即可。', 'コピーしました。メールやチャットに貼り付けてください。', 'Copiado. Pégalo en tu correo o chat.'],
   'Could not copy. Select the text and copy it instead.': ['Не удалось скопировать. Выделите текст и скопируйте вручную.', '无法复制。请选中文本后手动复制。', 'コピーできませんでした。テキストを選択してコピーしてください。', 'No se pudo copiar. Selecciona el texto y cópialo.'],
   'No mail app opened. The draft is on your clipboard instead.': ['Почтовое приложение не открылось. Черновик скопирован.', '没有打开邮件应用。草稿已复制到剪贴板。', 'メールアプリが開きませんでした。下書きはクリップボードにあります。', 'No se abrió ninguna app de correo. El borrador está en tu portapapeles.'],
-
-  // ── Launcher: You owe ──
-  'You owe': ['Вы должны', '你待办的', 'あなたの宿題', 'Tus pendientes'],
-  'Mark as done': ['Отметить как сделанное', '标记为已完成', '完了にする', 'Marcar como hecho'],
-  'Mark as not done': ['Снять отметку', '标记为未完成', '未完了に戻す', 'Marcar como no hecho'],
-  'Overdue': ['Просрочено', '已逾期', '期限切れ', 'Vencido'],
-  'Show all': ['Показать все', '显示全部', 'すべて表示', 'Ver todo'],
 
   // ── Launcher: Catch up ──
   'Catch up': ['Сводка', '快速回顾', 'まとめ', 'Ponte al día'],
