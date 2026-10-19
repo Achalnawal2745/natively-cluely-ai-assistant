@@ -68,6 +68,15 @@ describe('style profile prompt', () => {
         assert.equal(v.description, 'Short. Direct.');
         assert.equal(style.validateModelProfile('nope'), null);
     });
+    test('the style gets a few-word title for its one line in Settings (2026-10-17)', () => {
+        assert.ok(JSON.parse(style.buildStyleProfilePrompt([], { avgSentenceWords: 9, sentenceLength: 'short', emoji: 'never', exclamationsPerSample: 0 }).jsonShapeHint).title);
+        assert.equal(style.validateModelProfile({ title: ' Brief,\n direct and warm. ' }).title, 'Brief, direct and warm');
+        assert.equal(style.validateModelProfile({ title: 'The writing is highly concise and direct, favoring brief sentences.' }).title, undefined, 'a sentence is not a title');
+        assert.equal(style.validateModelProfile({ title: 'ok' }).title, undefined);
+        const base = { sentenceLength: 'short', avgSentenceWords: 9, formality: 'casual', emoji: 'never', phrases: [] };
+        assert.equal(style.titleForProfile({ ...base, title: 'Brief and warm' }), 'Brief and warm');
+        assert.equal(style.titleForProfile(base), 'Short sentences, casual');
+    });
     test('the guide names the voice and says it wins over the mode defaults, without a placeholder', () => {
         const g = style.renderStyleGuide({ greeting: 'Hi …,', signOff: 'Thanks,', sentenceLength: 'short', avgSentenceWords: 9.4, formality: 'casual', emoji: 'never', phrases: ['Quick note on'], description: 'Direct and warm.' });
         assert.match(g, /^WRITE IN THE SENDER'S OWN VOICE/);
@@ -110,6 +119,7 @@ describe('samples and the cached profile', () => {
         const model = async (prompt) => { calls += 1; seen = prompt; return { formality: 'casual', phrases: ['Quick note on'], description: 'Brief and friendly.' }; };
         const g1 = await svc.guideForFollowUp(model);
         assert.match(g1, /Brief and friendly\./);
+        assert.equal(svc.status().title, 'Short sentences, casual', 'no model title: the counted one');
         assert.ok(seen.userContent.includes('Quick note on the pricing call'));
         await svc.guideForFollowUp(model);
         assert.equal(calls, 1, 'cached');
@@ -122,13 +132,21 @@ describe('samples and the cached profile', () => {
         const g2 = await offline.guideForFollowUp(null);
         assert.match(g2, /Their usual sign-off: "Thanks,"/);
     });
-    test('turned off, or no samples: no guide', async () => {
-        const svc = new style.WritingStyleService({ dir });
+    test('no samples: no guide; samples are used, with no switch (2026-10-17)', async () => {
+        const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'natively-outputs-'));
+        const svc = new style.WritingStyleService({ dir: fresh });
         assert.equal(await svc.guideForFollowUp(async () => ({})), null);
         svc.addSample(EMAIL_A, 'pasted');
-        svc.setEnabled(false);
-        assert.equal(await svc.guideForFollowUp(async () => ({})), null);
-        assert.equal(new style.WritingStyleService({ dir }).status().enabled, false);
+        assert.ok(await svc.guideForFollowUp(async () => ({})));
+        assert.equal('enabled' in svc.status(), false);
+        assert.equal(typeof svc.setEnabled, 'undefined');
+    });
+    test('an "off" saved before the switch was removed is ignored', async () => {
+        const old = fs.mkdtempSync(path.join(os.tmpdir(), 'natively-outputs-'));
+        fs.writeFileSync(path.join(old, style.WRITING_STYLE_FILE), JSON.stringify({
+            version: 1, enabled: false, samples: [{ id: 's1', source: 'pasted', text: EMAIL_A, at: 1 }],
+        }));
+        assert.ok(await new style.WritingStyleService({ dir: old }).guideForFollowUp(null));
     });
 });
 
