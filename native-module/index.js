@@ -589,6 +589,7 @@ module.exports.getInputDevices = nativeBinding.getInputDevices
 module.exports.getMicUsers = nativeBinding.getMicUsers
 module.exports.getOutputDevices = nativeBinding.getOutputDevices
 module.exports.getVisibleWindows = nativeBinding.getVisibleWindows
+module.exports.inputInUse = nativeBinding.inputInUse
 module.exports.isAccessibilityGranted = nativeBinding.isAccessibilityGranted
 module.exports.readCallTree = nativeBinding.readCallTree
 module.exports.requestCalendarAccess = nativeBinding.requestCalendarAccess

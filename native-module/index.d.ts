@@ -281,6 +281,16 @@ export declare function getOutputDevices(): Array<AudioDeviceInfo>
 export declare function getVisibleWindows(): Array<WindowInfo> | null
 
 /**
+ * Whether the system's default input device is being captured by any process
+ * right now, for the fallback on macOS before 14, where there is no
+ * per-process list (`get_mic_users` is None there): the detector can still
+ * tell the microphone is live and offer to start when a known meeting app has
+ * a window up. Some(true/false) when the OS can say, None otherwise (always
+ * None on Windows, which has the per-app consent store instead).
+ */
+export declare function inputInUse(): boolean | null
+
+/**
  * True if this process has Accessibility trust (required for CGEventTap).
  * Cheap; safe to poll from JS to drive UI state.
  */
@@ -293,6 +303,13 @@ export interface MicUser {
   bundleId?: string
   /** The executable: macOS proc_pidpath; Windows a NonPackaged entry's path. */
   path?: string
+  /**
+   * The input device the process is capturing from, by its CoreAudio name
+   * (the same name cpal lists it under, so it can be set as Natively's own
+   * capture device). macOS 14+ only; None on older macOS and on Windows,
+   * where per-process device is not available.
+   */
+  deviceName?: string
 }
 
 export interface OverlayBoundsInput {
