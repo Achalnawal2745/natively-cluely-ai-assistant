@@ -47,7 +47,8 @@ interface GdiCaptureRaw {
   height: number
   /** e.g. `child:Intermediate D3D Window/PrintWindow` */
   method: string
-  duration_ms: number
+  duration_ms?: number
+  durationMs?: number
   blank: boolean
 }
 
@@ -146,7 +147,6 @@ function loadGdiNative(): GdiCaptureNative | null {
   return cached
 }
 
-
 /** True only on Windows with a native binary that has the GDI exports. */
 export function isGdiCaptureAvailable(): boolean {
   return process.platform === 'win32' && loadGdiNative() !== null
@@ -169,43 +169,87 @@ export function captureForegroundWindowGdi(): {
   let native: GdiCaptureNative | null
   try {
     native = loadGdiNative()
-  } catch {
+  } catch (err) {
+    logCapture(`captureForegroundWindowGdi: loadGdiNative threw: ${err}`)
     return null
   }
-  if (!native?.capture_foreground_tree_gdi) return null
+  if (!native?.capture_foreground_tree_gdi) {
+    logCapture('captureForegroundWindowGdi: capture_foreground_tree_gdi unavailable')
+    return null
+  }
 
   let raw: GdiCaptureRaw | null = null
   try {
     raw = native.capture_foreground_tree_gdi(null)
   } catch (error) {
-    console.error('[ScreenshotGdi] capture_foreground_tree_gdi threw:', error)
+    logCapture(`captureForegroundWindowGdi: capture_foreground_tree_gdi threw: ${error}`)
     return null
   }
 
   if (!raw || raw.width <= 0 || raw.height <= 0) {
-    console.log('[ScreenshotGdi] window tree produced nothing')
+    logCapture(`captureForegroundWindowGdi: window tree returned no frame (${raw?.width}x${raw?.height})`)
     return null
   }
   if (raw.blank) {
-    console.warn(`[ScreenshotGdi] window tree frame validated blank (${raw.method})`)
+    logCapture(`captureForegroundWindowGdi: window tree frame validated blank (${raw.method})`)
     return null
   }
 
+  const duration = raw.durationMs ?? raw.duration_ms ?? 0
+  const durationStr = typeof duration === 'number' ? duration.toFixed(1) : String(duration)
+  logCapture(`captureForegroundWindowGdi: raw frame received ${raw.width}x${raw.height} via ${raw.method} in ${durationStr}ms`)
+
+  const rawBuf = Buffer.isBuffer(raw.data) ? raw.data : Buffer.from(raw.data)
+
+  // 1. Try nativeImage.createFromBitmap
   try {
-    const png = nativeImage
-      .createFromBitmap(Buffer.from(raw.data), { width: raw.width, height: raw.height })
-      .toPNG()
-    if (!png?.length) return null
-    console.log(
-      `[ScreenshotGdi] captured ${raw.width}x${raw.height} via ${raw.method} ` +
-      `in ${raw.duration_ms.toFixed(1)}ms`
-    )
-    return { png, width: raw.width, height: raw.height, method: raw.method }
+    const img = nativeImage.createFromBitmap(rawBuf, {
+      width: raw.width,
+      height: raw.height,
+      scaleFactor: 1.0,
+    })
+    const png = img.toPNG()
+    if (png && png.length > 0) {
+      logCapture(`captureForegroundWindowGdi: successfully encoded PNG via nativeImage (${png.length} bytes)`)
+      return { png, width: raw.width, height: raw.height, method: raw.method }
+    } else {
+      logCapture('captureForegroundWindowGdi: nativeImage.toPNG() returned empty buffer')
+    }
   } catch (error) {
-    console.error('[ScreenshotGdi] failed to encode GDI frame:', error)
-    return null
+    logCapture(`captureForegroundWindowGdi: nativeImage.createFromBitmap failed: ${error}`)
   }
+
+  // 2. Synchronous BMP wrapper fallback if nativeImage.createFromBitmap failed
+  // A 32-bit top-down BMP header lets nativeImage.createFromBuffer parse raw BGRA directly
+  try {
+    const bmpHeader = Buffer.alloc(54)
+    const fileLen = 54 + rawBuf.length
+    bmpHeader.write('BM', 0)
+    bmpHeader.writeUInt32LE(fileLen, 2)
+    bmpHeader.writeUInt32LE(54, 10)
+    bmpHeader.writeUInt32LE(40, 14)
+    bmpHeader.writeInt32LE(raw.width, 18)
+    bmpHeader.writeInt32LE(-raw.height, 22) // Top-down
+    bmpHeader.writeUInt16LE(1, 26)
+    bmpHeader.writeUInt16LE(32, 28) // 32 bpp (BGRA)
+    bmpHeader.writeUInt32LE(0, 30) // BI_RGB
+    bmpHeader.writeUInt32LE(rawBuf.length, 34)
+
+    const bmpBuffer = Buffer.concat([bmpHeader, rawBuf])
+    const imgFromBmp = nativeImage.createFromBuffer(bmpBuffer)
+    const pngFromBmp = imgFromBmp.toPNG()
+    if (pngFromBmp && pngFromBmp.length > 0) {
+      logCapture(`captureForegroundWindowGdi: successfully encoded PNG via BMP wrapper (${pngFromBmp.length} bytes)`)
+      return { png: pngFromBmp, width: raw.width, height: raw.height, method: raw.method }
+    }
+  } catch (bmpErr) {
+    logCapture(`captureForegroundWindowGdi: BMP fallback failed: ${bmpErr}`)
+  }
+
+  logCapture('captureForegroundWindowGdi: all PNG encoding attempts failed')
+  return null
 }
+
 
 /**
  * Is the rectangle `rect` (in image pixels) blank inside this PNG?
