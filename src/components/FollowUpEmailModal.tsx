@@ -132,9 +132,9 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
     };
 
     // The user's own edit of the draft teaches Natively how they write (kept on this
-    // computer only, and only when they changed it): Settings › Connections › Writing.
+    // computer only, and only when they changed it): Settings › Connectors › Writing.
     const rememberFinalText = () => {
-        void window.electronAPI?.meetingOutputs?.recordFollowUpSent({ finalText: emailBody, draftText: generatedRef.current }).catch(() => {});
+        void window.electronAPI?.meetingOutputs?.recordFollowUpSent({ meetingId: meeting.id, finalText: emailBody, draftText: generatedRef.current }).catch(() => {});
     };
 
     const handleSendGmail = async () => {

@@ -165,13 +165,13 @@ test('the fallback subject is the meeting name, with no "Follow-up:" label', asy
   assert.equal(/^Follow-up:/.test(untitled.subject || ''), false);
 });
 
-// Drift pin: the two MeetingPersistence call sites need Electron + the DB, so pin that
-// both read the sender name, and that the reader uses the account NAME, never the email.
-test('both draft paths sign with the Calendar account name, never its email (drift pin)', () => {
+// Drift pin: the MeetingPersistence call site needs Electron + the DB, so pin that it
+// reads the sender name, and that the reader uses the account NAME, never the email.
+// (The notes-Regenerate re-draft that was the second path is gone, 2026-10-18.)
+test('the draft path signs with the Calendar account name, never its email (drift pin)', () => {
   const src = fs.readFileSync(path.resolve(process.cwd(), 'electron/MeetingPersistence.ts'), 'utf8');
   // Both paths sign with the account's FIRST name (2026-09-29): "Evin", not "Evin John Ignatious".
   assert.match(src, /senderName:\s*followUpSenderFirstName\(\)/, 'Generate / Regenerate path');
-  assert.match(src, /followUpSenderName:\s*followUpPlan\.redraft \? followUpSenderFirstName\(\) : undefined/, 'notes-Regenerate path');
   const first = src.slice(src.indexOf('function followUpSenderFirstName()'), src.indexOf('function buildV3DetailedSummary('));
   assert.match(first, /firstNameOf\(followUpSenderName\(\)\)/, 'the first name of the same account name');
   const fn = src.slice(src.indexOf('function followUpSenderName()'), src.indexOf('function buildV3DetailedSummary('));

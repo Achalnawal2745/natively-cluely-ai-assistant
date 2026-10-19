@@ -217,6 +217,7 @@ const TONE_GUIDANCE: Record<FollowUpTone, string> = {
   warm: 'Tone: warm and personable, still concise.',
   concise: 'Tone: maximally concise; cut every non-essential word.',
   friendly: 'Tone: friendly and approachable.',
+  your_style: "Tone: the sender's own, as described under WRITE IN THE SENDER'S OWN VOICE below.",
 };
 
 export interface FollowUpGenerateParams {
@@ -239,7 +240,8 @@ export interface FollowUpGenerateParams {
   // cleanSenderName() is applied here.
   senderName?: string;
   // How the user writes, learned from their own emails (outputs/writingStyle.ts
-  // renderStyleGuide). Absent when they turned it off or have no samples.
+  // renderStyleGuide). Absent when the mode has no samples. Used only for the
+  // 'your_style' tone (the default when it is given): a preset tone drafts alone.
   styleGuide?: string;
 }
 
@@ -366,8 +368,12 @@ export class FollowUpDraftGenerator {
     const typeGuidance = INCLUDE_NEXT_STEPS ? TYPE_GUIDANCE[type] : TYPE_GUIDANCE_NO_NEXT_STEPS[type];
     const structure = INCLUDE_NEXT_STEPS ? profile.structure : profile.structureNoNextSteps;
     const followUpMeaning = INCLUDE_NEXT_STEPS ? profile.followUp : profile.followUpNoNextSteps;
-    // Tone: explicit caller wins; otherwise the mode's natural default.
-    const tone: FollowUpTone = params.tone || profile.defaultTone;
+    // Tone: explicit caller wins; otherwise the user's own voice when there is one,
+    // else the mode's natural default. 'your_style' with no style (the samples were
+    // removed) falls back to that default too.
+    const givenStyle = typeof params.styleGuide === 'string' ? params.styleGuide.trim().slice(0, 2000) : '';
+    const asked: FollowUpTone = params.tone || (givenStyle ? 'your_style' : profile.defaultTone);
+    const tone: FollowUpTone = asked === 'your_style' && !givenStyle ? profile.defaultTone : asked;
     const signName = signatureName(params.senderName, params.mode);
     // Every mode's draft is an email-shaped message (see TYPE_GUIDANCE) shown in one
     // mail card with a Subject header, so every one gets a subject — not only type
@@ -375,7 +381,8 @@ export class FollowUpDraftGenerator {
     // one. Only the Slack / CRM-note recipe shapes, which no mode produces, go bare.
     const hasSubject = type !== 'slack' && type !== 'crm_note';
     const inputs = this.buildInputs(params.summary);
-    const styleGuide = typeof params.styleGuide === 'string' ? params.styleGuide.trim().slice(0, 2000) : '';
+    // One voice per draft: the style guide only under 'your_style', never beside a preset tone.
+    const styleGuide = tone === 'your_style' ? givenStyle : '';
     // The next-steps rule is the ONLY part of STRICT RULES that legitimately differs
     // between the two INCLUDE_NEXT_STEPS branches. Every other rule — including the
     // plain-text and no-absence-statements rules below — is assembled OUTSIDE this

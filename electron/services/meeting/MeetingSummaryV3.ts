@@ -109,7 +109,10 @@ export type FollowUpDraftType =
   | 'study_notes'
   | 'interview_feedback';
 
-export type FollowUpTone = 'professional' | 'warm' | 'concise' | 'friendly';
+// 'your_style': the user's own voice, from the writing samples of the mode the
+// meeting ran under (Modes Manager). The default when that mode has samples; a
+// preset tone drafts in that tone alone, so the two never pull against each other.
+export type FollowUpTone = 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style';
 
 export interface FollowUpDraft {
   type: FollowUpDraftType;
@@ -230,7 +233,7 @@ const VALID_ACTION_STATUS = new Set(['open', 'done', 'deferred']);
 const VALID_RISK_SEVERITY = new Set(['low', 'medium', 'high']);
 const VALID_TIMELINE_TYPE = new Set<TimelineItemType>(['topic_shift', 'decision', 'action_item', 'risk', 'question']);
 const VALID_FOLLOWUP_TYPE = new Set<FollowUpDraftType>(['email', 'slack', 'project_update', 'crm_note', 'study_notes', 'interview_feedback']);
-const VALID_FOLLOWUP_TONE = new Set<FollowUpTone>(['professional', 'warm', 'concise', 'friendly']);
+const VALID_FOLLOWUP_TONE = new Set<FollowUpTone>(['professional', 'warm', 'concise', 'friendly', 'your_style']);
 
 // Realistic density is 5-12 findings per section per chunk; a well-covered section across
 // 4-10 chunks can legitimately reach ~120 bullets. This cap exists only to bound pathological
