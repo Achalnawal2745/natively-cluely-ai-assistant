@@ -49,7 +49,7 @@ import { useConfirmDialog } from './ui/ConfirmDialog';
 import { ModelSelectorLabel } from './ui/ModelSelectorLabel';
 import { MODEL_SELECTOR_WIDTH } from './ui/modelSelectorLabelText';
 import { Disclosure, DisclosureChevron } from './ui/AccordionSection';
-import { Presence, SettingsMenu, SettingsMotionReady } from './settings/SettingsRow';
+import { Presence, SETTINGS_CARD, SettingsMenu, SettingsMotionReady } from './settings/SettingsRow';
 import { ProfileVisualizer } from '../premium';
 import GlassEffectLayer from './ui/GlassEffectLayer';
 import { GenieModal } from './ui/GenieModal';
@@ -4103,7 +4103,9 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                             {/* Language and its Accent share one row: the accent
                                                 is a refinement of the language beside it, and two short
                                                 selects stacked full-width left most of each card empty. */}
-                                            <div className={currentGroupVariants.length > 1 ? 'grid grid-cols-2 gap-4' : ''}>
+                                            {/* On macOS, System Audio Capture sits beside Language, paired
+                                                like Input and Output Device; Accent then drops under Language. */}
+                                            <div className={isMac || currentGroupVariants.length > 1 ? 'grid grid-cols-2 gap-4 items-start' : ''}>
                                                 <CustomSelect
                                                     label={t("Language")}
                                                     value={displayedSttGroup}
@@ -4119,6 +4121,33 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                     disabled={languageLocked}
                                                     badges={appleLanguageBadges?.group}
                                                 />
+
+                                                {/* System Audio Capture (the SCK backend) — macOS only. The ScreenCaptureKit
+                                                    backend is a CoreAudio alternative implemented in the
+                                                    Rust speaker module under #[cfg(target_os="macos")];
+                                                    Windows audio runs via WASAPI loopback so the toggle
+                                                    has no meaning there and routing "sck" as a device id
+                                                    silently breaks system audio (issue #252 audit / F-003). */}
+                                                {isMac && (
+                                                    /* A CustomSelect card like Language beside it (uppercase label,
+                                                       one control). It was a tile/title/switch card titled "SCK
+                                                       Backend" — the internal name — with a two-line description; a
+                                                       picker names both choices and shows which is on. App reads the
+                                                       flag when a meeting starts, so a change applies from the next one. */
+                                                    <CustomSelect
+                                                        label={t('System Audio Capture')}
+                                                        value={useExperimentalSck ? 'sck' : 'coreaudio'}
+                                                        options={[
+                                                            { deviceId: 'coreaudio', label: t('Core Audio (default)') },
+                                                            { deviceId: 'sck', label: 'ScreenCaptureKit' },
+                                                        ].map((o) => ({ ...o, kind: 'audiooutput' as MediaDeviceKind, groupId: '', toJSON: () => ({}) }))}
+                                                        onChange={(id) => {
+                                                            const useSck = id === 'sck';
+                                                            setUseExperimentalSck(useSck);
+                                                            window.localStorage.setItem('useExperimentalSckBackend', useSck ? 'true' : 'false');
+                                                        }}
+                                                    />
+                                                )}
 
                                                 {/* Variant/Accent Selector (Conditional) — greyed out when the
                                                     active local model's language conditioning is region-neutral
@@ -4309,30 +4338,24 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                     <p className="text-xs text-text-secondary">{t('This model transcribes English only.')}</p>
                                                 </div>
                                             )}
-                                            {/* Not while English is fixed: "detected" would be untrue. */}
-                                            {recognitionLanguage === 'auto' && !showsEnglishFallback && (
+                                            {/* Not while English is fixed: "detected" would be untrue. Only
+                                                once a language was actually detected; no placeholder before. */}
+                                            {recognitionLanguage === 'auto' && !showsEnglishFallback && autoDetectedLanguage && (
                                                 <div className="flex gap-2 items-center mt-2 px-1 settings-swap-in">
                                                     <Info size={14} className="text-text-secondary shrink-0" />
                                                     <p className="text-xs text-text-secondary">
-                                                        {autoDetectedLanguage
-                                                            ? (() => {
-                                                                const label = Object.values(availableLanguages).find((l: any) =>
-                                                                    l.bcp47 === autoDetectedLanguage || l.iso639 === autoDetectedLanguage
-                                                                )?.label as string | undefined;
-                                                                return `${t('Auto mode — detected:')} ${label ?? autoDetectedLanguage}`;
-                                                              })()
-                                                            : t('Detected from the first few seconds of audio.')
-                                                        }
+                                                        {(() => {
+                                                            const label = Object.values(availableLanguages).find((l: any) =>
+                                                                l.bcp47 === autoDetectedLanguage || l.iso639 === autoDetectedLanguage
+                                                            )?.label as string | undefined;
+                                                            return `${t('Auto mode — detected:')} ${label ?? autoDetectedLanguage}`;
+                                                        })()}
                                                     </p>
                                                 </div>
                                             )}
                                         </div>
                                     </div>
 
-                                    {/* ── Dictionary Section ── */}
-                                    <SpeechDictionarySettings sttProvider={sttProvider} />
-                                    <RoomSpeakersSettings sttProvider={sttProvider} />
-                                    <FollowMicDeviceSettings />
 
                                     {/* ── Audio Configuration Section ── */}
                                     <div>
@@ -4505,42 +4528,8 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                 />
                                             </div>
 
-                                            {/* System Audio Capture (the SCK backend) — macOS only. The ScreenCaptureKit
-                                                backend is a CoreAudio alternative implemented in the
-                                                Rust speaker module under #[cfg(target_os="macos")];
-                                                Windows audio runs via WASAPI loopback so the toggle
-                                                has no meaning there and routing "sck" as a device id
-                                                silently breaks system audio (issue #252 audit / F-003). */}
-                                            {isMac && (
-                                                /* A card like its neighbours: Input Device and Output Device are
-                                                   CustomSelect cards (uppercase label, one control), so the capture
-                                                   method is one too, and the hint under it is the Language card's.
-                                                   It was a tile/title/switch card titled "SCK Backend" — the
-                                                   internal name — with a two-line description; a picker names both
-                                                   choices and shows which is on. App reads the flag when a meeting
-                                                   starts, so a change applies from the next one. */
-                                                <div>
-                                                    <CustomSelect
-                                                        label={t('System Audio Capture')}
-                                                        value={useExperimentalSck ? 'sck' : 'coreaudio'}
-                                                        options={[
-                                                            { deviceId: 'coreaudio', label: t('Core Audio (default)') },
-                                                            { deviceId: 'sck', label: 'ScreenCaptureKit' },
-                                                        ].map((o) => ({ ...o, kind: 'audiooutput' as MediaDeviceKind, groupId: '', toJSON: () => ({}) }))}
-                                                        onChange={(id) => {
-                                                            const useSck = id === 'sck';
-                                                            setUseExperimentalSck(useSck);
-                                                            window.localStorage.setItem('useExperimentalSckBackend', useSck ? 'true' : 'false');
-                                                        }}
-                                                    />
-                                                    <div className="flex gap-2 items-center mt-2 px-1">
-                                                        <Info size={14} className="text-text-secondary shrink-0" />
-                                                        <p className="text-xs text-text-secondary">
-                                                            {t("Try ScreenCaptureKit if the other side isn't transcribed.")}
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                            )}
+                                            {/* ── Dictionary ── under the devices, above the mute row. */}
+                                            <SpeechDictionarySettings sttProvider={sttProvider} />
 
                                             {/* Follow the meeting app's mute: while Zoom, Teams or Meet shows
                                                 you muted, your mic is transcribed as silence. Natively only
@@ -4606,6 +4595,20 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                     />
                                                 </div>
                                             </div>
+
+                                            {/* Room speakers and the meeting app's mic close the page, each in
+                                                its own card like the mute and Dictation rows above. */}
+                                            <div className={SETTINGS_CARD}>
+                                                <RoomSpeakersSettings sttProvider={sttProvider} />
+                                            </div>
+                                            {/* macOS only: macOS 14+ names the device a call app is using.
+                                                Windows reports no device name, so the setting could never take
+                                                effect there (followMicDevice.ts; FollowMicDevice2026_10_16 test). */}
+                                            {isMac && (
+                                                <div className={SETTINGS_CARD}>
+                                                    <FollowMicDeviceSettings />
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
