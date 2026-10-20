@@ -2361,7 +2361,9 @@ export const AipModelList: React.FC<AipModelListProps> = ({
                                             onFocus={() => setActiveIndex(i)}
                                             title={inert
                                                 ? t('At least one model must stay on. Turn the provider off to hide it entirely.')
-                                                : m.id}
+                                                // Sidrune's ids carry the internal `fluxion/` routing prefix
+                                                // from before the rebrand; show the id Sidrune itself uses.
+                                                : m.id.replace(/^fluxion\//, '')}
                                             className="aip-model-toggle"
                                         >
                                             <Check size={11} strokeWidth={2.5} className="aip-model-check" aria-hidden="true" />
