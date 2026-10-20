@@ -2,9 +2,10 @@ import React, { useEffect, useState } from 'react';
 import {
     ArrowRight, AudioLines, CalendarCheck, Code, Crop, Eye, FileText, FlaskConical, Ghost, Info, Keyboard, LayoutGrid,
     ListOrdered, MessageSquareText, MonitorUp, MousePointerClick, Move, PanelTop, PointerOff, ShieldCheck, Smartphone,
-    TriangleAlert, UserRound,
+    TriangleAlert,
 } from 'lucide-react';
 import { AutoAnswerIcon } from '../AutoAnswerIcon';
+import { ProfileIntelligenceIcon } from '../ProfileIntelligenceIcon';
 import { useT } from '../../i18n';
 import { useShortcuts, type ShortcutConfig } from '../../hooks/useShortcuts';
 import { isMac, isWindows } from '../../utils/platformUtils';
@@ -371,7 +372,7 @@ const HelpPane: React.FC<{
                         control={onOpenModes && <GoButton label={t('Modes')} onClick={onOpenModes} />}
                     />
                     <SettingsRow
-                        icon={<UserRound size={20} />}
+                        icon={<ProfileIntelligenceIcon size={20} />}
                         title={t('Add your résumé')}
                         badge={
                             <Presence kind="badge" id={status.profile.state === 'locked' ? 'pro' : 'optional'}>
@@ -653,7 +654,7 @@ const HelpPane: React.FC<{
 
                     {/* Profile Intelligence */}
                     <HelpGuideRow
-                        icon={<UserRound size={20} />}
+                        icon={<ProfileIntelligenceIcon size={20} />}
                         title={t('Profile Intelligence')}
                         description={t('Answers built from your résumé and the job you want.')}
                     >

@@ -4,10 +4,11 @@ import { useT } from '../i18n';
 import {
     Github, Twitter, Linkedin, Instagram, Send, Star, Bug, Mail, Heart,
     CalendarCheck, Workflow, Smartphone, ListOrdered,
-    LayoutGrid, Search, FileText, UserRound, PlayCircle,
+    LayoutGrid, Search, FileText, PlayCircle,
     HardDrive, Sliders, Lock, ArrowRight, Check, HandCoins,
 } from 'lucide-react';
 import { AutoAnswerIcon } from './AutoAnswerIcon';
+import { ProfileIntelligenceIcon } from './ProfileIntelligenceIcon';
 import evinProfile from '../assets/evin.png';
 // Each platform's own app icon: the Liquid Glass render macOS shows in the Dock
 // (assets/icons/mac/dock-icon.png) and the Windows icon (assets/icons/png), at
@@ -82,7 +83,7 @@ const WHATS_NEW: AboutItem[] = [
 // pipeline ("Modes" is not step three of anything).
 const HOW_IT_WORKS: AboutItem[] = [
     { title: 'Modes', body: 'Templates like Sales or Interview, plus your own.', Icon: LayoutGrid, go: 'modes' },
-    { title: 'Profile Intelligence', body: 'Resume, job description and company intel.', Icon: UserRound, go: 'profile' },
+    { title: 'Profile Intelligence', body: 'Resume, job description and company intel.', Icon: ProfileIntelligenceIcon, go: 'profile' },
     { title: 'Searches files and meetings', body: 'Indexed locally, on-device or cloud.', Icon: Search, go: 'search' },
     { title: 'Notes after every meeting', body: 'Structured notes and open questions.', Icon: FileText, go: { meeting: DEMO_MEETING_ID, label: 'Demo meeting' } },
 ];
