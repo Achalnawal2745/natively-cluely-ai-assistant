@@ -316,6 +316,80 @@ impl MicrophoneStream {
     }
 }
 
+/// Below this RMS (-80 dBFS) a channel carries nothing a person could be
+/// speaking into — an unconnected interface input or a dead array element.
+const DEAD_CHANNEL_RMS: f32 = 1e-4;
+/// Callback-stack bound for per-channel energy; wider devices keep channel 0.
+const MAX_PICK_CHANNELS: usize = 32;
+
+/// Channel 0 must be continuously dead this long before another channel is
+/// used — far longer than any pause in speech, including mics whose noise
+/// suppression outputs digital zero between words. A per-buffer choice would
+/// hand the user channel to an interface's instrument/hum input or a
+/// speakerphone's far-end reference in every pause.
+const DEAD_CHANNEL_SWITCH_SECS: u64 = 10;
+
+/// Which channel of a multi-channel input to keep. Channel 0, as before,
+/// unless channel 0 has been dead silent for DEAD_CHANNEL_SWITCH_SECS — then
+/// the loudest live channel, until channel 0 carries anything again. Only ever
+/// taking channel 0 left a mic wired to input 2+ of an audio interface as pure
+/// silence. Not averaging: that costs a single live channel 6 dB against the
+/// mic gate, and cancels array mics whose elements are phase-inverted.
+/// Real-time safe: lives in the callback closure, stack array only.
+struct ChannelChooser {
+    channels: usize,
+    current: usize,
+    dead_frames: u64,
+    switch_after_frames: u64,
+}
+
+impl ChannelChooser {
+    fn new(channels: usize, sample_rate: u32) -> Self {
+        Self {
+            channels,
+            current: 0,
+            dead_frames: 0,
+            switch_after_frames: sample_rate as u64 * DEAD_CHANNEL_SWITCH_SECS,
+        }
+    }
+
+    fn pick<T: Copy>(&mut self, data: &[T], to_f32: impl Fn(T) -> f32) -> usize {
+        let channels = self.channels;
+        if channels <= 1 || channels > MAX_PICK_CHANNELS {
+            return 0;
+        }
+        let mut energy = [0f32; MAX_PICK_CHANNELS];
+        let mut frames = 0usize;
+        for frame in data.chunks_exact(channels) {
+            for (c, &s) in frame.iter().enumerate() {
+                let v = to_f32(s);
+                energy[c] += v * v;
+            }
+            frames += 1;
+        }
+        if frames == 0 {
+            return self.current;
+        }
+        let rms = |c: usize| (energy[c] / frames as f32).sqrt();
+        if rms(0) >= DEAD_CHANNEL_RMS {
+            self.current = 0;
+            self.dead_frames = 0;
+            return 0;
+        }
+        self.dead_frames += frames as u64;
+        if self.current == 0 && self.dead_frames >= self.switch_after_frames {
+            let mut best = 0;
+            for c in 1..channels {
+                if rms(c) >= DEAD_CHANNEL_RMS && (best == 0 || energy[c] > energy[best]) {
+                    best = c;
+                }
+            }
+            self.current = best;
+        }
+        self.current
+    }
+}
+
 /// Build input stream with lock-free callback
 ///
 /// The callback ONLY pushes to the ring buffer.
@@ -341,8 +415,10 @@ fn build_input_stream(
         }
     };
 
+    let sample_rate = config.sample_rate().0;
     let stream = match config.sample_format() {
         SampleFormat::F32 => {
+            let mut chooser = ChannelChooser::new(channels, sample_rate);
             let data_ready_f32 = data_ready.clone();
             device.build_input_stream(
                 &config.clone().into(),
@@ -352,8 +428,9 @@ fn build_input_stream(
                     }
                     // REAL-TIME SAFE: Only lock-free push
                     if channels > 1 {
-                        for chunk in data.chunks(channels) {
-                            let _ = producer.try_push(chunk[0]);
+                        let ch = chooser.pick(data, |s| s);
+                        for frame in data.chunks_exact(channels) {
+                            let _ = producer.try_push(frame[ch]);
                         }
                     } else {
                         let _ = producer.push_slice(data);
@@ -371,6 +448,7 @@ fn build_input_stream(
         }
         SampleFormat::I16 => {
             let data_ready_i16 = data_ready.clone();
+            let mut chooser = ChannelChooser::new(channels, sample_rate);
             device.build_input_stream(
                 &config.clone().into(),
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
@@ -379,9 +457,9 @@ fn build_input_stream(
                     }
                     // REAL-TIME SAFE: Convert and push
                     if channels > 1 {
-                        for chunk in data.chunks(channels) {
-                            let sample = chunk[0] as f32 / 32768.0;
-                            let _ = producer.try_push(sample);
+                        let ch = chooser.pick(data, |s| s as f32 / 32768.0);
+                        for frame in data.chunks_exact(channels) {
+                            let _ = producer.try_push(frame[ch] as f32 / 32768.0);
                         }
                     } else {
                         for &sample in data {
@@ -401,6 +479,7 @@ fn build_input_stream(
         }
         SampleFormat::I32 => {
             let data_ready_i32 = data_ready;
+            let mut chooser = ChannelChooser::new(channels, sample_rate);
             device.build_input_stream(
                 &config.clone().into(),
                 move |data: &[i32], _: &cpal::InputCallbackInfo| {
@@ -409,9 +488,9 @@ fn build_input_stream(
                     }
                     // REAL-TIME SAFE: Convert and push
                     if channels > 1 {
-                        for chunk in data.chunks(channels) {
-                            let sample = chunk[0] as f32 / 2147483648.0;
-                            let _ = producer.try_push(sample);
+                        let ch = chooser.pick(data, |s| s as f32 / 2147483648.0);
+                        for frame in data.chunks_exact(channels) {
+                            let _ = producer.try_push(frame[ch] as f32 / 2147483648.0);
                         }
                     } else {
                         for &sample in data {
@@ -446,7 +525,60 @@ impl Drop for MicrophoneStream {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_device_name;
+    use super::{normalize_device_name, ChannelChooser, DEAD_CHANNEL_SWITCH_SECS};
+
+    // 100 Hz keeps "seconds" cheap: one 100-frame buffer = 1 s.
+    const RATE: u32 = 100;
+
+    fn interleave(chans: &[&[f32]]) -> Vec<f32> {
+        (0..chans[0].len()).flat_map(|i| chans.iter().map(move |c| c[i])).collect()
+    }
+    fn second(level: f32) -> Vec<f32> {
+        (0..RATE).map(|i| if i % 2 == 0 { level } else { -level }).collect()
+    }
+
+    #[test]
+    fn chooser_keeps_channel_zero_when_it_is_live() {
+        let mut ch = ChannelChooser::new(2, RATE);
+        // Louder line/hum on input 2 must not steal a working input 1.
+        for _ in 0..30 {
+            assert_eq!(ch.pick(&interleave(&[&second(0.3), &second(0.9)]), |s| s), 0);
+        }
+        // Phase-inverted pair: unchanged (averaging would cancel to zero).
+        let voice = second(0.3);
+        let inverted: Vec<f32> = voice.iter().map(|v| -v).collect();
+        assert_eq!(ch.pick(&interleave(&[&voice, &inverted]), |s| s), 0);
+    }
+
+    #[test]
+    fn chooser_moves_to_a_live_channel_only_after_channel_zero_stays_dead() {
+        let mut ch = ChannelChooser::new(2, RATE);
+        let buf = interleave(&[&second(0.0), &second(0.3)]);
+        // A pause in speech (even 9 s of digital zero) never switches.
+        for _ in 0..(DEAD_CHANNEL_SWITCH_SECS - 1) {
+            assert_eq!(ch.pick(&buf, |s| s), 0);
+        }
+        assert_eq!(ch.pick(&buf, |s| s), 1, "dead for the full window: use input 2");
+        assert_eq!(ch.pick(&buf, |s| s), 1, "and stay there");
+        // Channel 0 carries anything again: straight back, window restarts.
+        assert_eq!(ch.pick(&interleave(&[&second(0.3), &second(0.3)]), |s| s), 0);
+        assert_eq!(ch.pick(&buf, |s| s), 0);
+    }
+
+    #[test]
+    fn chooser_stays_on_zero_when_every_channel_is_dead() {
+        let mut ch = ChannelChooser::new(4, RATE);
+        let silent = interleave(&[&second(0.0), &second(0.0), &second(0.0), &second(0.0)]);
+        for _ in 0..(DEAD_CHANNEL_SWITCH_SECS * 2) {
+            assert_eq!(ch.pick(&silent, |s| s), 0);
+        }
+    }
+
+    #[test]
+    fn chooser_is_a_no_op_for_mono_and_huge_channel_counts() {
+        assert_eq!(ChannelChooser::new(1, RATE).pick(&[0.0f32, 0.0, 0.0], |s| s), 0);
+        assert_eq!(ChannelChooser::new(64, RATE).pick(&vec![0.0f32; 64], |s| s), 0);
+    }
 
     #[test]
     fn normalize_strips_wasapi_index_prefix() {

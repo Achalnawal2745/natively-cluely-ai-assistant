@@ -20,7 +20,9 @@ import * as crypto from "crypto"
 import path from "path"
 import fs from "fs"
 import os from "os"
+import { windowsMicPage } from '../src/lib/micPermissionPolicy.mjs'
 import { SystemAudioHealthClassifier } from "./audio/systemAudioHealthClassifier.mjs"
+import { OutputRouteMismatchDetector } from "./audio/outputRouteMismatch.mjs"
 import { FatalMainProcessCoordinator } from "./utils/fatalMainProcess"
 import { installResilientDnsLookup } from "./utils/resilientDnsLookup"
 import { resolveDebugLogPath } from "./utils/debugLogPath.mjs"
@@ -1035,8 +1037,9 @@ type PermissionReason =
   | 'mic-denied'
   | 'mic-zero-fill'
   | 'mac-same-device-input-output'
-  | 'system-audio-stuck';
-function formatPermissionMessage(reason: PermissionReason, extra?: { device?: string }): string {
+  | 'system-audio-stuck'
+  | 'output-route-mismatch';
+function formatPermissionMessage(reason: PermissionReason, extra?: { device?: string; captured?: string }): string {
   const isMac = process.platform === 'darwin';
   switch (reason) {
     case 'screen-recording-denied':
@@ -1066,14 +1069,27 @@ function formatPermissionMessage(reason: PermissionReason, extra?: { device?: st
       // than leak macOS UI strings to Windows users.
       if (!isMac) return formatPermissionMessage('system-audio-stuck');
       return 'System audio is arriving silent. Toggle Natively off and on under Privacy & Security → Screen Recording, then restart.';
+    // Windows has no per-app toggle for desktop (Win32) apps — "enable Natively"
+    // sent users hunting for an entry that never exists. The gate is the
+    // desktop-apps switch; its wording and page path differ between Windows 10
+    // and 11, so they come from the same table the onboarding uses.
     case 'mic-denied':
-      return isMac
-        ? 'Enable Natively under Privacy & Security → Microphone, then restart.'
-        : 'Enable Natively under Settings → Privacy → Microphone, then restart.';
-    case 'mic-zero-fill':
-      return isMac
-        ? "Check the device isn't muted, and that Natively is enabled under Privacy & Security → Microphone."
-        : "Check the device isn't muted, and that Natively is enabled under Settings → Privacy → Microphone.";
+    case 'mic-zero-fill': {
+      if (isMac) {
+        return reason === 'mic-denied'
+          ? 'Enable Natively under Privacy & Security → Microphone, then restart.'
+          : "Check the device isn't muted, and that Natively is enabled under Privacy & Security → Microphone.";
+      }
+      // os.release() is "10.0.<build>" on both releases; Windows 11 is build
+      // 22000+. windowsMicPage takes the renderer's platformVersion scale
+      // (Windows 11 = 13+), so map onto it.
+      const build = Number.parseInt(os.release().split('.')[2] ?? '', 10);
+      const page = windowsMicPage(Number.isFinite(build) && build < 22000 ? 10 : 13);
+      const where = `"${page.switches[2]}" in Windows ${page.path.join(' → ')}`;
+      return reason === 'mic-denied'
+        ? `Turn on ${where}, then restart.`
+        : `Check the device isn't muted, and that ${where} is on.`;
+    }
     case 'mac-same-device-input-output':
       // Defense-in-depth: see comment on `mac-screen-recording-revoked-rebuild`.
       // The CoreAudio Process Tap same-device limitation is macOS-specific;
@@ -1082,6 +1098,10 @@ function formatPermissionMessage(reason: PermissionReason, extra?: { device?: st
       return `macOS can't tap ${extra?.device ?? 'this device'} while it's also the active mic. Switch input to the built-in mic, or output to the built-in speakers.`;
     case 'system-audio-stuck':
       return 'If your meeting app outputs to a different device (headset, virtual cable, second display), switch it to your default output.';
+    case 'output-route-mismatch':
+      // Windows-only emitter (per-endpoint output peaks); the wording is
+      // platform-neutral regardless.
+      return `Audio is playing on ${extra?.device ?? 'another device'}, but Natively is listening to ${extra?.captured ?? 'a different one'}. Choose ${extra?.device ?? 'that device'} as the output in Settings → Audio.`;
   }
 }
 
@@ -1123,6 +1143,8 @@ function permissionTitleKey(reason: PermissionReason): string {
       return 'Input and Output Are the Same Device';
     case 'system-audio-stuck':
       return 'No System Audio for 8s';
+    case 'output-route-mismatch':
+      return 'Meeting Audio on Another Device';
   }
 }
 
@@ -4330,6 +4352,13 @@ export class AppState {
     let chunkCount = 0;
     // Rate of the PCM this capture emits, for gap recovery (read once, then on change).
     let gapRate = 0;
+    let firstChunkAtMs = 0;
+    // Callers assign this.systemAudioCapture before wiring; the old capture's
+    // quiet time must not be read as this one's (route-mismatch watcher).
+    if (this.systemAudioCapture === capture) {
+      this._systemAudioQuietSinceMs = 0;
+      this._systemAudioHeardSignal = false;
+    }
     // Watchdog: if no chunks arrive within 8s of capture start, the most likely
     // causes are (a) Screen Recording permission was revoked between the TCC
     // check and SCK init, (b) the meeting app routes audio to a device the
@@ -4415,6 +4444,13 @@ export class AppState {
     let stuckTimer: NodeJS.Timeout | null = null;
     const armStuckWatchdog = () => {
       handleSystemAudioHealthDecision(systemAudioHealth.handle({ kind: 'capture-started', nowMs: Date.now() }));
+      // A restart of this same wrapper (mic recovery pauses and resumes system
+      // audio) is a new stream: its age and quiet time start over too.
+      firstChunkAtMs = 0;
+      if (this.systemAudioCapture === capture) {
+        this._systemAudioQuietSinceMs = 0;
+        this._systemAudioHeardSignal = false;
+      }
       if (stuckTimer) clearTimeout(stuckTimer);
       stuckTimer = setTimeout(() => {
         if (this.systemAudioCapture !== capture) return; // capture was replaced
@@ -4467,6 +4503,28 @@ export class AppState {
       if (chunkCount === 1 && stuckTimer) {
         clearTimeout(stuckTimer);
         stuckTimer = null;
+      }
+      // Route-mismatch watcher input: when this capture last carried real
+      // signal (its first chunk, until it ever does) and whether it ever has.
+      if (this.systemAudioCapture === capture) {
+        const heardAt = systemAudioHealth.lastMeaningfulSignalAtMs;
+        this._systemAudioQuietSinceMs = heardAt ?? (firstChunkAtMs || now);
+        this._systemAudioHeardSignal = heardAt != null;
+      }
+      // A capture that has delivered audio for a minute proves the last
+      // recovery worked, so later unrelated failures get a fresh 3-attempt
+      // budget. Before, three failures spread over hours exhausted it for the
+      // rest of the meeting (and the fourth now raises a terminal banner).
+      if (firstChunkAtMs === 0) {
+        firstChunkAtMs = now;
+      } else if (
+        this._systemAudioRecoveryAttempts > 0
+        && now - firstChunkAtMs >= 60_000
+        && this.systemAudioCapture === capture
+        && !this._systemAudioRecoveryInProgress
+      ) {
+        this._systemAudioRecoveryAttempts = 0;
+        this._systemAudioConsecutiveFailures = 0;
       }
       if (!this._sysSttRateApplied && this.googleSTT && this.systemAudioCapture === capture) {
         const rate = capture.getSampleRate();
@@ -5147,6 +5205,11 @@ export class AppState {
   }): void {
     console.log(`[Main] device-selection-applied:`, payload);
     this.sendToSettingsSurfaces('device-selection-applied', payload);
+    // The overlay (NativelyInterface) clears a stale "system audio gave up"
+    // banner when a rebuild lands on a working device. Not via
+    // sendToMeetingSurfaces: the launcher already got it above.
+    const overlay = this.windowHelper.getOverlayWindow();
+    if (overlay) this.sendToWindow(overlay, 'device-selection-applied', payload);
   }
 
   /**
@@ -5917,6 +5980,33 @@ export class AppState {
         console.warn(
           `[AudioRecovery] Skipping recovery — already in progress or max attempts (${this._systemAudioRecoveryAttempts}/3) reached.`,
         );
+        // Native init failures (CoreAudio tap + SCK both failing, WASAPI init
+        // timeout) arrive asynchronously through this handler AFTER the
+        // recovery's synchronous start() "succeeded", so the catch below never
+        // sees them. The error that lands here after the third recovery is the
+        // only evidence that recovery is exhausted — make it terminal, or the
+        // renderer (which hides non-terminal banners) shows nothing at all.
+        // Attempts is bumped past 3 so this fires once; every reset site
+        // (meeting start, route change, wake) re-arms it by zeroing the counter.
+        if (!this._systemAudioRecoveryInProgress && this._systemAudioRecoveryAttempts === 3 && isRecoveryCurrentMeeting()) {
+          this._systemAudioRecoveryAttempts++;
+          // Wait out one default-output watcher tick (4s) first. Unplugging
+          // the device the capture was bound to fails it AND changes the
+          // default output; the route flow then rebuilds the capture and zeroes
+          // the counter, and a "gave up" banner would sit over working audio.
+          const failedCapture = this.systemAudioCapture;
+          setTimeout(() => {
+            if (!isRecoveryCurrentMeeting()) return;
+            if (this.systemAudioCapture !== failedCapture || this._systemAudioRecoveryAttempts !== 4) return;
+            this.sendAudioCaptureFailed({
+              channel: 'system',
+              message: `System audio capture gave up after 3 attempts. Last error: ${err.message}`,
+              attempt: 3,
+              maxAttempts: 3,
+              terminal: true,
+            });
+          }, 5000).unref?.();
+        }
         return;
       }
 
@@ -6016,6 +6106,7 @@ export class AppState {
             maxAttempts: 3,
             terminal: true,
           });
+          this._systemAudioRecoveryAttempts++; // terminal sent — see the skip branch above
         }
       } finally {
         this._systemAudioRecoveryInProgress = false;
@@ -6106,6 +6197,110 @@ export class AppState {
       this._defaultOutputWatcherInterval = null;
     }
     this._lastObservedDefaultOutputId = null;
+    this.stopOutputRouteMismatchWatcher();
+  }
+
+  // ── Output-route mismatch (Windows, 2026-10-21) ───────────────────────────
+  // WASAPI loopback hears one endpoint. A meeting app on a different one (the
+  // eCommunications default Teams/Zoom use, or a device picked in the app's own
+  // settings) gave a transcript with no interviewer and no banner — the case
+  // the windows.rs LIMITATION note tracks. Each endpoint's live output peak
+  // tells us where audio is actually playing; outputRouteMismatch.mjs decides
+  // when that is evidence enough to re-target the capture or warn. macOS has
+  // no per-device output meter (probeOutputRoutes is empty there), so this
+  // is Windows-only; the macOS route watcher above follows the default output.
+  private _outputRouteMismatchInterval: NodeJS.Timeout | null = null;
+  private readonly _outputRouteMismatch = new OutputRouteMismatchDetector();
+  /** When the live system capture last carried real signal (or first chunked); 0 = no chunk yet. */
+  private _systemAudioQuietSinceMs = 0;
+  /** The live system capture has carried real signal at least once. */
+  private _systemAudioHeardSignal = false;
+  private _outputRouteProbeInFlight = false;
+
+  private startOutputRouteMismatchWatcher(): void {
+    if (process.platform !== 'win32' || this._outputRouteMismatchInterval) return;
+    const NativeModule: any = loadNativeModule();
+    if (!NativeModule || typeof NativeModule.probeOutputRoutes !== 'function') {
+      console.log('[OutputRouteMismatch] Native probeOutputRoutes unavailable — skipping.');
+      return;
+    }
+    this._outputRouteMismatch.reset();
+    this._outputRouteMismatchInterval = setInterval(() => {
+      this.checkOutputRouteMismatch(NativeModule).catch((err) => {
+        console.warn('[OutputRouteMismatch] Probe failed:', err);
+      });
+    }, 1000);
+    this._outputRouteMismatchInterval.unref?.();
+  }
+
+  private stopOutputRouteMismatchWatcher(): void {
+    if (this._outputRouteMismatchInterval) {
+      clearInterval(this._outputRouteMismatchInterval);
+      this._outputRouteMismatchInterval = null;
+    }
+  }
+
+  private async checkOutputRouteMismatch(NativeModule: any): Promise<void> {
+    if (this._isQuitting || !this.isMeetingActive) return;
+    if (this._defaultOutputSwitchInProgress || this._systemAudioRecoveryInProgress) return;
+    if (this._outputRouteProbeInFlight) return;
+    const capture = this.systemAudioCapture;
+    if (!capture) return;
+    // Only spend the probe while the capture is quiet — a mismatch is invisible
+    // while it is carrying the interviewer, and the detector needs no history
+    // older than its 5s window.
+    if (this._systemAudioQuietSinceMs === 0 || Date.now() - this._systemAudioQuietSinceMs < 1000) return;
+
+    let probe: { peaks: { id: string; peak: number }[]; defaultId: string; commsId: string };
+    this._outputRouteProbeInFlight = true;
+    try {
+      probe = await NativeModule.probeOutputRoutes();
+    } finally {
+      this._outputRouteProbeInFlight = false;
+    }
+    // The world may have moved while the worker ran.
+    if (this._isQuitting || !this.isMeetingActive || this.systemAudioCapture !== capture) return;
+    if (this._defaultOutputSwitchInProgress || this._systemAudioRecoveryInProgress) return;
+
+    const { peaks, defaultId, commsId } = probe;
+    const capturedId = capture.getRequestedDeviceId() || defaultId;
+    const decision = this._outputRouteMismatch.observe({
+      nowMs: Date.now(),
+      quietSinceMs: this._systemAudioQuietSinceMs,
+      heardSignal: this._systemAudioHeardSignal,
+      capturedId,
+      explicit: !!this._lastRequestedOutputDeviceId,
+      defaultId,
+      commsId,
+      peaks,
+    });
+    if (decision.type === 'none') return;
+
+    let names = new Map<string, string>();
+    try {
+      names = new Map((NativeModule.getOutputDevices?.() || []).map((d: { id: string; name: string }) => [d.id, d.name]));
+    } catch { /* names are cosmetic */ }
+    const playing = names.get(decision.deviceId) || 'another output device';
+    const listening = names.get(capturedId) || 'the default output';
+
+    if (decision.type === 'switch') {
+      console.warn(`[OutputRouteMismatch] Audio is playing on "${playing}" while the capture on "${listening}" is silent — re-targeting system audio.`);
+      this.handleDefaultOutputChanged(undefined, decision.deviceId).catch((err) => {
+        console.error('[OutputRouteMismatch] Re-target failed:', err);
+      });
+      return;
+    }
+    const message = formatPermissionMessage('output-route-mismatch', { device: playing, captured: listening });
+    console.warn(`[OutputRouteMismatch] ${message}`);
+    this.sendAudioCaptureFailed({
+      channel: 'system',
+      message,
+      titleKey: permissionTitleKey('output-route-mismatch'),
+      attempt: 0,
+      maxAttempts: 3,
+      terminal: false,
+      stuck: true,
+    });
   }
 
   // ── ScreenCaptureKit re-probe (macOS, 2026-09-11) ─────────────────────────
@@ -6206,7 +6401,11 @@ export class AppState {
     this.stopSckReprobeWatcher();
   }
 
-  private async handleDefaultOutputChanged(currentId?: string): Promise<void> {
+  /**
+   * @param bindToDeviceId set by the Windows output-route-mismatch watcher: bind
+   *   the rebuilt capture to this endpoint instead of following the default.
+   */
+  private async handleDefaultOutputChanged(currentId?: string, bindToDeviceId?: string): Promise<void> {
     const meetingGeneration = this._meetingGeneration;
     const isCurrentMeeting = () => this.isMeetingActive && this._meetingGeneration === meetingGeneration;
     if (this._isQuitting) return;
@@ -6296,20 +6495,24 @@ export class AppState {
       // Pass undefined (not the new device id) so CoreAudio picks up the new
       // default at construction time. This is intentional: binding to a
       // stable id would defeat the whole point of "follow the user's route".
-      const fresh = new SystemAudioCapture(undefined);
+      // The one exception is a Windows route-mismatch re-target, which names
+      // the endpoint the meeting is actually playing on.
+      const fresh = new SystemAudioCapture(bindToDeviceId);
       this.systemAudioCapture = fresh;
-      this.wireSystemCapture(fresh, '(RouteChanged)');
+      this.wireSystemCapture(fresh, bindToDeviceId ? '(RouteMismatch)' : '(RouteChanged)');
       fresh.start();
       // Tell the renderer what's happening so any "interviewer went silent"
       // banners can clear once chunks resume.
       this.broadcastDeviceSelection({
         kind: 'output',
         requested: null,
-        actual: 'default',
+        actual: bindToDeviceId ?? 'default',
         fellBack: false,
-        reason: 'output-route-changed',
+        reason: bindToDeviceId ? 'output-route-mismatch' : 'output-route-changed',
       });
-      console.log('[DefaultOutputWatcher] CoreAudio Tap rebound to new default output.');
+      console.log(bindToDeviceId
+        ? '[OutputRouteMismatch] System audio re-targeted to the endpoint the meeting is playing on.'
+        : '[DefaultOutputWatcher] CoreAudio Tap rebound to new default output.');
       this._routeChangeRebuildFailures = 0;
     } catch (err) {
       // F2 (code-review 2026-08-14): the observation was committed BEFORE the
@@ -7228,6 +7431,7 @@ export class AppState {
         // export.
         this.startDefaultOutputWatcher();
         this.startSckReprobeWatcher();
+        this.startOutputRouteMismatchWatcher();
 
         if (this._verboseLogging) {
           const requestedInput = metadata?.audio?.inputDeviceId || 'default';

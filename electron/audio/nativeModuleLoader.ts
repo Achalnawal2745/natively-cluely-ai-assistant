@@ -292,6 +292,7 @@ export function loadNativeModule(): NativeModule | null {
         ? [devPath, devFallbackPath, ...(packagedPath ? [packagedPath] : [])]
         : [...(packagedPath ? [packagedPath] : []), devPath, devFallbackPath];
 
+    const failures: string[] = [];
     for (const filePath of candidates) {
         try {
             const mod = require(filePath);
@@ -307,13 +308,18 @@ export function loadNativeModule(): NativeModule | null {
             // "failed to load from all paths" error below still fires loudly
             // if every candidate fails.
             const msg = err instanceof Error ? err.message : String(err);
+            failures.push(`${filePath}: ${msg}`);
             if (verboseLogging) {
                 console.warn(`[nativeModuleLoader] Could not load from ${filePath}: ${msg}`);
             }
         }
     }
 
-    console.error(`[nativeModuleLoader] Failed to load ${binary} from all ${candidates.length} candidate paths.`);
+    // The per-path reasons are the only diagnosis a user's debug log can carry
+    // (a missing VC++ runtime on Windows, a wrong-arch or unsigned dylib on
+    // macOS) — without them every capture fails as "Native audio engine
+    // unavailable" with no cause.
+    console.error(`[nativeModuleLoader] Failed to load ${binary} from all ${candidates.length} candidate paths:\n  ${failures.join('\n  ')}`);
     cached = null;
     return null;
 }

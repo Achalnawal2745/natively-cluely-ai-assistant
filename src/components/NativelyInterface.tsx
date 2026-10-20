@@ -2989,6 +2989,22 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
     return () => unsub?.();
   }, []);
 
+  // A route flow (default-output change, device-mismatch switch, Settings
+  // reconfigure) just rebuilt the system capture on a working device, so a
+  // terminal "system audio gave up" banner describes a capture that no longer
+  // exists. Only terminal ones: a non-terminal warning (e.g. "meeting audio is
+  // on another device") may still be true, and is shown once per meeting.
+  // Permission banners are left alone — a rebuild fixes neither.
+  useEffect(() => {
+    const unsub = window.electronAPI?.onDeviceSelectionApplied?.((payload) => {
+      if (payload.kind !== 'output' || payload.fellBack) return;
+      setSystemAudioWarning((w) => (
+        w?.kind === 'audio-capture-failure' && w.channel === 'system' && w.terminal ? null : w
+      ));
+    });
+    return () => unsub?.();
+  }, []);
+
   // PR #173: STT not configured warning — shown when provider is 'none' during a meeting
   const [sttNotConfigured, setSttNotConfigured] = useState(false);
   useEffect(() => {
