@@ -4,8 +4,9 @@ import * as crypto from 'crypto';
 import { repairCapReached, endsInsideFence } from './llm/repairCap';
 import { AntigravityService, initializeAntigravityLifecycle } from './services/AntigravityService';
 import { buildEmbeddingConfig } from './rag/embeddingConfigIdentity';
-import { app, BrowserWindow, dialog, desktopCapturer, ipcMain, nativeImage, shell, systemPreferences } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, desktopCapturer, ipcMain, nativeImage, shell, systemPreferences } from 'electron';
 import { setOpenAtLogin, getOpenAtLogin } from './utils/windowsTaskbarPolicy';
+import { normalizeMeetingSurface } from './utils/meetingSurface';
 import { micSettingsUri } from '../src/lib/micPermissionPolicy.mjs';
 import { resolveMacScreenStatus } from '../src/lib/permissionAttentionPolicy.mjs';
 import { hasOwnAiKey, resolveExpiredTrial } from '../src/lib/trialPolicy.mjs';
@@ -1620,6 +1621,10 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle('show-window', async (event, inactive?: boolean) => {
+    // A notepad meeting keeps the overlay hidden against its own renderer's
+    // show requests (WindowHelper.isOverlayHeldHidden).
+    const wh = appState.getWindowHelper();
+    if (wh.isOverlayHeldHidden() && wh.getOverlayWindow()?.webContents.id === event.sender.id) return;
     // Default show main window (Launcher usually)
     appState.showMainWindow(inactive);
   });
@@ -15097,6 +15102,18 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
+  // The notepad's mic picker: the running meeting switches at once (the
+  // renderer saves the choice for the next meeting, as Settings › Audio does).
+  safeHandle('meeting:set-input-device', async (_, deviceId: unknown) => {
+    if (deviceId !== null && typeof deviceId !== 'string') return { success: false };
+    try {
+      return { success: await appState.switchMeetingInputDevice(deviceId as string | null) };
+    } catch (err) {
+      console.warn('[IPC] meeting:set-input-device failed:', err);
+      return { success: false };
+    }
+  });
+
   safeHandle('set-recognition-language', async (_, key: string) => {
     appState.setRecognitionLanguage(key);
     return { success: true };
@@ -15445,10 +15462,15 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Meeting Notes V3 — regenerate the full structured notes for a saved meeting, optionally
   // with a different mode (templateType) and follow-up tone. Runs the map-reduce pipeline on
   // the stored transcript off the UI thread; honors the post_call_summary data scope.
-  safeHandle('regenerate-meeting-summary', async (_, { id, templateType, modeId, tone }: { id: string; templateType?: string; modeId?: string; tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style' }) => {
+  safeHandle('regenerate-meeting-summary', async (_, { id, templateType, modeId, noteTemplateId, tone }: { id: string; templateType?: string; modeId?: string; noteTemplateId?: string | null; tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style' }) => {
     if (!id || typeof id !== 'string') return { success: false, error: 'invalid id' };
     if (modeId !== undefined && typeof modeId !== 'string') modeId = undefined;
     if (templateType !== undefined && typeof templateType !== 'string') templateType = undefined;
+    // A note template (noteTemplates.ts): null writes the notes without one.
+    if (noteTemplateId !== undefined && noteTemplateId !== null) {
+      const { noteTemplateById } = require('./services/meeting/noteTemplates') as typeof import('./services/meeting/noteTemplates');
+      if (!noteTemplateById(noteTemplateId)) return { success: false, error: 'unknown_template' };
+    }
     const mgr = appState.getIntelligenceManager();
     if (!mgr) return { success: false, error: 'intelligence manager unavailable' };
     // Regenerating AS a different mode (the "Regenerate notes as Sales" suggestion
@@ -15458,7 +15480,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     // regenerate (no override) keeps the meeting's own mode and is never gated.
     // The meeting page's template picker goes through here too (notesTemplateGate.ts).
     const { regenerateGate } = require('./services/meeting/notesTemplateGate') as typeof import('./services/meeting/notesTemplateGate');
-    const refused = regenerateGate({ modeId, templateType }, {
+    const refused = regenerateGate({ modeId, templateType, noteTemplateId }, {
       templateOfMode: (id) => {
         const { ModesManager } = require('./services/ModesManager');
         return ModesManager.getInstance().getModes().find((m: { id: string }) => m.id === id)?.templateType;
@@ -15466,7 +15488,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       isProOrTrialActive,
     });
     if (refused) return { success: false, error: refused };
-    const ok = await mgr.regenerateMeetingSummary(id, { templateType, modeId, tone });
+    const ok = await mgr.regenerateMeetingSummary(id, { templateType, modeId, noteTemplateId, tone });
     return { success: ok };
   });
 
@@ -16633,6 +16655,13 @@ export function initializeIpcHandlers(appState: AppState): void {
     appState.getMeetingAutoStop?.()?.keepGoing();
     return { success: true };
   });
+  // Pause / resume transcription (the notepad's pill; services/meeting/transcriptionPause.ts).
+  safeHandle('meeting:get-transcription-paused', async () => appState.isTranscriptionPaused());
+  safeHandle('meeting:set-transcription-paused', async (_, paused: unknown) => {
+    if (typeof paused !== 'boolean') return { success: false, paused: appState.isTranscriptionPaused() };
+    const ok = appState.setTranscriptionPaused(paused);
+    return { success: ok, paused: appState.isTranscriptionPaused() };
+  });
   // The user is typing in the overlay: no auto-stop under their hands.
   // Fire-and-forget from the renderer, throttled there.
   safeOn('meeting-auto-stop-typing', () => {
@@ -16653,10 +16682,196 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
   safeHandle('notes-window:is-open', async () => appState.notesWindowHelper.isVisible());
+  // Settings › Overlay's switcher: what a meeting opens, the overlay or the
+  // notepad (utils/meetingSurface.ts; read at every meeting start).
+  safeHandle('meeting-surface:get', async () => normalizeMeetingSurface(SettingsManager.getInstance().get('meetingSurface')));
+  safeHandle('meeting-surface:set', async (_, surface: unknown) => {
+    if (surface !== 'overlay' && surface !== 'notepad') return { success: false };
+    if (!SettingsManager.getInstance().set('meetingSurface', surface)) return { success: false, error: 'settings_store_degraded' };
+    return { success: true };
+  });
   safeHandle('live-notes:get-state', async () => appState.getLiveNotes().getState());
+  // The notes window's heading (2026-10-20, laid out like Granola's): the
+  // running meeting's title and how many people, from its calendar event once
+  // linked (SessionCalendarLinker fills that in a few seconds after the start,
+  // so the window asks again while the meeting runs).
+  // The notepad's heading (NotesWindow.tsx): the running meeting's title, its
+  // event (time, Join, people) and the names its transcript uses. The title is
+  // the session's (the user's, else the linked event's), then the event's.
+  const liveMeta = (create: boolean): any => {
+    let meta: any = null;
+    try { meta = appState.getIntelligenceManager().liveMeetingMetadata(); } catch { /* no session */ }
+    if (!meta && create) {
+      meta = {};
+      appState.getIntelligenceManager().setMeetingMetadata(meta);
+    }
+    return meta;
+  };
+  safeHandle('live-notes:meeting-info', async () => {
+    if (!appState.getIsMeetingActive()) return { live: false, title: null, people: 0 };
+    const meta = liveMeta(false);
+    const event = meta?.calendarEvent;
+    const title = typeof meta?.title === 'string' && meta.title.trim() ? meta.title.trim()
+      : typeof event?.title === 'string' && event.title.trim() ? event.title.trim() : null;
+    const attendees: Array<{ email: string; name: string | null }> = Array.isArray(event?.attendees)
+      ? event.attendees
+        .filter((a: any) => a && typeof a.email === 'string' && a.email)
+        .map((a: any) => ({ email: a.email, name: typeof a.name === 'string' && a.name.trim() ? a.name.trim() : null }))
+      : [];
+    let selfEmail: string | null = null;
+    try {
+      const { CalendarManager } = require('./services/CalendarManager');
+      selfEmail = CalendarManager.getInstance().getConnectionStatus()?.email ?? null;
+    } catch { /* no calendar */ }
+    let speakers = { me: 'You', them: 'Them' };
+    try {
+      const { calendarSpeakerLabels } = require('./services/calendar/calendarSessionMatch');
+      const labels = calendarSpeakerLabels(event, appState.getCurrentUserName?.() ?? undefined);
+      // A first name for the other side only in a two-person call; "You" stays "You".
+      if (labels?.speaker_1 && attendees.length === 2) speakers = { me: 'You', them: labels.speaker_1 };
+    } catch { /* the plain names */ }
+    return {
+      live: true,
+      title,
+      people: attendees.length,
+      event: event && typeof event.id === 'string'
+        ? { id: event.id, title: event.title ?? null, startTime: event.startTime ?? null, endTime: event.endTime ?? null, link: typeof event.link === 'string' ? event.link : null }
+        : null,
+      attendees,
+      selfEmail,
+      speakers,
+    };
+  });
+  // The heading's title, typed by the user: the meeting is saved under it (the
+  // calendar linker and the notes' own title never replace a title it did not set).
+  // The folder button beside the chip: the folders and which this meeting is in (held until it is saved).
+  safeHandle('live-notes:folders', async () => {
+    const { organiseStore } = require('./services/organise/organiseService');
+    const folders = organiseStore()?.listFolders?.() ?? [];
+    const live = appState.getLiveNotes();
+    let mine = new Set<string>(live.getFolders());
+    const { phase, meetingId } = live.getState();
+    if (phase === 'ended' && meetingId) {
+      try { mine = new Set(organiseStore()?.foldersOfMeeting?.(meetingId) ?? [...mine]); } catch { /* the held set */ }
+    }
+    return folders.map((f: any) => ({ id: f.id, name: f.name, inFolder: mine.has(f.id) }));
+  });
+  safeHandle('live-notes:set-folder', async (_event, args: { folderId?: unknown; inFolder?: unknown }) => {
+    return { success: appState.getLiveNotes().setFolder(args?.folderId, args?.inFolder) };
+  });
+  safeHandle('live-notes:create-folder', async (_event, name: unknown) => {
+    if (typeof name !== 'string' || !name.trim()) return null;
+    const { organiseStore } = require('./services/organise/organiseService');
+    const folder = organiseStore()?.createFolder?.(name.trim().slice(0, 80)) ?? null;
+    return folder ? { id: folder.id, name: folder.name } : null;
+  });
+  // The notepad's template ("/" › Templates, All templates…): the sections the
+  // running (or next) meeting's notes are written in. Notes only, live answers
+  // keep the mode. Pro or a live trial, as Regenerate in a template; clearing
+  // (null) never asks for either.
+  safeHandle('live-notes:set-template', async (_event, id: unknown) => {
+    const mgr = appState.getIntelligenceManager();
+    if (!mgr) return { success: false };
+    if (id === null) return { success: mgr.setLiveNoteTemplate(null) };
+    const { noteTemplateById } = require('./services/meeting/noteTemplates') as typeof import('./services/meeting/noteTemplates');
+    if (!noteTemplateById(id)) return { success: false, error: 'unknown_template' };
+    const { noteTemplateGate } = require('./services/meeting/notesTemplateGate') as typeof import('./services/meeting/notesTemplateGate');
+    if (noteTemplateGate(id as string, isProOrTrialActive)) return { success: false, error: 'pro_required' };
+    return { success: mgr.setLiveNoteTemplate(id as string) };
+  });
+  safeHandle('live-notes:get-template', async () => appState.getIntelligenceManager()?.getLiveNoteTemplate() ?? null);
+  safeHandle('live-notes:set-title', async (_event, title: unknown) => {
+    if (!appState.getIsMeetingActive() || typeof title !== 'string') return { success: false };
+    const next = title.replace(/\s+/g, ' ').trim().slice(0, 120);
+    const meta = liveMeta(true);
+    if (next) meta.title = next;
+    else delete meta.title;
+    return { success: true, title: next || null };
+  });
+  // The event popover's "Link a different event": the calendar's events around now.
+  safeHandle('live-notes:calendar-candidates', async () => {
+    if (!appState.getIsMeetingActive()) return [];
+    try {
+      const { CalendarManager } = require('./services/CalendarManager');
+      const { toEventSnapshot } = require('./services/calendar/calendarSessionMatch');
+      const now = Date.now();
+      const events = await CalendarManager.getInstance().getEventsBetween(now - 3 * 60 * 60_000, now + 60 * 60_000);
+      return events
+        .filter((e: any) => e.selfResponse !== 'declined')
+        .sort((a: any, b: any) => Math.abs(Date.parse(a.startTime) - now) - Math.abs(Date.parse(b.startTime) - now))
+        .slice(0, 8)
+        .map((e: any) => {
+          const snap = toEventSnapshot(e, 'user');
+          return { id: snap.id, title: snap.title, startTime: snap.startTime, endTime: snap.endTime, people: Array.isArray(snap.attendees) ? snap.attendees.length : 0 };
+        });
+    } catch (error: any) {
+      console.error('[IPC] live-notes:calendar-candidates failed:', error?.message);
+      return [];
+    }
+  });
+  // Link the running meeting to an event the user picked (or none). The title
+  // follows the event unless the user typed one.
+  safeHandle('live-notes:link-event', async (_event, input: { eventId?: unknown; keepTitle?: unknown }) => {
+    if (!appState.getIsMeetingActive()) return { success: false };
+    const eventId = input?.eventId;
+    const meta = liveMeta(true);
+    const oldEventTitle = typeof meta.calendarEvent?.title === 'string' ? meta.calendarEvent.title : null;
+    const titleFollowsEvent = !meta.title || meta.title === oldEventTitle;
+    if (eventId === null) {
+      delete meta.calendarEventId;
+      delete meta.calendarEvent;
+      meta.source = 'manual';
+      if (titleFollowsEvent) delete meta.title;
+      return { success: true };
+    }
+    if (typeof eventId !== 'string' || !eventId) return { success: false };
+    try {
+      const { CalendarManager } = require('./services/CalendarManager');
+      const { toEventSnapshot } = require('./services/calendar/calendarSessionMatch');
+      const now = Date.now();
+      // Looked up again here rather than trusting the renderer's copy.
+      const event = (await CalendarManager.getInstance().getEventsBetween(now - 3 * 60 * 60_000, now + 60 * 60_000)).find((e: any) => e.id === eventId);
+      if (!event || !appState.getIsMeetingActive()) return { success: false };
+      meta.calendarEventId = event.id;
+      meta.calendarEvent = toEventSnapshot(event, 'user');
+      meta.source = 'calendar';
+      if (titleFollowsEvent) meta.title = event.title;
+      return { success: true };
+    } catch (error: any) {
+      console.error('[IPC] live-notes:link-event failed:', error?.message);
+      return { success: false };
+    }
+  });
+  // Add or remove a person on the linked event, for this meeting only (the
+  // notes' people; the calendar itself is never written).
+  safeHandle('live-notes:set-attendees', async (_event, input: { add?: unknown; remove?: unknown }) => {
+    if (!appState.getIsMeetingActive()) return { success: false };
+    const meta = liveMeta(false);
+    const event = meta?.calendarEvent;
+    if (!event || !Array.isArray(event.attendees)) return { success: false };
+    const add = typeof input?.add === 'string' ? input.add.trim().toLowerCase() : '';
+    const remove = typeof input?.remove === 'string' ? input.remove.trim().toLowerCase() : '';
+    if (add) {
+      if (!/^[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+$/.test(add) || add.length > 254) return { success: false, error: 'invalid_email' };
+      if (!event.attendees.some((a: any) => typeof a?.email === 'string' && a.email.toLowerCase() === add)) {
+        event.attendees = [...event.attendees, { email: add }];
+      }
+    }
+    if (remove) {
+      event.attendees = event.attendees.filter((a: any) => !(typeof a?.email === 'string' && a.email.toLowerCase() === remove));
+    }
+    return { success: true };
+  });
   safeOn('live-notes:set-text', (_event, text: unknown) => {
     if (typeof text !== 'string') return;
     appState.getLiveNotes().setText(text);
+  });
+  // Copy from the notepad (transcript lines, an answer, the notes): the window
+  // never takes focus, and the page's clipboard API needs a focused document.
+  safeHandle('notes-window:copy-text', async (_event, text: unknown) => {
+    if (typeof text !== 'string' || !text || text.length > 2_000_000) return { success: false };
+    clipboard.writeText(text);
+    return { success: true };
   });
   // "Open meeting" in the notes window after Stop: the launcher opens that
   // meeting's page (App's launcher request, as Settings › About's demo meeting).
@@ -19426,6 +19641,38 @@ export function initializeIpcHandlers(appState: AppState): void {
     } catch (e: any) {
       console.error('[IPC] modes:delete-note-section error:', e);
       return { success: false, error: e.message };
+    }
+  });
+
+  // A note template's sections as this mode's notes template (Modes Manager ›
+  // Notes template › Use a template). Same Pro gate as editing a section.
+  safeHandle('modes:apply-note-template', async (_, modeId: string, templateId: string) => {
+    try {
+      if (!isProOrTrialActive()) return { success: false, error: 'pro_required' };
+      const { noteTemplateById, MODE_DEFAULT_NOTE_TEMPLATE_ID } = require('./services/meeting/noteTemplates') as typeof import('./services/meeting/noteTemplates');
+      const toDefault = templateId === MODE_DEFAULT_NOTE_TEMPLATE_ID;
+      const template = toDefault ? null : noteTemplateById(templateId);
+      if (!toDefault && !template) return { success: false, error: 'unknown_template' };
+      const { ModesManager } = require('./services/ModesManager');
+      const mgr = ModesManager.getInstance();
+      if (!mgr.getModes().some((m: { id: string }) => m.id === modeId)) return { success: false, error: 'unknown_mode' };
+      // "This mode": the sections its type starts with, back after a Remove template.
+      const sections = mgr.replaceNoteSectionsWith(modeId, toDefault ? mgr.defaultNoteSectionsFor(modeId) : template!.sections);
+      return sections ? { success: true, sections } : { success: false, error: 'write_failed' };
+    } catch (e: any) {
+      console.error('[IPC] modes:apply-note-template error:', e);
+      return { success: false, error: e.message };
+    }
+  });
+
+  // What "This mode" in Use a template puts back: read only, for its label and check.
+  safeHandle('modes:get-default-note-sections', async (_, modeId: string) => {
+    try {
+      const { ModesManager } = require('./services/ModesManager');
+      return ModesManager.getInstance().defaultNoteSectionsFor(modeId);
+    } catch (e: any) {
+      console.error('[IPC] modes:get-default-note-sections error:', e);
+      return [];
     }
   });
 

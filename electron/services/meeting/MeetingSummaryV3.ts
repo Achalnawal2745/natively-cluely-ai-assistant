@@ -165,6 +165,9 @@ export interface MeetingSummaryModeMeta {
   detectedModeName?: string;
   detectedConfidence?: number;
   summaryModeUsed?: string;
+  /** The note template the notes were written in (noteTemplates.ts), when one was picked. */
+  noteTemplateId?: string;
+  noteTemplateName?: string;
 }
 
 export interface MeetingSummaryGenerationMeta {
@@ -934,6 +937,8 @@ function sanitizeMode(value: unknown): MeetingSummaryModeMeta {
     ...(raw.detectedModeName ? { detectedModeName: cleanString(raw.detectedModeName).slice(0, 80) } : {}),
     ...(conf !== undefined ? { detectedConfidence: clamp(conf, 0, 1) } : {}),
     ...(raw.summaryModeUsed ? { summaryModeUsed: cleanString(raw.summaryModeUsed).slice(0, 80) } : {}),
+    ...(raw.noteTemplateId ? { noteTemplateId: cleanString(raw.noteTemplateId).slice(0, 64) } : {}),
+    ...(raw.noteTemplateName ? { noteTemplateName: cleanString(raw.noteTemplateName).slice(0, 80) } : {}),
   };
 }
 

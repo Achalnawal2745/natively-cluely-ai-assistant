@@ -10874,7 +10874,12 @@ Provide only the answer, nothing else.`;
     // listeners see the same binding.
     let escSuppressUntilNextActive = false;
 
-    const unsubState = window.electronAPI.onStealthTapState(({ active, reason }) => {
+    const unsubState = window.electronAPI.onStealthTapState(({ active: anyActive, reason, target }) => {
+      // The hook also types into the notes window (2026-10-20); a session of
+      // its own is the only one the overlay shows or expands for. A notes
+      // session still proves the hook works here.
+      if (anyActive) isCgEventTapAvailableRef.current = true;
+      const active = anyActive && (target ?? 'overlay') === 'overlay';
       stealthTapActiveRef.current = active;
       setStealthTapActive(active);
       if (active) {

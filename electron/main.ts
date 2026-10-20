@@ -1227,7 +1227,7 @@ import { IntelligenceManager } from "./IntelligenceManager"
 import { SystemAudioCapture } from "./audio/SystemAudioCapture"
 import { MicrophoneCapture } from "./audio/MicrophoneCapture"
 import { AudioDevices } from "./audio/AudioDevices"
-import { resolveRequestedInputDevice } from "./audio/audioDeviceSelection.mjs"
+import { isInternalCaptureDevice, resolveRequestedInputDevice } from "./audio/audioDeviceSelection.mjs"
 import { loadNativeModule } from "./audio/nativeModuleLoader"
 import { GoogleSTT } from "./audio/GoogleSTT"
 import { RestSTT } from "./audio/RestSTT"
@@ -1353,6 +1353,7 @@ import { showLauncherForReminderDraft } from './services/assist/reminderDraftWin
 import { wireExtensionMeetingTabs } from './services/meetingDetection/extensionMeetingTabs'
 import { DesktopCallSpeakers, type DesktopCallReport } from './services/meetingDetection/desktopCallSpeakers'
 import { meetingMuteSync, muteSourceName, type MuteSource } from './services/meeting/MeetingMuteSync'
+import { TranscriptionPause, AudioLevelMeter, level as audioLevel } from './services/meeting/transcriptionPause'
 import { ScreenShareContext } from './services/meeting/ScreenShareContext'
 import { captureShareFrame, clearScreenShareFrames } from './services/meeting/screenShareCapture'
 import { SHORTCUT_TOUR_ACTIONS } from './services/shortcutTourActions'
@@ -1369,6 +1370,7 @@ import { acceptsLocalSpeechEndHint } from './intelligence/autoAnswer/SimpleAutoA
 import { NativeOomTrace } from './utils/NativeOomTrace'
 import { setStealthHookAvailabilityProvider } from './utils/windowsFocusPolicy'
 import { hasLiveRenderer } from './utils/rendererLiveness'
+import { DEFAULT_MEETING_SURFACE, planMeetingStart } from './utils/meetingSurface'
 import {
   shouldPromoteToRegularAtStartup,
   planDisguiseTitleWrites,
@@ -1513,6 +1515,19 @@ export class AppState {
       this.sendToWindow(this.getWindowHelper().getOverlayWindow(), 'meeting-mute-changed', { muted: state.muted, app: muteSourceName(state.app) });
     } catch { /* the overlay may not exist yet */ }
     console.log(`[Main] Meeting app mute: ${state.muted ? `muted in ${muteSourceName(state.app)}; the mic channel carries silence` : 'live'}`);
+  });
+  // Pause transcription from the notepad (services/meeting/transcriptionPause.ts):
+  // both capture paths below send silence while paused. Reset by every meeting start and end.
+  private readonly transcriptionPause = new TranscriptionPause();
+  private readonly _transcriptionPauseListener = this.transcriptionPause.onChange((paused) => {
+    try { this.meetingAutoStop.setPaused(paused); } catch { /* auto-stop never blocks a pause */ }
+    this.sendToMeetingSurfaces('meeting-transcription-paused', { paused });
+    console.log(`[Main] Transcription ${paused ? 'paused: both channels carry silence' : 'resumed'}`);
+  });
+  // The notepad's listening bars: the louder channel's level, only while that window is open.
+  private readonly audioLevelMeter = new AudioLevelMeter((value) => {
+    if (!this.notesWindowHelper?.isVisible()) return;
+    this.sendToWindow(this.notesWindowHelper.getWindow(), 'meeting-audio-level', value);
   });
   // Serializes start/stop so two transitions can never interleave. This is the
   // ONLY mutual-exclusion layer: _meetingGeneration, the _audioInitPromise
@@ -1928,24 +1943,29 @@ export class AppState {
     if (process.platform === 'darwin' || process.platform === 'win32') {
       const { StealthKeyboardManager } = require('./services/StealthKeyboardManager');
       const stealth = StealthKeyboardManager.getInstance();
-      // Only the overlay renderer may ENGAGE the system-wide keyboard hook.
-      // stealth-tap:start had no sender check, so any renderer (settings,
-      // cropper, model-selector) — or a compromised one — could turn on
-      // keystroke capture. Keystrokes still only ever flow to the overlay (see
-      // StealthKeyboardManager.overlayWebContents scoping), so this is a
-      // start-authority gate, not a read gate; but engaging capture is itself a
-      // capability that belongs to the overlay alone. stop() stays ungated —
-      // disengaging is always safe.
-      const isFromOverlay = (event: any): boolean => {
-        const overlay = this.windowHelper?.getOverlayWindow?.();
-        return !!overlay && !overlay.isDestroyed() && overlay.webContents.id === event?.sender?.id;
+      // Only the overlay and the notes window may ENGAGE the system-wide
+      // keyboard hook, each for itself. stealth-tap:start had no sender check,
+      // so any renderer (settings, cropper, model-selector) — or a compromised
+      // one — could turn on keystroke capture. Keystrokes only ever flow to the
+      // window that started the session (StealthKeyboardManager's target), and
+      // the target comes from the sender here, never from the renderer. This
+      // is a start-authority gate, not a read gate; but engaging capture is
+      // itself a capability that belongs to those two windows alone. stop()
+      // stays ungated — disengaging is always safe.
+      const senderIs = (win: BrowserWindow | null | undefined, event: any): boolean =>
+        !!win && !win.isDestroyed() && win.webContents.id === event?.sender?.id;
+      const typingTargetOf = (event: any): 'overlay' | 'notes' | null => {
+        if (senderIs(this.windowHelper?.getOverlayWindow?.(), event)) return 'overlay';
+        if (senderIs(this.notesWindowHelper?.getWindow?.(), event)) return 'notes';
+        return null;
       };
       registerStealthHandler('stealth-tap:available', () => stealth.isAvailable());
       registerStealthHandler('stealth-tap:open-settings', () => { stealth.openSettings(); });
       registerStealthHandler('stealth-tap:stop', () => { stealth.stop(); });
-      registerStealthHandler('stealth-tap:start', (event: any) =>
-        isFromOverlay(event) ? stealth.start() : false,
-      );
+      registerStealthHandler('stealth-tap:start', (event: any) => {
+        const target = typingTargetOf(event);
+        return target ? stealth.start(target) : false;
+      });
       if (process.platform === 'darwin') {
         // IME users (Pinyin, Hangul, Kanji, …) cannot compose under the tap
         // because CGEventTap fires below TIS. Renderer consults this before
@@ -2233,6 +2253,8 @@ export class AppState {
       setLive: (text) => this.intelligenceManager.setLiveUserNotes(text),
       saveEnded: (meetingId, text) => { DatabaseManager.getInstance().setMeetingUserNotes(meetingId, text); },
       broadcast: (state) => this.sendToWindow(this.notesWindowHelper.getWindow(), 'live-notes-state', state),
+      // The notepad's folder button (services/organise), as "Move to folder" on the meeting page.
+      fileInFolder: (meetingId, folderId, inFolder) => this.fileMeetingInFolder(meetingId, folderId, inFolder),
     })
 
     // Initialize ThemeManager
@@ -2424,6 +2446,17 @@ export class AppState {
     this.nativeOomTraceTimer = null;
   }
 
+  // The notepad's folder button (LiveNotesSession.fileInFolder). Every list of
+  // meetings refreshes, as "Move to folder" on the meeting page does.
+  private fileMeetingInFolder(meetingId: string, folderId: string, inFolder: boolean): boolean {
+    const { organiseStore } = require('./services/organise/organiseService');
+    const store = organiseStore();
+    if (!store) return false;
+    const ok = inFolder ? store.addMeetingToFolder(meetingId, folderId, 'user') : store.removeMeetingFromFolder(meetingId, folderId);
+    if (ok) for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send('meetings-updated');
+    return ok;
+  }
+
   private sendToWindow(win: BrowserWindow | null | undefined, channel: string, ...args: any[]): boolean {
     if (!win || win.isDestroyed()) return false;
     try {
@@ -2443,6 +2476,20 @@ export class AppState {
     };
     sendOnce(this.windowHelper.getLauncherWindow());
     sendOnce(this.windowHelper.getOverlayWindow());
+    // The notepad shows the meeting's status too (capture, transcription, pause):
+    // in a notepad meeting the overlay is hidden all meeting.
+    sendOnce(this.notesWindowHelper?.getWindow());
+  }
+
+  /** Pause or resume transcription (the notepad's pill); only while a meeting runs. */
+  public setTranscriptionPaused(paused: boolean): boolean {
+    if (paused && !this.isMeetingActive) return false;
+    this.transcriptionPause.setPaused(paused);
+    return true;
+  }
+
+  public isTranscriptionPaused(): boolean {
+    return this.transcriptionPause.isPaused();
   }
 
   private sendToSettingsSurfaces(channel: string, ...args: any[]): void {
@@ -2460,6 +2507,10 @@ export class AppState {
     const helper = this.getWindowHelper();
     this.sendToWindow(helper.getLauncherWindow(), 'native-audio-transcript', payload);
     this.sendToWindow(helper.getOverlayWindow(), 'native-audio-transcript', payload);
+    // The notes window's transcript panel (its ^ button), only while it is open.
+    if (this.notesWindowHelper?.isVisible()) {
+      this.sendToWindow(this.notesWindowHelper.getWindow(), 'native-audio-transcript', payload);
+    }
     // Phone mirror shows the same live transcript (no-op when it isn't running).
     try {
       PhoneMirrorService.getInstance().publishTranscript(payload);
@@ -3634,6 +3685,8 @@ export class AppState {
     },
     notify: (stopsAt) => {
       this.sendToWindow(this.getWindowHelper().getOverlayWindow(), 'meeting-auto-stop-notice', { stopsAt });
+      // A notepad meeting has no overlay on screen: the notepad shows it too.
+      if (this.notesWindowHelper?.isVisible()) this.sendToWindow(this.notesWindowHelper.getWindow(), 'meeting-auto-stop-notice', { stopsAt });
     },
   });
 
@@ -4489,6 +4542,9 @@ export class AppState {
       // interleaved with the owner's audio it garbles the interviewer
       // transcript (F-102).
       if (this.systemAudioCapture === capture) {
+        // Paused from the notepad: silence of the same length (transcriptionPause.ts).
+        chunk = this.transcriptionPause.gate(chunk);
+        this.audioLevelMeter.note('system', this.transcriptionPause.isPaused() ? 0 : audioLevel(chunk));
         this.googleSTT?.write(chunk);
         // Gap recovery's ring buffer (sttGapRecovery.ts): a copy, nothing waits.
         if (this.sttGap.isActive()) {
@@ -4722,7 +4778,9 @@ export class AppState {
         // Muted in the meeting app ("Follow the meeting app's mute"): silence of
         // the same length, so the stream keeps its timing. The checks above
         // still read the real chunk.
-        const heard = meetingMuteSync.gate(chunk);
+        // Paused from the notepad, the same: silence (transcriptionPause.ts).
+        const heard = this.transcriptionPause.gate(meetingMuteSync.gate(chunk));
+        this.audioLevelMeter.note('mic', this.transcriptionPause.isPaused() ? 0 : audioLevel(heard));
         this.googleSTT_User?.write(heard);
         // Gap recovery's ring buffer (sttGapRecovery.ts): a copy, nothing waits.
         if (this.sttGap.isActive()) {
@@ -6983,6 +7041,12 @@ export class AppState {
     // the reset bounds.)
     this.windowHelper.resetOverlayPosition();
 
+    // The overlay or the notepad (Settings › Overlay's switcher,
+    // utils/meetingSurface.ts). A notepad meeting is in overlay mode with the
+    // overlay hidden, and the notepad opens below once the page is this meeting's.
+    let startPlan = planMeetingStart(DEFAULT_MEETING_SURFACE, false);
+    try { startPlan = planMeetingStart(SettingsManager.getInstance().get('meetingSurface'), this.notesWindowHelper.wasLeftOpen()); } catch { /* the overlay, as always */ }
+
     // ─── WINDOW SWAP BEFORE STATE BROADCAST ───────────────────────────────
     // Switch to the overlay BEFORE flipping `isMeetingActive` to true. If we
     // broadcast meeting-state-changed:{isActive:true} while the launcher is
@@ -6990,7 +7054,7 @@ export class AppState {
     // before the renderer's follow-up setWindowMode('overlay') hides it —
     // visible as a flash. Switching first means the launcher hides before
     // the state event arrives, so the user only ever sees the overlay.
-    this.windowHelper.setWindowMode('overlay');
+    this.windowHelper.setWindowMode('overlay', undefined, { hidden: startPlan.overlayHidden });
 
     const meetingGeneration = ++this._meetingGeneration;
     this.isMeetingActive = true;
@@ -7006,8 +7070,10 @@ export class AppState {
     // the window open gets it back, without it taking focus.
     try {
       this.liveNotes.meetingStarted();
-      this.notesWindowHelper.reopenForMeeting();
+      this.notesWindowHelper.reopenForMeeting(startPlan.openNotes);
     } catch (e) { console.warn('[Main] notes window not reopened:', (e as Error)?.message); }
+    this.transcriptionPause.setPaused(false);
+    this.audioLevelMeter.reset();
     this.meetingAutoStop.start({ ambientChat: this._ambientChatEnabled, undetectable: this.isUndetectable });
     // A "meeting detected" offer still up (panel, notification, countdown) is answered.
     try { require('./services/meetingDetection/wireMeetingDetection').getMeetingOffers()?.clear('meeting started'); } catch { /* nothing offered */ }
@@ -7443,6 +7509,8 @@ export class AppState {
     } catch { /* non-fatal */ }
     // The "Last time" recap goes with the meeting (services/assist).
     try { getAssistService()?.noteMeetingEnded(); } catch { /* nothing showing */ }
+    // A paused meeting ends unpaused (the notepad's Pause, transcriptionPause.ts).
+    this.transcriptionPause.setPaused(false);
 
     // Reset Mouse Passthrough so the next meeting overlay starts fresh and focusable
     if (this.overlayMousePassthrough) {
@@ -8032,6 +8100,30 @@ export class AppState {
       this.googleSTT_User.setCredentials(keyPath);
     }
     return verdict;
+  }
+
+  // The notepad's mic picker (2026-10-20): each switch rebuilds the native
+  // mic capture (CoreAudio on macOS, WASAPI on Windows), so they run one at a
+  // time, as reconfigureSttProvider's do.
+  private _inputSwitchChain: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Switch the running meeting's microphone (the notepad's transcript panel).
+   * Outside a meeting nothing runs: the next meeting reads the same saved
+   * choice. The output side keeps its current device.
+   */
+  public switchMeetingInputDevice(deviceId: string | null): Promise<boolean> {
+    if (deviceId !== null && (typeof deviceId !== 'string' || !deviceId || deviceId.length > 512 || isInternalCaptureDevice(deviceId))) {
+      return Promise.resolve(false);
+    }
+    const run = async (): Promise<boolean> => {
+      if (!this.isMeetingActive) return false;
+      await this.reconfigureAudio(deviceId, this._lastRequestedOutputDeviceId);
+      return true;
+    };
+    const next = this._inputSwitchChain.then(run, run);
+    this._inputSwitchChain = next.catch(() => undefined);
+    return next;
   }
 
   public setRecognitionLanguage(key: string): void {

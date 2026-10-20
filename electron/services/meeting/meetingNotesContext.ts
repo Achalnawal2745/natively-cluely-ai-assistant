@@ -361,7 +361,12 @@ export const MEETING_CONTEXT_RULES = `HOW TO USE MEETING CONTEXT:
 /** The user's own notes, cleaned and cut to USER_NOTES_MAX_CHARS. '' for none. */
 export function cleanUserNotes(notes: unknown): string {
   if (typeof notes !== 'string') return '';
-  const text = notes.replace(/\r\n?/g, '\n').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  // The notepad writes markdown (2026-10-20, NotesEditor.tsx): its underline
+  // (++text++) and escaped marks (\*, \#) read as the plain words here.
+  const text = notes
+    .replace(/\+\+([^+\n]+?)\+\+/g, '$1')
+    .replace(/\\([*_#\[\]()~`>+\-!.])/g, '$1')
+    .replace(/\r\n?/g, '\n').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   if (text.length <= USER_NOTES_MAX_CHARS) return text;
   const cut = text.slice(0, USER_NOTES_MAX_CHARS);
   const lastBreak = cut.lastIndexOf('\n');

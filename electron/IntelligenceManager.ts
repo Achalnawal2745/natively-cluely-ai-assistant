@@ -431,6 +431,15 @@ export class IntelligenceManager extends EventEmitter {
         this.persistence.setLiveUserNotes(text);
     }
 
+    /** The note template for the running (or next) meeting's notes; null clears. False for an unknown id. */
+    setLiveNoteTemplate(id: string | null): boolean {
+        return this.persistence.setLiveNoteTemplate(id);
+    }
+
+    getLiveNoteTemplate(): string | null {
+        return this.persistence.getLiveNoteTemplate();
+    }
+
     /** A meeting started: its transcript is kept on disk as it grows (LiveMeetingJournal). */
     beginLiveMeeting(startedAt?: number): string {
         return this.persistence.beginLiveMeeting(startedAt);
@@ -450,7 +459,7 @@ export class IntelligenceManager extends EventEmitter {
     }
 
     /** Regenerate V3 notes for a saved meeting (optionally with a different mode/tone). */
-    async regenerateMeetingSummary(meetingId: string, opts?: { templateType?: string; modeId?: string; tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style' }): Promise<boolean> {
+    async regenerateMeetingSummary(meetingId: string, opts?: { templateType?: string; modeId?: string; noteTemplateId?: string | null; tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style' }): Promise<boolean> {
         return this.persistence.regenerateSavedMeeting(meetingId, opts);
     }
 

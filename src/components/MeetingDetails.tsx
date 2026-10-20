@@ -42,6 +42,7 @@ import { NoteSource } from './meeting/NoteSource';
 import { NotesRating } from './meeting/NotesRating';
 import { NotesTemplatePicker } from './meeting/NotesTemplatePicker';
 import { NotesCompare, type CompareReveal } from './meeting/NotesCompare';
+import { readableNotesMarkdown } from './notes/notesEditorModel';
 import { comparePair, shouldPromptRating, templatePickerOptions } from './meeting/notesFeedback';
 import { noteLineTime, notesContentKey, notesLabel, notesWereEdited, versionTabs, type VersionKey } from './meeting/notesView';
 
@@ -2842,7 +2843,7 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                 `.trim();
             }
         } else if (activeTab === 'yours') {
-            textToCopy = meeting.userNotes || '';
+            textToCopy = readableNotesMarkdown(meeting.userNotes || '');
         } else if (activeTab === 'transcript' && meeting.transcript) {
             textToCopy = meeting.transcript.map(t => `[${formatTime(t.timestamp)}] ${resolveSpeakerName(t.speakerId || t.speaker)}: ${t.text}`).join('\n');
         } else if (activeTab === 'usage' && meeting.usage) {
@@ -3741,7 +3742,10 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                         {activeTab === 'yours' && (
                             <section>
                                 {hasUserNotes ? (
-                                    <p className="text-text-primary text-[15px] leading-relaxed whitespace-pre-wrap break-words select-text cursor-text">{meeting.userNotes}</p>
+                                    // The notepad writes markdown (2026-10-20): headings, lists, checkboxes, bold.
+                                    <div className="notes-editor notes-editor-read text-text-primary break-words select-text cursor-text">
+                                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{readableNotesMarkdown(meeting.userNotes || '')}</ReactMarkdown>
+                                    </div>
                                 ) : (
                                     <p className="text-text-tertiary">{t('No notes were typed in this meeting.')}</p>
                                 )}

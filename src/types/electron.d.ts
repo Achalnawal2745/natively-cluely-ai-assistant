@@ -416,7 +416,7 @@ export interface ElectronAPI {
   disableHindsight: () => Promise<{ success: boolean; error?: string }>
 
   // Native Audio Service Events
-  onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => () => void
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean; timestamp?: number }) => void) => () => void
   onNativeAudioSuggestion: (callback: (suggestion: { context: string; lastQuestion: string; confidence: number }) => void) => () => void
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
@@ -425,6 +425,7 @@ export interface ElectronAPI {
   onSuggestionError: (callback: (error: { error: string }) => void) => () => void
   generateSuggestion: (context: string, lastQuestion: string) => Promise<{ suggestion: string }>
   getInputDevices: () => Promise<Array<{ id: string; name: string }>>
+  setMeetingInputDevice?: (deviceId: string | null) => Promise<{ success: boolean }>
   getOutputDevices: () => Promise<Array<{ id: string; name: string }>>
   setRecognitionLanguage: (key: string) => Promise<{ success: boolean; error?: string }>
   getAiResponseLanguages: () => Promise<Array<{ label: string; code: string }>>
@@ -527,6 +528,8 @@ export interface ElectronAPI {
   modesUpdateNoteSection: (id: string, updates: { title?: string; description?: string }) => Promise<{ success: boolean; error?: string }>
   modesDeleteNoteSection: (id: string) => Promise<{ success: boolean; error?: string }>
   modesRemoveAllNoteSections: (modeId: string) => Promise<{ success: boolean; error?: string }>
+  modesGetDefaultNoteSections?: (modeId: string) => Promise<Array<{ title: string; description: string }>>
+  modesApplyNoteTemplate?: (modeId: string, templateId: string) => Promise<{ success: boolean; sections?: Array<{ id: string; modeId: string; title: string; description: string; sortOrder: number }>; error?: 'pro_required' | 'unknown_template' | 'unknown_mode' | 'write_failed' | string }>
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string; code?: string }>
@@ -823,7 +826,7 @@ export interface ElectronAPI {
   testHindsightConnection: () => Promise<{ healthy: boolean; error?: string }>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
-  regenerateMeetingSummary: (id: string, opts?: { templateType?: string; modeId?: string; tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style' }) => Promise<{ success: boolean; error?: string }>
+  regenerateMeetingSummary: (id: string, opts?: { templateType?: string; modeId?: string; noteTemplateId?: string | null; tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style' }) => Promise<{ success: boolean; error?: string }>
   regenerateMeetingFollowUp: (id: string, tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style') => Promise<{ success: boolean; error?: string }>
   updateMeetingSpeakerLabels: (id: string, labels: Record<string, string>) => Promise<{ success: boolean; labels?: Record<string, string>; notesUpdated?: boolean; error?: string }>
   deleteMeeting: (id: string) => Promise<boolean>
@@ -1035,6 +1038,12 @@ export interface ElectronAPI {
   getScreenShareSnapshots?: () => Promise<boolean>
   setScreenShareSnapshots?: (on: boolean) => Promise<{ success: boolean; error?: string }>
   meetingAutoStopKeepGoing?: () => Promise<{ success: boolean }>
+  /** Pause / resume transcription during a meeting (the notepad's pill). */
+  getTranscriptionPaused?: () => Promise<boolean>
+  setTranscriptionPaused?: (paused: boolean) => Promise<{ success: boolean; paused: boolean }>
+  onTranscriptionPaused?: (callback: (data: { paused: boolean }) => void) => () => void
+  /** 0..1, the louder of mic and call audio, sent to the notepad while it is open. */
+  onMeetingAudioLevel?: (callback: (level: number) => void) => () => void
   /** Assist (electron/services/assist): the daily brief, You owe, Brief me, the catch-up, Last time. */
   assistGetDailyBrief?: (events: AssistEvent[]) => Promise<AssistDailyBrief>
   assistGetMeetingBrief?: (event: AssistEvent, opts?: { refresh?: boolean }) => Promise<{ ok: true; brief: AssistMeetingBrief } | { ok: false; error: string }>
@@ -1054,6 +1063,25 @@ export interface ElectronAPI {
   notesWindowToggle?: () => Promise<{ open: boolean }>
   notesWindowClose?: () => Promise<{ success: boolean }>
   notesWindowIsOpen?: () => Promise<boolean>
+  liveNotesMeetingInfo?: () => Promise<{ live: boolean; title: string | null; people: number; event?: { id: string; title: string | null; startTime: string | null; endTime: string | null; link: string | null } | null; attendees?: Array<{ email: string; name: string | null }>; selfEmail?: string | null; speakers?: { me: string; them: string } }>
+  /** The notepad's title, typed by the user (the meeting is saved under it). */
+  /** Copy text from the notepad (main's clipboard: the window is never focused). */
+  notesWindowCopyText?: (text: string) => Promise<{ success: boolean }>
+  liveNotesSetTitle?: (title: string) => Promise<{ success: boolean; title?: string | null }>
+  /** The note template for the running (or next) meeting's notes (noteTemplates.ts); null clears. Pro or a live trial. */
+  liveNotesSetTemplate?: (id: string | null) => Promise<{ success: boolean; error?: 'pro_required' | 'unknown_template' }>
+  liveNotesGetTemplate?: () => Promise<string | null>
+  /** The notepad's folder button: every folder and whether this meeting is in it (held until Stop saves it). */
+  liveNotesFolders?: () => Promise<Array<{ id: string; name: string; inFolder: boolean }>>
+  liveNotesSetFolder?: (folderId: string, inFolder: boolean) => Promise<{ success: boolean }>
+  liveNotesCreateFolder?: (name: string) => Promise<{ id: string; name: string } | null>
+  /** The calendar's events around now, for "Link a different event". */
+  liveNotesCalendarCandidates?: () => Promise<Array<{ id: string; title: string; startTime: string; endTime: string; people: number }>>
+  liveNotesLinkEvent?: (eventId: string | null) => Promise<{ success: boolean }>
+  /** Add or remove a person on the linked event, for this meeting only. */
+  liveNotesSetAttendees?: (change: { add?: string; remove?: string }) => Promise<{ success: boolean; error?: string }>
+  getMeetingSurface?: () => Promise<'overlay' | 'notepad'>
+  setMeetingSurface?: (surface: 'overlay' | 'notepad') => Promise<{ success: boolean; error?: string }>
   onNotesWindowVisibility?: (callback: (open: boolean) => void) => () => void
   /** The notes window's text and the meeting it belongs to. */
   liveNotesGetState?: () => Promise<{ phase: 'idle' | 'live' | 'ended'; meetingId: string | null; text: string }>
@@ -1133,7 +1161,7 @@ export interface ElectronAPI {
    *  the renderer falls back to plain DOM focus on click. */
   stealthTapShouldAutoEngage: () => Promise<boolean>
   stealthTapRefreshIme: () => Promise<boolean>
-  onStealthTapState: (cb: (state: { active: boolean; reason?: string }) => void) => () => void
+  onStealthTapState: (cb: (state: { active: boolean; reason?: string; target?: 'overlay' | 'notes' }) => void) => () => void
   onStealthKeyCaptured: (cb: (ev: { keyCode: number; chars: string; flags: number; isKeyDown: boolean }) => void) => () => void
 
   // Profile Engine API

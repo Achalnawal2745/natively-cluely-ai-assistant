@@ -80,12 +80,20 @@ export interface MeetingAutoStop {
     keepGoing(): void;
     /** Undetectable switched during the meeting: the inactivity stop follows it. */
     setUndetectable(on: boolean): void;
+    /**
+     * Transcription paused from the notepad (transcriptionPause.ts): the silence
+     * is the user's choice, so the inactivity stop is off until it resumes; the
+     * resume counts from then. The call ending (mic released, tab gone) still stops it.
+     */
+    setPaused(paused: boolean): void;
     readonly detector: MeetingEndDetector | null;
 }
 
 export function createMeetingAutoStop(deps: MeetingAutoStopDeps): MeetingAutoStop {
     const log = deps.log ?? ((l: string) => console.log(l));
     let detector: MeetingEndDetector | null = null;
+    let undetectable = false;
+    let paused = false;
 
     const signals: MeetingEndSignals = {
         micApps: () => micAppsOf(deps.platform, deps.native?.getMicUsers ? deps.native.getMicUsers() ?? null : null, deps.self),
@@ -118,6 +126,8 @@ export function createMeetingAutoStop(deps: MeetingAutoStopDeps): MeetingAutoSto
         start(ctx) {
             detector?.dispose();
             detector = null;
+            undetectable = ctx.undetectable;
+            paused = false;
             const { enabled, inactivityMinutes: minutes } = deps.settings();
             if (!enabled) {
                 log('[MeetingAutoStop] off (Settings: End meetings automatically when the call ends)');
@@ -154,7 +164,14 @@ export function createMeetingAutoStop(deps: MeetingAutoStopDeps): MeetingAutoSto
             detector?.noteTranscript(speaker === 'user' ? 'me' : 'them', text, final);
         },
         setUndetectable(on) {
-            detector?.setInactivityEnabled(!on);
+            undetectable = on;
+            detector?.setInactivityEnabled(!on && !paused);
+        },
+        setPaused(next) {
+            if (paused === next) return;
+            paused = next;
+            detector?.setInactivityEnabled(!undetectable && !paused);
+            if (!next) detector?.noteResume();
         },
         noteTyping() {
             detector?.noteTyping();

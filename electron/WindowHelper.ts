@@ -2600,9 +2600,18 @@ export class WindowHelper {
 
   // --- Swapping Logic ---
 
-  public switchToOverlay(inactive?: boolean): void {
-    console.log(`[WindowHelper] Switching to OVERLAY (inactive: ${!!inactive})`);
+  /**
+   * `hidden` (2026-10-20, utils/meetingSurface.ts): a notepad meeting. Overlay
+   * mode and its placement exactly as a shown switch, but nothing is shown:
+   * the state Cmd/Ctrl+B's hide leaves (hideMainWindow), so the same shortcut
+   * shows it later through this path.
+   */
+  public switchToOverlay(inactive?: boolean, opts?: { hidden?: boolean }): void {
+    console.log(`[WindowHelper] Switching to OVERLAY (inactive: ${!!inactive}${opts?.hidden ? ', hidden' : ''})`);
     this.currentWindowMode = 'overlay';
+    // A hidden switch holds the overlay down against its own renderer's show
+    // requests (isOverlayHeldHidden); any real show releases it.
+    this.overlayHeldHidden = !!opts?.hidden;
     KeybindManager.getInstance().setMode('overlay'); // Adapted from public PR #123 — verify premium interaction
 
     // Show Overlay FIRST
@@ -2659,8 +2668,11 @@ export class WindowHelper {
 
       this.overlayWindow.setBounds(targetBounds);
       this.overlayBounds = this.overlayWindow.getBounds();
-      this.appState.recordNativeOomOutboundIpc(this.overlayWindow.webContents.id, 'ensure-expanded', []);
-      this.overlayWindow.webContents.send('ensure-expanded');
+      // Not for a hidden switch: the renderer's expansion asks main to show it.
+      if (!opts?.hidden) {
+        this.appState.recordNativeOomOutboundIpc(this.overlayWindow.webContents.id, 'ensure-expanded', []);
+        this.overlayWindow.webContents.send('ensure-expanded');
+      }
       // `ensure-expanded` guarantees the overlay renderer comes up expanded,
       // but the PILL only learns that after a renderer→main→pill round trip,
       // and its collapse gate is a 0.22s opacity fade (OverlayAuxWindows).
@@ -2675,6 +2687,11 @@ export class WindowHelper {
         expanded: true,
       });
 
+      if (opts?.hidden) {
+        this.applyOverlayAuxVisibility(false);
+        if (this.overlayWindow.isVisible()) this.overlayWindow.hide();
+        this.isWindowVisible = false;
+      } else
       // Restore opacity before showing (it may have been zeroed by hideMainWindow).
       // The opacity shield only matters when the overlay is actually going to be
       // capture-excluded, i.e. in undetectable mode — that is the only case where
@@ -2763,7 +2780,21 @@ export class WindowHelper {
     }
   }
 
+  /**
+   * A notepad meeting (utils/meetingSurface.ts) keeps the overlay hidden. The
+   * overlay's renderer asks to be shown whenever it expands (an answer, a
+   * notice: NativelyInterface's isExpanded effect → 'show-window'), which would
+   * bring it back unasked; 'show-window' from the overlay is ignored while
+   * this holds. The user's own show (Cmd/Ctrl+B, a shortcut) goes through
+   * switchToOverlay and releases it; leaving the meeting does too.
+   */
+  private overlayHeldHidden = false;
+  public isOverlayHeldHidden(): boolean {
+    return this.overlayHeldHidden;
+  }
+
   public switchToLauncher(inactive?: boolean): void {
+    this.overlayHeldHidden = false;
     const requestedInactive = !!inactive;
     console.log(`[WindowHelper] Switching to LAUNCHER (inactive: ${requestedInactive})`);
     // Leaving the overlay (end meeting, etc.) must disengage stealth typing —
@@ -2894,11 +2925,11 @@ export class WindowHelper {
   }
 
   // Simplified setWindowMode that just calls switchers
-  public setWindowMode(mode: 'launcher' | 'overlay', inactive?: boolean): void {
+  public setWindowMode(mode: 'launcher' | 'overlay', inactive?: boolean, opts?: { hidden?: boolean }): void {
     if (mode === 'launcher') {
       this.switchToLauncher(inactive);
     } else {
-      this.switchToOverlay(inactive);
+      this.switchToOverlay(inactive, opts);
     }
   }
 

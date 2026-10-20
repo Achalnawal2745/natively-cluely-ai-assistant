@@ -82,7 +82,9 @@ export interface AppSettings {
     // The notes window (`?window=notes`, 2026-10-15): where it was and how big,
     // and whether it was open when last used, so a meeting starting reopens it
     // (without taking focus) for someone who keeps it open.
-    notesWindowState?: { x: number; y: number; width: number; height: number; open: boolean };
+    notesWindowState?: { x: number; y: number; width: number; height: number; open: boolean; layout?: number };
+    /** What a meeting opens: the overlay or the notepad (utils/meetingSurface.ts). */
+    meetingSurface?: 'overlay' | 'notepad';
     // Direct Assist is the opt-in, single-provider answer path. It deliberately
     // bypasses meeting retrieval and the legacy answer-orchestration pipeline.
     // Keep the persisted default OFF during rollout; the operator kill switch
