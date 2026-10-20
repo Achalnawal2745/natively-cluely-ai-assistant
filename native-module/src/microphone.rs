@@ -18,6 +18,15 @@ use std::sync::{Condvar, Mutex};
 
 use crate::audio_config::RING_BUFFER_SAMPLES;
 
+/// Name of the system default input device ("" if none). The same string the
+/// device list uses as the id, so JS can compare it and reopen by it.
+pub fn default_input_device_name() -> String {
+    cpal::default_host()
+        .default_input_device()
+        .and_then(|d| d.name().ok())
+        .unwrap_or_default()
+}
+
 /// List available input devices
 pub fn list_input_devices() -> Result<Vec<(String, String)>> {
     let host = cpal::default_host();

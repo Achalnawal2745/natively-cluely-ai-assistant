@@ -852,3 +852,34 @@ pub fn screen_capture_displays_available() -> bool {
 pub fn get_default_output_device_id() -> String {
     speaker::default_output_device_uid()
 }
+
+/// Name of the current default input device (cpal), the id get_input_devices
+/// uses for it. Empty string when there is none. JS polls it during a meeting
+/// that captures from the default mic, and reopens the mic when it changes:
+/// cpal binds a stream to the device it opened, so without this a new default
+/// (USB headset plugged in, mic changed in system settings) went unheard while
+/// the old one stayed open. Call only while the mic is already capturing: on
+/// macOS cpal::default_host() registers the process with the CoreAudio HAL.
+#[napi]
+pub fn get_default_input_device_id() -> String {
+    microphone::default_input_device_name()
+}
+
+/// macOS: the "System Audio Recording" grant the Core Audio tap needs:
+/// "granted", "denied", or "unknown" (not asked yet, or unreadable). Read
+/// through a private TCC call loaded at run time (see
+/// speaker/audio_capture_permission.rs); only ever used to explain silence,
+/// never to refuse capture. "unknown" on other platforms.
+#[napi]
+pub fn get_system_audio_recording_permission() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        speaker::audio_capture_permission::audio_capture_permission()
+            .as_str()
+            .to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "unknown".to_string()
+    }
+}

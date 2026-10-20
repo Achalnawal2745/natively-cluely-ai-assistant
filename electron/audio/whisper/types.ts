@@ -231,12 +231,16 @@ export type WorkerInMessage =
 
 export interface WorkerReadyResponse { type: 'ready'; channelId?: string; }
 export interface WorkerResultResponse { type: 'result'; taskId: string; text: string; channelId?: string; }
-export interface WorkerPartialResponse { type: 'partial'; taskId: string; text: string; channelId?: string; }
+/** `skipped`: the worker dropped this partial for a newer one or a final (whisperTaskQueue.ts). */
+export interface WorkerPartialResponse { type: 'partial'; taskId: string; text: string; channelId?: string; skipped?: boolean; }
 export interface WorkerErrorResponse { type: 'error'; taskId?: string; message: string; channelId?: string; }
 export interface WorkerProgressResponse { type: 'progress'; modelId: string; progress: number; channelId?: string; }
+/** The oldest final waited `waitedMs` before it ran: the model is slower than speech here. */
+export interface WorkerBehindResponse { type: 'behind'; waitedMs: number; }
 export type WorkerOutMessage =
   | WorkerReadyResponse
   | WorkerResultResponse
   | WorkerPartialResponse
   | WorkerErrorResponse
-  | WorkerProgressResponse;
+  | WorkerProgressResponse
+  | WorkerBehindResponse;

@@ -30,7 +30,7 @@ import { getVisionCapabilityStore, normalizeVisionBaseURL, storedVisionAnswer, s
 import { VisionProbe, VISION_PROBE_QUESTION, VISION_PROBE_SYSTEM } from "./llm/visionProbe"
 import { parseOpenRouterVision } from "./llm/providerVisionData"
 import { trimUserContentToFit, userContentRoomChars } from "./llm/localContextTrim"
-import { getModelCapabilities, selectPromptTier, estimateTokens, truncateTranscriptToFit, getOpenAiMaxOutput, getOpenAiReasoningEffort, claudeAcceptsSamplingParams, claudeThinkingParam, type OpenAiReasoningEffort, type PromptTier, type ModelCapabilities } from "./llm/modelCapabilities"
+import { getModelCapabilities, ollamaRequestContext, selectPromptTier, estimateTokens, truncateTranscriptToFit, getOpenAiMaxOutput, getOpenAiReasoningEffort, claudeAcceptsSamplingParams, claudeThinkingParam, type OpenAiReasoningEffort, type PromptTier, type ModelCapabilities } from "./llm/modelCapabilities"
 import { GeminiPromptCache } from "./llm/GeminiPromptCache"
 import { filterOllamaGenerationModels } from "./llm/ollamaGenerationModels"
 import {
@@ -75,8 +75,6 @@ import { isPhoneImagePath, visionImageEdge } from './utils/phoneImage';
 import curl2Json from "@bany/curl-to-json";
 import { CustomProvider, CurlProvider } from './services/CredentialsManager';
 import { TRIAL_SENTINEL_KEY } from './config/constants';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import axios from 'axios';
 import { createProviderRateLimiters, RateLimiter } from './services/RateLimiter';
 import { chatGptCompatibleModel, CodexCliConfig, CodexCliService, codexSignedOutMessage, DEFAULT_CODEX_CLI_CONFIG, getCodexAuthStatus } from './services/CodexCliService';
@@ -91,7 +89,6 @@ import type {
   DirectAssistRung,
   DirectAssistSelection,
 } from './direct-assist/types';
-const execAsync = promisify(exec);
 const NATIVELY_API_URL = nativelyApiBase();
 
 function nowMs(): number {
@@ -3422,6 +3419,9 @@ export class LLMHelper {
       caps.maxContextTokens,
       this.litellmInputCapFor(modelId) ?? Number.POSITIVE_INFINITY,
       this.ninerouterInputCapFor(modelId) ?? Number.POSITIVE_INFINITY,
+      // Ollama runs at the window the request asks for (num_ctx), not the
+      // model's native one; a 128k llama3.1 gets 16k.
+      this.useOllama ? ollamaRequestContext(modelId) : Number.POSITIVE_INFINITY,
     );
     if (maxContextTokens >= 100_000) return text;
     const reserved = reservedOutputTokens ?? 2000;
@@ -3474,9 +3474,10 @@ export class LLMHelper {
       const ollamaModel = (images && this.localVisionOverride(imagePaths)) || this.ollamaModel;
 
       const sys = systemPrompt ? this.resolveLocalSystemPrompt(systemPrompt) : TINY_SYSTEM_PROMPT;
-      // Per-request hard guard: trim userContent (never sys) until total fits the model's max ctx.
+      // Per-request hard guard: trim userContent (never sys) until total fits the
+      // window requested below as num_ctx (ollamaRequestContext).
       let userContent = prompt;
-      const maxCtx = getModelCapabilities(ollamaModel, true).maxContextTokens;
+      const maxCtx = ollamaRequestContext(ollamaModel);
       let total = estimateTokens(sys) + estimateTokens(userContent) + 2000;
       if (total > maxCtx) {
         console.warn('[Ollama] context overflow', { model: ollamaModel, total, max: maxCtx });
@@ -3502,6 +3503,9 @@ export class LLMHelper {
         options: {
           temperature: 0.7,
           top_p: 0.9,
+          // Without it Ollama uses its 4096-token default and drops the start of
+          // a longer prompt (the system prompt) silently.
+          num_ctx: maxCtx,
         }
       };
       if (this.isThinkingModel(ollamaModel)) ollamaBody.think = false;
@@ -13198,9 +13202,11 @@ let isMultimodal = !!(imagePaths?.length);
     this.cancelOllamaRecordFor(abortSignal);
     const ollamaModel = modelOverride || this.ollamaModel;
     let userContent = context ? `CONTEXT:\n${context}\n\nUSER:\n${message}` : message;
-    // Per-request hard guard: trim userContent (never systemPrompt) until total fits the model's max ctx.
+    // Per-request hard guard: trim userContent (never systemPrompt) until total
+    // fits the window requested below as num_ctx (ollamaRequestContext).
+    const ollamaNumCtx = ollamaRequestContext(ollamaModel);
     {
-      const maxCtx = getModelCapabilities(ollamaModel, true).maxContextTokens;
+      const maxCtx = ollamaNumCtx;
       const total = estimateTokens(systemPrompt) + estimateTokens(userContent) + 2000;
       if (total > maxCtx) {
         console.warn('[Ollama] context overflow', { model: ollamaModel, total, max: maxCtx });
@@ -13269,6 +13275,11 @@ let isMultimodal = !!(imagePaths?.length);
           num_predict: process.env.OLLAMA_MAX_OUTPUT_TOKENS
             ? Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS)
             : undefined,
+          // The window the prompt was trimmed to. Without it Ollama uses its
+          // 4096-token default and drops the start of a longer prompt (the
+          // system prompt) silently. The prewarm goes through here too, so the
+          // model is loaded once at this size, not reloaded on the first turn.
+          num_ctx: ollamaNumCtx,
         }
       };
       if (this.isThinkingModel(ollamaModel)) streamBody.think = false;
@@ -14278,25 +14289,19 @@ let isMultimodal = !!(imagePaths?.length);
 
       console.log('[LLMHelper] Attempting to force restart Ollama...');
 
-      // 1. Check for process on port 11434
+      // 1. Stop a wedged Ollama daemon that still holds the port: only the
+      // listener, only if it is Ollama, never this app (ollamaPortProcess.ts;
+      // the old `lsof -t -i` + `kill -9` also killed connected clients, this
+      // app included, and did nothing on Windows).
       try {
-        const { stdout } = await execAsync(`lsof -t -i:11434`);
-        // SECURITY FIX (P1-1): Validate EACH PID token from lsof before shell interpolation.
-        // lsof -t returns one PID per line when multiple processes are on the port.
-        const pids = stdout.trim().split(/\s+/).filter(p => /^\d+$/.test(p));
-        for (const pid of pids) {
-          console.log(`[LLMHelper] Found blocking PID: ${pid}. Killing...`);
-          await execAsync(`kill -9 ${pid}`);
-        }
-        if (pids.length === 0 && stdout.trim()) {
-          console.warn(`[LLMHelper] Unexpected lsof output (no valid PIDs): "${stdout.trim().substring(0, 50)}". Skipping kill.`);
+        const port = Number(new URL(this.ollamaUrl).port) || 11434;
+        const { ollamaPidsListeningOn, stopOllamaPid } = require('./services/ollamaPortProcess');
+        for (const pid of await ollamaPidsListeningOn(port)) {
+          console.log(`[LLMHelper] Ollama (PID ${pid}) holds port ${port} but does not answer. Stopping it...`);
+          await stopOllamaPid(pid);
         }
       } catch (e: any) {
-        // lsof returns exit code 1 if no process found — that is expected, swallow it.
-        // Only surface genuinely unexpected errors.
-        if (!e.message?.includes('exit code 1') && e.code !== 1) {
-          console.warn('[LLMHelper] lsof error (non-fatal):', e.message);
-        }
+        console.warn('[LLMHelper] Could not stop the Ollama holding the port (non-fatal):', e?.message ?? e);
       }
 
       // 2. Restart Ollama through the Manager (which handles polling and background spawn)

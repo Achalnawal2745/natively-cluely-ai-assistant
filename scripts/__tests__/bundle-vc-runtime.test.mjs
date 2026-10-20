@@ -19,7 +19,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { bundleVcRuntimeForAfterPack, readPeMachine, onnxBindingDir, VC_RUNTIME_DLLS } = require('../bundle-vc-runtime.cjs');
+const { bundleVcRuntimeForAfterPack, readPeMachine, onnxBindingDir, llamaRuntimeBinDirs, VC_RUNTIME_DLLS } = require('../bundle-vc-runtime.cjs');
 const { runAfterPack } = require('../after-pack.cjs');
 
 const X64 = 0x8664;
@@ -69,6 +69,56 @@ test('Windows target on a Windows host: the four DLLs land next to the binding',
   for (const dll of VC_RUNTIME_DLLS) {
     assert.equal(readPeMachine(path.join(f.target, dll)), X64, `${dll} must be in the binding's own folder`);
   }
+});
+
+// node-llama-cpp's Windows runtimes (llama-addon.node, llama.dll, ggml*.dll)
+// import the same DLLs and are tested in a child process where onnxruntime's
+// copies are not loaded: each bins/<name>/ folder gets its own.
+test('the DLLs also land beside every node-llama-cpp runtime of the target arch', async () => {
+  const f = fixture();
+  const scope = path.join(f.appOutDir, 'resources', 'app.asar.unpacked', 'node_modules', '@node-llama-cpp');
+  const bin = (pkg, name, file = 'llama-addon.node') => {
+    const dir = path.join(scope, pkg, 'bins', name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, file), 'x');
+    return dir;
+  };
+  const cpu = bin('win-x64', 'win-x64');
+  // node-llama-cpp ships three of the four itself; those stay as shipped.
+  fs.writeFileSync(path.join(cpu, 'vcruntime140.dll'), 'SHIPPED');
+  const vulkan = bin('win-x64-vulkan', 'win-x64-vulkan');
+  const cuda = bin('win-x64-cuda', 'win-x64-cuda', 'ggml-cuda.dll');
+  const arm = bin('win-arm64', 'win-arm64');
+  const mac = bin('mac-x64', 'mac-x64');
+  fs.mkdirSync(path.join(scope, 'win-x64', 'bins', 'empty'), { recursive: true });
+  assert.deepEqual(llamaRuntimeBinDirs(f.appOutDir, 'x64').sort(), [cpu, cuda, vulkan].sort());
+
+  const r = await bundleVcRuntimeForAfterPack(WIN_TARGET(f.appOutDir), {
+    env: { NATIVELY_VC_RUNTIME_DIR: f.source }, hostPlatform: 'win32', log: quiet(),
+  });
+  assert.deepEqual([...r.targetDirs].sort(), [f.target, cpu, cuda, vulkan].sort());
+  for (const dir of [f.target, cpu, vulkan, cuda]) {
+    for (const dll of VC_RUNTIME_DLLS) {
+      if (dir === cpu && dll === 'vcruntime140.dll') continue;
+      assert.equal(readPeMachine(path.join(dir, dll)), X64, `${dll} in ${dir}`);
+    }
+  }
+  assert.equal(fs.readFileSync(path.join(cpu, 'vcruntime140.dll'), 'utf8'), 'SHIPPED', "the package's own copy is never overwritten");
+  for (const dir of [arm, mac]) {
+    assert.equal(fs.readdirSync(dir).some((n) => /^(msvcp|vcruntime)/i.test(n)), false, `nothing copied into ${dir}`);
+  }
+});
+
+test('a package with only llama.cpp runtimes still gets them (no onnxruntime folder)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vc-llama-only-'));
+  const appOutDir = path.join(root, 'win-unpacked');
+  const dir = path.join(appOutDir, 'resources', 'app.asar.unpacked', 'node_modules', '@node-llama-cpp', 'win-x64', 'bins', 'win-x64');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'llama-addon.node'), 'x');
+  const source = path.join(root, 'redist');
+  for (const dll of VC_RUNTIME_DLLS) writePe(path.join(source, dll), X64);
+  const r = await bundleVcRuntimeForAfterPack(WIN_TARGET(appOutDir), { env: { NATIVELY_VC_RUNTIME_DIR: source }, hostPlatform: 'win32', log: quiet() });
+  assert.deepEqual(r.targetDirs, [dir]);
 });
 
 test('Windows host, System32 is the fallback source', async () => {

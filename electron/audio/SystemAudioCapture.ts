@@ -1,11 +1,17 @@
 import { EventEmitter } from 'events';
 import { loadNativeModule } from './nativeModuleLoader';
 import { normalizeSpeechEdge } from './speechEdge';
+import { rendererCaptureFallbackActive } from './fallback/fallbackPolicy';
 
 // RustAudioCapture is the native Rust class (napi-rs) that captures system audio.
 // May be null if the .node binary isn't available — constructor logs an error in that case.
 const NativeModule: any = loadNativeModule();
-const { SystemAudioCapture: RustAudioCapture } = NativeModule || {};
+// See MicrophoneCapture.ts: the Chromium capture fallback when the native
+// module is missing on Windows (loopback of the default output device).
+const RustAudioCapture: any = rendererCaptureFallbackActive(!!NativeModule?.SystemAudioCapture)
+    ? (console.warn('[SystemAudioCapture] Native audio module unavailable: using the Chromium loopback fallback.'),
+       require('./fallback/rendererCaptureMonitor').RendererSystemAudioCapture)
+    : NativeModule?.SystemAudioCapture;
 
 export class SystemAudioCapture extends EventEmitter {
     private isRecording: boolean = false;

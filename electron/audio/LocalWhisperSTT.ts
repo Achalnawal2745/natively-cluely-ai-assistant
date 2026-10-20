@@ -1513,6 +1513,30 @@ export class LocalWhisperSTT extends EventEmitter {
             // messages remain ignored on a torn-down instance.
             if (!this.isActive && !(this.isDrainingFinals && msg.type === 'result')) return;
 
+            if (msg.type === 'behind') {
+                // The worker's oldest final waited longer than 30s: this model
+                // runs slower than people talk on this computer, and text
+                // comes later and later (whisperTaskQueue.ts). Counted like any
+                // provider error, so a stand-in takes over when one is set up.
+                console.warn(`[LocalWhisperSTT/${this.channelLabel}] transcription is ${Math.round(msg.waitedMs / 1000)}s behind the audio (${this.modelId})`);
+                this.emit('error', new Error(
+                    `Transcription is ${Math.round(msg.waitedMs / 1000)} seconds behind: this model is too slow for this computer. ` +
+                    'Choose a lighter one, such as Moonshine, in Settings › Audio.',
+                ));
+                return;
+            }
+
+            if (msg.type === 'partial' && msg.skipped) {
+                // The worker dropped this partial for a newer one or a final
+                // (whisperTaskQueue.ts). Nothing to show; just stop waiting.
+                if (msg.taskId === this.streamingTaskId) {
+                    this.clearStreamingWatchdog();
+                    this.streamingTaskInFlight = false;
+                    this.streamingTaskId = null;
+                }
+                return;
+            }
+
             if (msg.type === 'partial') {
                 // Drop partials whose segment has already been finalized — the
                 // agreement baseline is reset on every final dispatch and the
@@ -1605,6 +1629,15 @@ export class LocalWhisperSTT extends EventEmitter {
                     // second, different error two minutes later.
                     this.clearWorkerReadyDeadline();
                     this.emit('error', this.modelLoadFailure(msg.message));
+                } else if (msg.taskId?.startsWith('t')) {
+                    // A final pass failed: that speech has no text. This used to
+                    // reach only the log while the overlay kept saying it was
+                    // listening. Emitted like any provider error, so repeats
+                    // show as a failure (or hand over to a stand-in) and the
+                    // next good transcript clears it.
+                    this.emit('error', new Error(
+                        `Local transcription could not turn this speech into text. ${String(msg.message).replace(/^Transcription failed:\s*/, '')}`,
+                    ));
                 }
             }
         };
@@ -1649,9 +1682,7 @@ export class LocalWhisperSTT extends EventEmitter {
                 || err.message.includes('to_chars')
                 || err.message.includes('libonnxruntime');
             if (isOnnxSymbolError) {
-                this.emit('error', new Error(
-                    'Local Whisper is not supported on macOS 12 (Monterey) or earlier. Please upgrade to macOS 13 Ventura or later, or use a cloud STT provider.'
-                ));
+                this.emit('error', new Error(require('./whisper/onnxMacSupport').ONNX_MAC_UNSUPPORTED_MESSAGE));
             } else {
                 this.emit('error', err);
             }

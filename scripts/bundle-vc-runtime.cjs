@@ -4,6 +4,9 @@
  *
  * WHY
  * ---
+ * (node-llama-cpp's Windows runtimes import the same DLLs and get the same
+ * copies; see llamaRuntimeBinDirs.)
+ *
  * The prebuilt `onnxruntime_binding.node` and `onnxruntime.dll` import
  * MSVCP140.dll, MSVCP140_1.dll, VCRUNTIME140.dll and VCRUNTIME140_1.dll.
  * Nothing in the package provided them and the installer does not install the
@@ -122,6 +125,37 @@ function onnxBindingDir(appOutDir, arch, pathImpl = path) {
   );
 }
 
+/**
+ * The folders holding node-llama-cpp's Windows runtimes for `arch`
+ * (@node-llama-cpp/win-x64, win-x64-vulkan, win-x64-cuda, ... /bins/<name>).
+ * llama-addon.node, llama.dll, ggml*.dll and llama-common.dll import the
+ * Visual C++ runtime like onnxruntime-node does, and node-llama-cpp tests each
+ * runtime in a child process where onnxruntime's copies are not loaded.
+ * node-llama-cpp 3.x ships msvcp140, vcruntime140 and vcruntime140_1 in each
+ * of these folders (seen in the 2.9.2 installer, 2026-10-21); they are kept as
+ * shipped, and only a DLL a folder lacks is added, so a future runtime that
+ * stops shipping them still loads on a PC without the Redistributable.
+ */
+function llamaRuntimeBinDirs(appOutDir, arch, fsImpl = fs, pathImpl = path) {
+  const scope = pathImpl.join(appOutDir, 'resources', 'app.asar.unpacked', 'node_modules', '@node-llama-cpp');
+  const dirs = [];
+  let packages = [];
+  try { packages = fsImpl.readdirSync(scope); } catch { return dirs; }
+  for (const pkg of packages) {
+    if (pkg !== `win-${arch}` && !pkg.startsWith(`win-${arch}-`)) continue;
+    const bins = pathImpl.join(scope, pkg, 'bins');
+    let names = [];
+    try { names = fsImpl.readdirSync(bins); } catch { continue; }
+    for (const name of names) {
+      const dir = pathImpl.join(bins, name);
+      let files = [];
+      try { files = fsImpl.readdirSync(dir); } catch { continue; }
+      if (files.some((f) => /\.(node|dll)$/i.test(f))) dirs.push(dir);
+    }
+  }
+  return dirs;
+}
+
 async function bundleVcRuntimeForAfterPack(
   context,
   {
@@ -141,7 +175,11 @@ async function bundleVcRuntimeForAfterPack(
   }
 
   const targetDir = onnxBindingDir(context.appOutDir, arch, pathImpl);
-  if (!fsImpl.existsSync(targetDir)) {
+  const targetDirs = [
+    ...(fsImpl.existsSync(targetDir) ? [targetDir] : []),
+    ...llamaRuntimeBinDirs(context.appOutDir, arch, fsImpl, pathImpl),
+  ];
+  if (targetDirs.length === 0) {
     // The asset verifier reports a missing binding directory on its own; this
     // step has nothing to put the DLLs next to.
     log.warn(`[bundle-vc-runtime] ${targetDir} does not exist — Visual C++ runtime not bundled.`);
@@ -164,11 +202,20 @@ async function bundleVcRuntimeForAfterPack(
     return { skipped: 'runtime not available on this host', missing };
   }
 
-  for (const [dll, source] of found) {
-    fsImpl.copyFileSync(source, pathImpl.join(targetDir, dll));
+  for (const dir of targetDirs) {
+    // onnxruntime's folder always gets this host's copies; a llama.cpp folder
+    // keeps the ones its package shipped (see llamaRuntimeBinDirs).
+    const keepShipped = dir !== targetDir;
+    let copied = 0;
+    for (const [dll, source] of found) {
+      const dest = pathImpl.join(dir, dll);
+      if (keepShipped && fsImpl.existsSync(dest)) continue;
+      fsImpl.copyFileSync(source, dest);
+      copied++;
+    }
+    log.log(`[bundle-vc-runtime] Bundled ${copied} Visual C++ runtime DLLs into ${dir}`);
   }
-  log.log(`[bundle-vc-runtime] Bundled ${found.size} Visual C++ runtime DLLs into ${targetDir}`);
-  return { bundled: [...found.keys()], targetDir };
+  return { bundled: [...found.keys()], targetDir, targetDirs };
 }
 
 module.exports = bundleVcRuntimeForAfterPack;
@@ -176,4 +223,5 @@ module.exports.bundleVcRuntimeForAfterPack = bundleVcRuntimeForAfterPack;
 module.exports.locateVcRuntime = locateVcRuntime;
 module.exports.readPeMachine = readPeMachine;
 module.exports.onnxBindingDir = onnxBindingDir;
+module.exports.llamaRuntimeBinDirs = llamaRuntimeBinDirs;
 module.exports.VC_RUNTIME_DLLS = VC_RUNTIME_DLLS;

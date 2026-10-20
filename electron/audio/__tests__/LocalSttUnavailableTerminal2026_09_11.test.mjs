@@ -63,7 +63,9 @@ test('a model that is missing / was purged / is unsupported fails TERMINALLY, no
   assert.match(whisper, /this\.emit\('error', this\.modelLoadFailure\(msg\.message\)\);/);
   assert.match(whisper, /throw this\.modelLoadFailure\(message\);/);
   const loadFailure = read('../whisper/loadFailure.ts');
-  for (const msg of ['not supported on macOS 12', 'incomplete and have been removed', 'could not be loaded']) {
+  // The macOS sentence moved to onnxMacSupport.ts (one copy for every gate, 2026-10-21).
+  assert.match(loadFailure, /return ONNX_MAC_UNSUPPORTED_MESSAGE;/);
+  for (const msg of ['incomplete and have been removed', 'could not be loaded']) {
     assert.ok(loadFailure.includes(msg), `the terminal message must still exist: ${msg}`);
   }
 });

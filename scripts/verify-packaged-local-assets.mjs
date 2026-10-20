@@ -176,6 +176,14 @@ const REQUIRED_UNPACKED_NATIVE_WIN32 = [
   'node_modules/onnxruntime-node/bin/napi-v6/win32/x64/msvcp140_1.dll',
   'node_modules/onnxruntime-node/bin/napi-v6/win32/x64/vcruntime140.dll',
   'node_modules/onnxruntime-node/bin/napi-v6/win32/x64/vcruntime140_1.dll',
+  // The same four beside node-llama-cpp's CPU runtime, the one every PC falls
+  // back to: its addon and DLLs import them too, and are tested in a child
+  // process where onnxruntime's copies are not loaded. The package ships three;
+  // bundle-vc-runtime.cjs (llamaRuntimeBinDirs) adds what it lacks.
+  'node_modules/@node-llama-cpp/win-x64/bins/win-x64/msvcp140.dll',
+  'node_modules/@node-llama-cpp/win-x64/bins/win-x64/msvcp140_1.dll',
+  'node_modules/@node-llama-cpp/win-x64/bins/win-x64/vcruntime140.dll',
+  'node_modules/@node-llama-cpp/win-x64/bins/win-x64/vcruntime140_1.dll',
 ];
 // native-module ships one of two ABI variants per arch (index.js tries msvc
 // first, falls back to gnu) — checked with checkAny, not checkFile.
