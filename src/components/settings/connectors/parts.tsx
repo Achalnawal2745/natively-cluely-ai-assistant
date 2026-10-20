@@ -5,7 +5,7 @@
 // each card, and General's small-capitals label over each group of the list.
 // Buttons stay Natively's Liquid Glass pills: the one action in the lavender
 // glass of the meeting notes' Usage question, every other in the clear glass.
-// The MCP card keeps its own outlined card.
+// The MCP card sits in the same card.
 
 import React, { useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, ChevronLeft, ChevronRight, Loader2, Unplug } from 'lucide-react';
@@ -15,9 +15,6 @@ import { Presence, SETTINGS_CARD, useSettingsTones, type SettingsTone } from '..
 import { AIP_CSS, AipSelect, type AipSelectOption } from '../AIProvidersSettings';
 import { useResolvedTheme } from '../../../hooks/useResolvedTheme';
 import type { DeliveryInfo, FolderOption } from '../../../types/connectors';
-
-/** The MCP card's outline; the MCP card keeps it. */
-export const CONNECTOR_CARD = 'rounded-xl border border-border-muted';
 
 /** A row inside a card: General's padding. */
 export const ROW = 'flex items-center gap-4 px-4 py-3';

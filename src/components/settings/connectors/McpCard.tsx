@@ -11,8 +11,8 @@ import { motion, useReducedMotion, type Variants } from 'framer-motion';
 import { Check, Code2, Copy, Loader2, Plus } from 'lucide-react';
 import { useT } from '../../../i18n';
 import { LiquidGlassButton } from '../../../ui-components/LiquidGlassButton';
-import { Collapse, useSettingsTones } from '../SettingsRow';
-import { CONNECTOR_CARD, GlassPill, LAVENDER_PILL, StepList } from './parts';
+import { Collapse, SETTINGS_CARD, useSettingsTones } from '../SettingsRow';
+import { GlassPill, LAVENDER_PILL, StepList } from './parts';
 import claudeMark from '../../../assets/provider-logos/claude.svg?raw';
 import openaiMark from '../../../assets/provider-logos/openai.svg?raw';
 // The app's own icon, as About shows it: the Liquid Glass render macOS puts in
@@ -254,7 +254,7 @@ export const McpCard: React.FC<{ mcp: McpServerStatus; onStatus: (s: McpServerSt
         : mcp.running ? t('On. Only apps on this computer can connect.') : (mcp.error || t('Starting…'));
 
     return (
-        <div className={`${CONNECTOR_CARD} group p-5`}>
+        <div className={`${SETTINGS_CARD} group p-5`}>
             <div className="mb-6 flex items-center gap-3" aria-hidden>
                 {/* The macOS render carries the Dock's transparent margin (168 of 192px is
                     icon), so it is drawn larger and pulled in to sit level with the 40px tiles. */}

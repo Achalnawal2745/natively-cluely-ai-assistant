@@ -137,8 +137,9 @@ test("Connectors: built from Settings' own cards and rows, no display serif", ()
     assert.doesNotMatch(parts + mcp, /GLASS_PILL/);
     // A page's setting, as Audio's sections: the bold heading and its grey line, then the card.
     assert.match(parts, /<SectionHeading title=\{t\(title\)\} subtitle=\{subtitle\} \/>\s*<Group>\{children\}<\/Group>/);
-    // The MCP card keeps its own outlined card.
-    assert.match(mcp, /CONNECTOR_CARD/);
+    // The MCP card sits in the same filled card as the rest of the page.
+    assert.match(mcp, /<div className=\{`\$\{SETTINGS_CARD\} group p-5`\}>/);
+    assert.doesNotMatch(parts + mcp, /CONNECTOR_CARD/);
     assert.match(read('src/components/settings/connectors/catalog.ts'), /\{ id: 'workspace', label: 'Email and workspace' \}/);
 });
 
