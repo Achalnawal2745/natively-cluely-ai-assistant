@@ -53,8 +53,8 @@ If you’re looking for a hosted desktop recording API, consider checking out [R
 > **Competitors charge $20–$149/month, store your data on their servers, and one already breached 83,000 users.** Natively costs $0, runs locally, and has never had a data breach. Your keys, your models, your machine.
 
 <p align="center">
-  <a href="https://natively.software">
-    <img src="https://img.shields.io/badge/Visit%20Website-22C55E?style=for-the-badge&logo=vercel&logoColor=white" />
+  <a href="https://heynatively.com">
+    <img src="https://img.shields.io/badge/Visit%20Website-22C55E?style=for-the-badge&logo=cloudflare&logoColor=white" />
   </a>
 </p>
 
@@ -353,7 +353,7 @@ Natively works as a **free, undetectable AI coding interview assistant** for sta
 
 <div align="center">
 
-[![Natively Website](https://img.shields.io/badge/Natively_Website-natively.software-22C55E?style=flat-square&logo=vercel&logoColor=white)](https://natively.software)
+[![Natively Website](https://img.shields.io/badge/Natively_Website-heynatively.com-22C55E?style=flat-square&logo=cloudflare&logoColor=white)](https://heynatively.com)
 [![Telegram Chat](https://img.shields.io/badge/Telegram_Chat-nativelyaichat-229ED9?style=flat-square&logo=telegram&logoColor=white)](https://t.me/nativelyaichat)
 [![LinkedIn Company](https://img.shields.io/badge/LinkedIn_Company-nativley--ai-0077B5?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/company/nativley-ai)
 
@@ -427,12 +427,6 @@ Under the hood, Natively API connects you to the absolute best models for the op
 ## Natively Pro
 
 While Natively is **free for personal, educational, research, and non-commercial use**, we also offer a **Pro Edition** (available as **Lifetime or Yearly** subscriptions) designed specifically for power users and job seekers. Purchasing a Pro license gives you an edge in the job market, all while directly supporting the continued development of Natively.
-
-### 🪙 Unlock Natively Pro with $NAT Token
-
-We've launched the official **$NAT token** on Printr! Holders who maintain a specific balance of `$NAT` tokens in their connected wallet automatically unlock access to all **Natively Pro** features.
-
-👉 **[Trade $NAT on Printr](https://app.printr.money/trade/0xba1e50273ec14ca52b3fa64a5054c39470c2835392c6ecd06876f5bccd597d7b)**
 
 ### Free vs Pro Feature Comparison
 
@@ -1106,7 +1100,7 @@ You are not allowed to use this codebase, forks, modified versions, or substanti
 
 Public forks must clearly state that they are based on Natively, originally developed by Natively AI Private Limited.
 
-Commercial license requests: sales@heynatively.com · https://natively.software
+Commercial license requests: sales@heynatively.com · https://heynatively.com
 
 > **Note:** This project is available for sponsorships, ads, or partnerships – perfect for companies in the AI, productivity, or developer tools space.
 
