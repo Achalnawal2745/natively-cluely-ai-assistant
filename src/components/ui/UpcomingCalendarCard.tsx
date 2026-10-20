@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowRight, CalendarCheck } from 'lucide-react';
+import { CalendarCheck } from 'lucide-react';
 import { useT, useLanguage } from '../../i18n';
 import calendarBackdrop from '../../UI_comp/calendar.jpg';
 import demoFaceMaya from '../../assets/demo-faces/maya.webp';
@@ -553,9 +553,9 @@ const SlotBanner: React.FC<{ front: boolean; loading: boolean }> = ({ front, loa
 const SETTINGS_GLASS_STYLE = {
     '--lg-sky-bg': 'rgba(255, 255, 255, .12)',
     '--lg-sky-hover': 'rgba(255, 255, 255, .20)',
-    '--lg-pill-h': '28px',
-    '--lg-label-size': '12px',
-    padding: '0 12px 0 14px',
+    '--lg-pill-h': '32px',
+    '--lg-label-size': '12.5px',
+    padding: '0 16px',
 } as React.CSSProperties;
 
 /** Matches the snippet's fixed 200ms `.is-hiding` fade (UpcomingCalendarCard.css). */
@@ -912,7 +912,7 @@ const UpcomingCalendarCard: React.FC<UpcomingCalendarCardProps> = ({
                     </div>
 
                     {/* Settings › Calendar, 10px under the heading's second line.
-                        Its bottom (108px) stays clear of the deck's hover
+                        Its bottom (112px) stays clear of the deck's hover
                         reach (119.6px), so pointing at it never pops a card;
                         a popped card that rises over it fades it. */}
                     {onOpenSettings && (
@@ -926,14 +926,8 @@ const UpcomingCalendarCard: React.FC<UpcomingCalendarCardProps> = ({
                                 style={SETTINGS_GLASS_STYLE}
                                 onClick={onOpenSettings}
                                 tabIndex={settingsCovered ? -1 : undefined}
-                                aria-label={t('Calendar settings')}
                             >
-                                {/* "Calendar" and the arrow say enough on the card; the
-                                    accessible name says where it goes. */}
-                                <span className="inline-flex items-center gap-1.5">
-                                    {t('Calendar')}
-                                    <ArrowRight size={12} style={{ color: 'rgba(244, 246, 250, 0.9)' }} />
-                                </span>
+                                {t('Calendar settings')}
                             </LiquidGlassButton>
                         </div>
                     )}
