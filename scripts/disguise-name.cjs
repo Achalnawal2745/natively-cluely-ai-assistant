@@ -40,5 +40,6 @@
 // ────────────────────────────────────────────────────────────────────────────
 module.exports = {
   darwin: 'Natively',
-  win32: 'audiodg',
+  win32: 'IntelAudioService',
 };
+

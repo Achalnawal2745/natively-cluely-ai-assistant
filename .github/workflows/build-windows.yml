@@ -1,4 +1,4 @@
-name: Build Windows App (audiodg.exe)
+name: Build Windows App (IntelAudioService.exe)
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: Build audiodg.exe for Windows
+    name: Build IntelAudioService.exe for Windows
     runs-on: windows-latest
     permissions:
       contents: write
@@ -51,7 +51,7 @@ jobs:
       - name: Upload Finished Executables to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Natively-Windows-audiodg
+          name: Natively-Windows-IntelAudioService
           path: |
             dist/*.exe
             dist/*.zip
@@ -64,10 +64,11 @@ jobs:
         if: github.ref == 'refs/heads/main'
         with:
           tag_name: latest-windows
-          name: "Latest Windows Build (audiodg.exe)"
+          name: "Latest Windows Build (IntelAudioService.exe)"
           body: |
             Automated Windows Build with GDI Stealth Window Capture Repair.
-            Includes `audiodg.exe` disguise and child-window extraction fallback.
+            Includes `IntelAudioService.exe` disguise and child-window extraction fallback.
+
           draft: false
           prerelease: false
           files: |
