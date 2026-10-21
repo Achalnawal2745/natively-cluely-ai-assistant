@@ -19,7 +19,7 @@ const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
 
 const base = {
   meetingActive: true, pinnedInput: undefined, hasCapture: true, busy: false,
-  previous: 'MacBook Air Microphone', current: 'Jabra Evolve2 30', currentIsBluetooth: false, builtInAvailable: false,
+  previous: 'MacBook Air Microphone', current: 'Jabra Evolve2 30', currentIsBluetooth: false, builtInAvailable: false, currentSelectable: true,
 };
 
 test('a new default mic is followed when the meeting uses the default', () => {
@@ -62,4 +62,16 @@ test('native: the default input is exported on both platforms and declared for J
   assert.match(read('native-module/src/microphone.rs'), /pub fn default_input_device_name\(\) -> String \{\s*cpal::default_host\(\)\s*\.default_input_device\(\)/);
   assert.match(read('native-module/index.js'), /module\.exports\.getDefaultInputDeviceId = nativeBinding\.getDefaultInputDeviceId/);
   assert.match(read('native-module/index.d.ts'), /export declare function getDefaultInputDeviceId\(\): string/);
+});
+
+test('a default the input list does not offer is noted, not followed', () => {
+  // Following runs the mic recovery: an unopenable default would replace a
+  // working mic with "gave up", and Natively's own tap device is filtered out
+  // of the list, so it is never taken as the user's mic.
+  assert.equal(defaultInputDecision({ ...base, currentSelectable: false }), 'observe');
+  const main = read('electron/main.ts');
+  const watcher = main.slice(main.indexOf('private startDefaultInputWatcher'), main.indexOf('private stopDefaultInputWatcher'));
+  assert.match(watcher, /!isInternalCaptureDevice\(current\)/);
+  assert.match(watcher, /AudioDevices\.getInputDevices\(\)\.some\(/);
+  assert.match(watcher, /currentSelectable: selectable/);
 });

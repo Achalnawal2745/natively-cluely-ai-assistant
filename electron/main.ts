@@ -20,7 +20,7 @@ import * as crypto from "crypto"
 import path from "path"
 import fs from "fs"
 import os from "os"
-import { windowsMicPage } from '../src/lib/micPermissionPolicy.mjs'
+import { windowsMicBlocker, windowsMicPage } from '../src/lib/micPermissionPolicy.mjs'
 import { SystemAudioHealthClassifier } from "./audio/systemAudioHealthClassifier.mjs"
 import { OutputRouteMismatchDetector } from "./audio/outputRouteMismatch.mjs"
 import { FatalMainProcessCoordinator } from "./utils/fatalMainProcess"
@@ -1116,7 +1116,12 @@ function formatPermissionMessage(reason: PermissionReason, extra?: { device?: st
       // (Windows 11 = 13+), so map onto it.
       const build = Number.parseInt(os.release().split('.')[2] ?? '', 10);
       const page = windowsMicPage(Number.isFinite(build) && build < 22000 ? 10 : 13);
-      const where = `"${page.switches[2]}" in Windows ${page.path.join(' → ')}`;
+      // 'restricted' (DeniedBySystem) is the device-wide switch at the top of
+      // the page; the desktop-apps switch does nothing while that one is off.
+      let micStatus: string | undefined;
+      try { micStatus = systemPreferences.getMediaAccessStatus('microphone'); } catch { /* unknown */ }
+      const blocked = page.switches[windowsMicBlocker(micStatus) === 'device' ? 0 : 2];
+      const where = `"${blocked}" in Windows ${page.path.join(' → ')}`;
       return reason === 'mic-denied'
         ? `Turn on ${where}, then restart.`
         : `Check the device isn't muted, and that ${where} is on.`;
@@ -4285,7 +4290,10 @@ export class AppState {
 
       // Retryable: network drop, timeout, 5xx, 400, 429, WS drop. The audio
       // from here until text comes back is kept for recovery (sttGapRecovery.ts).
-      this.sttGap.onProviderError(gapSource);
+      // Not for a local model that is merely behind (LocalWhisperSTT
+      // LOCAL_STT_BEHIND_CODE): its text still comes, and recovery would run a
+      // second local model over the same audio on an already overloaded CPU.
+      if ((err as any)?.code !== 'local_stt_behind') this.sttGap.onProviderError(gapSource);
       _consecutiveErrors++;
       const maxErrors = 5;
 
@@ -6440,7 +6448,15 @@ export class AppState {
       const mic = this.microphoneCapture;
       const current = this.isMeetingActive && mic ? read() : '';
       // The device list is read only when the default actually moved.
-      const changedToBluetooth = !!current && current !== this._lastObservedDefaultInputId && this.isBluetoothInputName(current);
+      const moved = !!current && current !== this._lastObservedDefaultInputId;
+      const changedToBluetooth = moved && this.isBluetoothInputName(current);
+      let selectable = false;
+      if (moved && !isInternalCaptureDevice(current)) {
+        try {
+          const want = current.toLowerCase();
+          selectable = AudioDevices.getInputDevices().some((d) => d.id.toLowerCase() === want || d.name.toLowerCase() === want);
+        } catch { /* unreadable list: stay on the current mic */ }
+      }
       const decision = defaultInputDecision({
         meetingActive: this.isMeetingActive,
         pinnedInput: this._lastRequestedInputDeviceId,
@@ -6450,6 +6466,7 @@ export class AppState {
         current,
         currentIsBluetooth: changedToBluetooth,
         builtInAvailable: changedToBluetooth && !!this.findBuiltInInputDevice(),
+        currentSelectable: selectable,
       });
       if (decision === 'skip') return;
       const previous = this._lastObservedDefaultInputId;

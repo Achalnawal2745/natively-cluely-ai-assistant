@@ -82,6 +82,14 @@ function markLocalSttUnavailable(err: unknown): Error {
 }
 
 /**
+ * The worker's queue of finals is behind the audio ('behind' message). Not an
+ * outage: text still arrives, only late. main.ts counts it toward failover but
+ * does not open a gap-recovery outage for it, which would replay the same audio
+ * through a second local model on the CPU that is already too slow.
+ */
+export const LOCAL_STT_BEHIND_CODE = 'local_stt_behind';
+
+/**
  * The ONNX memory floor refused this start. TERMINAL, like the other start
  * failures above: the instance tears itself down and nothing restarts it, so a
  * bare Error (which main.ts files as retryable) left the overlay on
@@ -1519,10 +1527,10 @@ export class LocalWhisperSTT extends EventEmitter {
                 // comes later and later (whisperTaskQueue.ts). Counted like any
                 // provider error, so a stand-in takes over when one is set up.
                 console.warn(`[LocalWhisperSTT/${this.channelLabel}] transcription is ${Math.round(msg.waitedMs / 1000)}s behind the audio (${this.modelId})`);
-                this.emit('error', new Error(
+                this.emit('error', Object.assign(new Error(
                     `Transcription is ${Math.round(msg.waitedMs / 1000)} seconds behind: this model is too slow for this computer. ` +
                     'Choose a lighter one, such as Moonshine, in Settings › Audio.',
-                ));
+                ), { code: LOCAL_STT_BEHIND_CODE }));
                 return;
             }
 

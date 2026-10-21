@@ -9,7 +9,11 @@
 //  - a device the user picked (or that reconfigureAudio switched to, which it
 //    records as the requested device) is never left;
 //  - a Bluetooth mic is not taken while a built-in one exists: opening it drops
-//    the headset into call mode (HFP), the reason meeting start avoids it.
+//    the headset into call mode (HFP), the reason meeting start avoids it;
+//  - only a device the input list offers is taken: following goes through the
+//    mic recovery, so a default that cannot be opened would replace a working
+//    mic with "gave up", and Natively's own tap device (left out of the list)
+//    would transcribe system audio as the user.
 // Losing the old device entirely is not this rule's job: the stream errors and
 // the mic recovery reopens on the default.
 
@@ -32,12 +36,15 @@ export interface DefaultInputState {
   current: string;
   currentIsBluetooth: boolean;
   builtInAvailable: boolean;
+  /** The new default is in the selectable input list (AudioDevices.getInputDevices). */
+  currentSelectable: boolean;
 }
 
 export function defaultInputDecision(s: DefaultInputState): DefaultInputDecision {
   if (!s.meetingActive || !s.hasCapture || s.busy) return 'skip';
   if (!s.current || s.current === s.previous) return 'skip';
   if (s.pinnedInput) return 'observe';
+  if (!s.currentSelectable) return 'observe';
   if (s.currentIsBluetooth && s.builtInAvailable) return 'observe';
   return 'follow';
 }
