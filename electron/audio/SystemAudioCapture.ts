@@ -99,6 +99,11 @@ export class SystemAudioCapture extends EventEmitter {
         return '';
     }
 
+    /** The output device id this capture was asked to bind to; null = the default route. */
+    public getRequestedDeviceId(): string | null {
+        return this.deviceId;
+    }
+
     /**
      * Start capturing audio
      */

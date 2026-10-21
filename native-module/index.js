@@ -593,6 +593,7 @@ module.exports.getSystemAudioRecordingPermission = nativeBinding.getSystemAudioR
 module.exports.getVisibleWindows = nativeBinding.getVisibleWindows
 module.exports.inputInUse = nativeBinding.inputInUse
 module.exports.isAccessibilityGranted = nativeBinding.isAccessibilityGranted
+module.exports.probeOutputRoutes = nativeBinding.probeOutputRoutes
 module.exports.readCallTree = nativeBinding.readCallTree
 module.exports.requestCalendarAccess = nativeBinding.requestCalendarAccess
 module.exports.screenCaptureDisplaysAvailable = nativeBinding.screenCaptureDisplaysAvailable

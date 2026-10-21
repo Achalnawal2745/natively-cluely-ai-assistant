@@ -68,6 +68,13 @@ wasapi = "0.13.0"
 #   Win32_System_LibraryLoader            — GetModuleHandleW (hmod for the LL hook).
 windows = { version = "0.52.0", features = [
     "Win32_Media_Audio",
+    #   Win32_Media_Audio_Endpoints       — IAudioMeterInformation: per-endpoint output
+    #                                       peak, to see which device the meeting plays on.
+    "Win32_Media_Audio_Endpoints",
+    #   Win32_System_Com_StructuredStorage + Win32_System_Variant — required by the
+    #                                       binding's gate on IMMDevice::Activate.
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
     "Win32_System_Com",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
