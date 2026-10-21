@@ -27,6 +27,7 @@ import type { ProviderDataScopePolicy } from './llm/ProviderRouter';
 import { LiveMeetingJournal, type LiveJournalSnapshot, type MeetingRecoveryMeta } from './services/meeting/LiveMeetingJournal';
 import { getUserDictionary } from './audio/userDictionary';
 import { isArchivableNotes } from './services/meeting/notesVersions';
+import { applyNoteTemplate, noteTemplateById, type NoteTemplate } from './services/meeting/noteTemplates';
 const crypto = require('crypto');
 
 /** Longest a derived fallback title may be: the same bound as a generated one. */
@@ -322,6 +323,8 @@ type ProcessMetadata = {
     userNotes?: string;
     /** The user's spelling list for names and terms. */
     vocabulary?: string[];
+    /** The note template picked in the notepad (noteTemplates.ts): its sections replace the mode's. */
+    noteTemplateId?: string;
 };
 
 /**
@@ -365,6 +368,7 @@ export function recoveryMetadataFor(
     // The user's notes from the meeting: the live copy's, else the meeting row's.
     const userNotes = typeof saved?.userNotes === 'string' && saved.userNotes.trim() ? saved.userNotes : details.userNotes;
     if (typeof userNotes === 'string' && userNotes.trim()) metadata.userNotes = userNotes;
+    if (noteTemplateById(saved?.noteTemplateId)) metadata.noteTemplateId = saved!.noteTemplateId;
     const mode = saved?.mode && typeof saved.mode.id === 'string' ? saved.mode : null;
     return { metadata: Object.keys(metadata).length > 0 ? metadata : null, mode };
 }
@@ -411,6 +415,30 @@ export class MeetingPersistence {
 
     public getLiveUserNotes(): string {
         return this.liveUserNotes;
+    }
+
+    // The note template picked in the notepad for the running (or next)
+    // meeting (2026-10-20). Held here for the same reason as the notes: a
+    // metadata change never drops it. Stop takes it; live answers never read it.
+    private liveNoteTemplateId: string | null = null;
+
+    /** Sets (or with null clears) the template the notes are written in. False for an unknown id. */
+    public setLiveNoteTemplate(id: string | null): boolean {
+        if (id === null) {
+            if (this.liveNoteTemplateId === null) return true;
+            this.liveNoteTemplateId = null;
+        } else {
+            const template = noteTemplateById(id);
+            if (!template) return false;
+            if (template.id === this.liveNoteTemplateId) return true;
+            this.liveNoteTemplateId = template.id;
+        }
+        this.liveJournal.noteChange(true);
+        return true;
+    }
+
+    public getLiveNoteTemplate(): string | null {
+        return this.liveNoteTemplateId;
     }
 
     /** A meeting started (main: startMeetingTransition). */
@@ -712,6 +740,9 @@ export class MeetingPersistence {
         // Stop takes the notes window's text: it goes to the notes as `userNotes`.
         const userNotes = this.liveUserNotes.trim() ? this.liveUserNotes : undefined;
         this.liveUserNotes = '';
+        // And the template picked for it; the next meeting starts without one.
+        const noteTemplateId = this.liveNoteTemplateId ?? undefined;
+        this.liveNoteTemplateId = null;
         if (durationMs < 1000) {
             console.log("Meeting too short, ignoring.");
             this.liveJournal.end();
@@ -775,7 +806,9 @@ export class MeetingPersistence {
         // BUG-04 fix: snapshot metadata BEFORE reset() clears it so the
         // background processAndSaveMeeting worker receives the calendar info.
         const sessionMetadata = this.session.getMeetingMetadata();
-        const metadataSnapshot = userNotes ? { ...(sessionMetadata || {}), userNotes } : sessionMetadata;
+        const metadataSnapshot = userNotes || noteTemplateId
+            ? { ...(sessionMetadata || {}), ...(userNotes ? { userNotes } : {}), ...(noteTemplateId ? { noteTemplateId } : {}) }
+            : sessionMetadata;
 
         // BUG-MODE-BLEEDING fix: snapshot the active mode BEFORE reset() so the
         // background processAndSaveMeeting worker uses the correct mode's note
@@ -891,6 +924,7 @@ export class MeetingPersistence {
             if (metadata.source === 'manual' || metadata.source === 'calendar') meta.source = metadata.source;
             if (typeof metadata.callSelfName === 'string' && metadata.callSelfName) meta.callSelfName = metadata.callSelfName;
             if (Array.isArray(metadata.sharedScreens) && metadata.sharedScreens.length > 0) meta.sharedScreens = metadata.sharedScreens;
+            if (noteTemplateById(metadata.noteTemplateId)) meta.noteTemplateId = metadata.noteTemplateId;
             if (typeof metadata.callKey === 'string') {
                 meta.callKey = metadata.callKey;
                 try {
@@ -909,6 +943,7 @@ export class MeetingPersistence {
         const metadata = this.session.getMeetingMetadata?.();
         const { startTime: _s, durationMs: _d, ...meta } = this.captureRecoveryMeta(metadata, this.captureModeSnapshot(), startedAt, Date.now() - startedAt);
         if (this.liveUserNotes.trim()) meta.userNotes = this.liveUserNotes;
+        if (this.liveNoteTemplateId) meta.noteTemplateId = this.liveNoteTemplateId;
         return {
             // The whole meeting, as Stop saves it (not the assistant's view).
             transcript: [...this.session.getPersistableTranscript()],
@@ -1224,6 +1259,16 @@ export class MeetingPersistence {
                 console.warn('[MeetingPersistence] Failed to load mode sections:', modeErr?.message);
             }
 
+            // A note template picked in the notepad: its sections replace the
+            // mode's, its meeting description goes before the mode's context.
+            const noteTemplate = noteTemplateById(metadata?.noteTemplateId);
+            if (noteTemplate) {
+                const applied = applyNoteTemplate(noteTemplate, modeContextBlock);
+                modeNoteSections = applied.sections;
+                modeContextBlock = applied.contextBlock;
+                console.log(`[MeetingPersistence] Notes template: "${noteTemplate.name}", sections: ${modeNoteSections.length}`);
+            }
+
             // MODE AUTO-DETECTION (Phase 10, behind meetingModeAutoDetect). Deterministic,
             // no LLM, no provider call — safe even when post_call_summary scope is denied.
             // NEVER switches the live mode; only records a suggestion in summary.mode.detected*.
@@ -1316,6 +1361,7 @@ export class MeetingPersistence {
                             detectedConfidence: detectedMode.confidence,
                         } : {}),
                         summaryModeUsed: modeSnapshot?.templateType || 'general',
+                        ...noteTemplateMeta(noteTemplate),
                     },
                     startedAtMs: v3StartedMs,
                     startedAtIso: new Date(v3StartedMs).toISOString(),
@@ -1879,7 +1925,7 @@ export class MeetingPersistence {
      *
      * Honors providerDataScopes.post_call_summary — if denied, returns false (no cloud call).
      */
-    public async regenerateSavedMeeting(meetingId: string, opts?: { templateType?: string; modeId?: string; tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style'; userNotes?: string; vocabulary?: string[] }): Promise<boolean> {
+    public async regenerateSavedMeeting(meetingId: string, opts?: { templateType?: string; modeId?: string; noteTemplateId?: string | null; tone?: 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style'; userNotes?: string; vocabulary?: string[] }): Promise<boolean> {
         const db = DatabaseManager.getInstance();
         const details = db.getMeetingDetails(meetingId);
         if (!details || !Array.isArray(details.transcript) || details.transcript.length < 3) return false;
@@ -1945,6 +1991,20 @@ export class MeetingPersistence {
             console.warn('[MeetingPersistence] regenerate mode load failed:', e?.message);
         }
 
+        // The note template: the one asked for, else the one the notes were in
+        // (unless a mode was asked for), else none (resolveRegenerateNoteTemplate).
+        const noteTemplate = resolveRegenerateNoteTemplate({
+            noteTemplateId: opts?.noteTemplateId,
+            modeId: opts?.modeId,
+            templateType: opts?.templateType,
+            stored: (details.detailedSummary as any)?.mode,
+        });
+        if (noteTemplate) {
+            const applied = applyNoteTemplate(noteTemplate, modeContextBlock);
+            modeNoteSections = applied.sections;
+            modeContextBlock = applied.contextBlock;
+        }
+
         // Apply saved speaker labels so evidence/owners use renamed speakers.
         let transcript = details.transcript as TranscriptSegment[];
         try {
@@ -2003,6 +2063,7 @@ export class MeetingPersistence {
                     ...(modeName ? { selectedModeName: modeName } : {}),
                     ...(templateType ? { selectedTemplateType: templateType } : {}),
                     summaryModeUsed: templateType || 'general',
+                    ...noteTemplateMeta(noteTemplate),
                 },
                 startedAtMs: startedMs,
                 startedAtIso: new Date(startedMs).toISOString(),
@@ -2199,6 +2260,28 @@ function styleGuideReader(llmDraft: boolean, llmHelper: any): (modeId: string) =
     };
 }
 type FollowUpToneArg = 'professional' | 'warm' | 'concise' | 'friendly' | 'your_style';
+
+/** The template's identity as the saved notes record it (summary.mode). */
+function noteTemplateMeta(template: NoteTemplate | null): { noteTemplateId?: string; noteTemplateName?: string } {
+    return template ? { noteTemplateId: template.id, noteTemplateName: template.name } : {};
+}
+
+/**
+ * Which note template a Regenerate writes the notes in. PRECEDENCE: an explicit
+ * template (null clears it) > an explicit mode or mode template (the user chose a
+ * mode, so the template is dropped) > the template the notes were written in >
+ * none. Unknown ids count as none. Pure — exported for tests.
+ */
+export function resolveRegenerateNoteTemplate(input: {
+    noteTemplateId?: string | null;
+    modeId?: string;
+    templateType?: string;
+    stored?: { noteTemplateId?: string } | null;
+}): NoteTemplate | null {
+    if (input.noteTemplateId !== undefined) return noteTemplateById(input.noteTemplateId);
+    if (input.modeId || input.templateType) return null;
+    return noteTemplateById(input.stored?.noteTemplateId);
+}
 
 /**
  * Which mode a Regenerate rebuilds the notes in. PRECEDENCE: an explicit mode id

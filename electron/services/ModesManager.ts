@@ -1483,6 +1483,25 @@ export class ModesManager {
         DatabaseManager.getInstance().deleteAllNoteSections(modeId);
     }
 
+    /** The sections the mode's type starts with (a new mode's seed); [] for an unknown mode. */
+    public defaultNoteSectionsFor(modeId: string): Array<{ title: string; description: string }> {
+        const mode = this.getModes().find(m => m.id === modeId);
+        return mode ? [...(TEMPLATE_NOTE_SECTIONS[mode.templateType] ?? [])] : [];
+    }
+
+    /**
+     * The mode's notes sections become a note template's (2026-10-21, "Use a
+     * template" in the Modes Manager): the mode's default notes layout, which
+     * a template picked in the notepad still overrides for one meeting. The
+     * sections compile like a new mode's. Null when the write failed.
+     */
+    public replaceNoteSectionsWith(modeId: string, sections: ReadonlyArray<{ title: string; description: string }>): ModeNoteSection[] | null {
+        const rows = sections.map(s => ({ id: `ns_${crypto.randomUUID()}`, title: s.title, description: s.description }));
+        if (!DatabaseManager.getInstance().replaceNoteSections(modeId, rows)) return null;
+        this.compileAllSectionsAsync(modeId);
+        return this.getNoteSections(modeId);
+    }
+
     // ── LLM Context ───────────────────────────────────────────────
 
     /**

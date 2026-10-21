@@ -140,7 +140,7 @@ describe('corrupt local model purge', () => {
     test('each platform is only ever shown its own remedy', () => {
         const macSymbol = 'Failed to load model: Symbol not found: __ZNSt3__18to_charsEPcS0_d';
         assert.equal(classifyLocalModelLoadFailure(macSymbol, { platform: 'darwin' }), 'unsupported-macos');
-        assert.match(describeLocalModelLoadFailure(macSymbol, { platform: 'darwin' }), /not supported on macOS 12/);
+        assert.match(describeLocalModelLoadFailure(macSymbol, { platform: 'darwin' }), /need macOS 13\.3 or later/);
         assert.doesNotMatch(describeLocalModelLoadFailure(macSymbol, { platform: 'win32' }), /macOS/,
             'a Windows machine is never told to upgrade macOS');
         const winBinding = 'Failed to load model: The specified module could not be found.\n\\\\?\\C:\\x\\onnxruntime_binding.node';

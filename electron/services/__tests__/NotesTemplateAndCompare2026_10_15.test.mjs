@@ -50,7 +50,7 @@ describe('Regenerate as: the Pro gate is the one it was', () => {
         const src = fs.readFileSync(path.join(REPO, 'electron/ipcHandlers.ts'), 'utf8');
         const start = src.indexOf("safeHandle('regenerate-meeting-summary'");
         const body = src.slice(start, src.indexOf('safeHandle(', start + 10));
-        assert.match(body, /regenerateGate\(\{ modeId, templateType \}/);
+        assert.match(body, /regenerateGate\(\{ modeId, templateType(, noteTemplateId)? \}/);
         assert.match(body, /if \(refused\) return \{ success: false, error: refused \}/);
         assert.ok(body.indexOf('regenerateGate(') < body.indexOf('mgr.regenerateMeetingSummary('), 'gate before the regenerate');
     });

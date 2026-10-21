@@ -863,3 +863,92 @@ pub fn screen_capture_displays_available() -> bool {
 pub fn get_default_output_device_id() -> String {
     speaker::default_output_device_uid()
 }
+
+/// Name of the current default input device (cpal), the id get_input_devices
+/// uses for it. Empty string when there is none. JS polls it during a meeting
+/// that captures from the default mic, and reopens the mic when it changes:
+/// cpal binds a stream to the device it opened, so without this a new default
+/// (USB headset plugged in, mic changed in system settings) went unheard while
+/// the old one stayed open. Call only while the mic is already capturing: on
+/// macOS cpal::default_host() registers the process with the CoreAudio HAL.
+#[napi]
+pub fn get_default_input_device_id() -> String {
+    microphone::default_input_device_name()
+}
+
+/// macOS: the "System Audio Recording" grant the Core Audio tap needs:
+/// "granted", "denied", or "unknown" (not asked yet, or unreadable). Read
+/// through a private TCC call loaded at run time (see
+/// speaker/audio_capture_permission.rs); only ever used to explain silence,
+/// never to refuse capture. "unknown" on other platforms.
+#[napi]
+pub fn get_system_audio_recording_permission() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        speaker::audio_capture_permission::audio_capture_permission()
+            .as_str()
+            .to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "unknown".to_string()
+    }
+}
+
+#[napi(object)]
+pub struct OutputDevicePeak {
+    pub id: String,
+    pub peak: f64,
+}
+
+#[napi(object)]
+pub struct OutputRouteProbe {
+    /// Live output peak (0.0–1.0) of every active render endpoint.
+    pub peaks: Vec<OutputDevicePeak>,
+    /// eConsole default render endpoint.
+    pub default_id: String,
+    /// eCommunications default render endpoint — where Teams/Zoom/Discord play.
+    pub comms_id: String,
+}
+
+/// Runs the probe on a libuv worker: activating every endpoint's meter is a
+/// handful of COM calls that can stall while audiosrv reconfigures (a
+/// Bluetooth headset connecting), and main.ts polls it every second — on the
+/// Electron main thread that would freeze IPC and the overlay.
+pub struct OutputRouteProbeTask;
+
+impl napi::Task for OutputRouteProbeTask {
+    type Output = OutputRouteProbe;
+    type JsValue = OutputRouteProbe;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        #[cfg(target_os = "windows")]
+        {
+            Ok(OutputRouteProbe {
+                peaks: speaker::windows::output_device_peaks()
+                    .into_iter()
+                    .map(|(id, peak)| OutputDevicePeak { id, peak: peak as f64 })
+                    .collect(),
+                default_id: speaker::default_output_device_uid(),
+                comms_id: speaker::windows::default_communications_device_uid().unwrap_or_default(),
+            })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(OutputRouteProbe { peaks: Vec::new(), default_id: String::new(), comms_id: String::new() })
+        }
+    }
+
+    fn resolve(&mut self, _env: napi::Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// Windows: where audio is actually playing right now (see
+/// speaker::windows::output_device_peaks) plus both role defaults. Empty
+/// elsewhere — macOS has no per-device output meter, and JS treats an empty
+/// probe as "no evidence".
+#[napi]
+pub fn probe_output_routes() -> napi::bindgen_prelude::AsyncTask<OutputRouteProbeTask> {
+    napi::bindgen_prelude::AsyncTask::new(OutputRouteProbeTask)
+}

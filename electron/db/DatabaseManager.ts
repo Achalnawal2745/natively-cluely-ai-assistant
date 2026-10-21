@@ -2758,6 +2758,30 @@ export class DatabaseManager {
         }
     }
 
+    /**
+     * A mode's notes sections replaced by another set (a note template applied
+     * in the Modes Manager), in one transaction: a failed insert leaves the old
+     * sections, never a half-written list.
+     */
+    public replaceNoteSections(modeId: string, sections: Array<{ id: string; title: string; description: string }>): boolean {
+        if (!this.db) return false;
+        try {
+            const del = this.db.prepare('DELETE FROM mode_note_sections WHERE mode_id = ?');
+            const ins = this.db.prepare(`
+                INSERT INTO mode_note_sections (id, mode_id, title, description, sort_order)
+                VALUES (?, ?, ?, ?, ?)
+            `);
+            this.db.transaction(() => {
+                del.run(modeId);
+                sections.forEach((s, i) => ins.run(s.id, modeId, s.title, s.description, i));
+            })();
+            return true;
+        } catch (e) {
+            console.error('[DatabaseManager] replaceNoteSections failed:', e);
+            return false;
+        }
+    }
+
     public deleteAllNoteSections(modeId: string): void {
         if (!this.db) return;
         try {

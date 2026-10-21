@@ -20,11 +20,15 @@ import * as crypto from "crypto"
 import path from "path"
 import fs from "fs"
 import os from "os"
+import { windowsMicBlocker, windowsMicPage } from '../src/lib/micPermissionPolicy.mjs'
 import { SystemAudioHealthClassifier } from "./audio/systemAudioHealthClassifier.mjs"
+import { OutputRouteMismatchDetector } from "./audio/outputRouteMismatch.mjs"
 import { FatalMainProcessCoordinator } from "./utils/fatalMainProcess"
 import { installResilientDnsLookup } from "./utils/resilientDnsLookup"
 import { resolveDebugLogPath } from "./utils/debugLogPath.mjs"
 import { MeetingLifecycleQueue, type MeetingLifecycleState } from "./audio/meetingLifecycleQueue"
+import { systemAudioGrant, systemAudioRecordingBlocked, zeroFillMeansScreenRecordingLost, zeroFillMeansSystemAudioRecordingDenied } from "./audio/systemAudioPermission"
+import { defaultInputDecision } from "./audio/defaultInputFollow"
 import { autoUpdater } from "electron-updater"
 import { summarizeUpdateDownload } from "./update/updateDownloadSummary"
 
@@ -917,6 +921,30 @@ function getMacScreenCaptureStatus(): MacScreenCaptureStatus {
   }
 }
 
+/**
+ * The Screen Recording gate, for system audio only. On macOS 14.2+ the Core
+ * Audio tap does not need Screen Recording (see systemAudioPermission.ts), so a
+ * denied grant no longer turns meetings mic-only there. If the tap fails and the
+ * ScreenCaptureKit fallback runs without the grant, its silence raises the
+ * Screen Recording banner through the sustained zero-fill diagnosis instead.
+ */
+/** macOS 14.2+: the System Audio Recording grant, read by the native module. */
+function readSystemAudioRecordingPermission(): string {
+  try {
+    return String((loadNativeModule() as any)?.getSystemAudioRecordingPermission?.() ?? 'unknown');
+  } catch {
+    return 'unknown';
+  }
+}
+
+async function resolveMacSystemAudioCapability(context: string, options?: { bypassCache?: boolean }): Promise<MacScreenCaptureCapability> {
+  if (process.platform === 'darwin' && systemAudioGrant('darwin', process.getSystemVersion()) === 'system-audio-recording') {
+    clearSystemAudioPermissionWarning();
+    return { status: getMacScreenCaptureStatus(), capturable: true, effectiveDenied: false, sourceCount: 0 };
+  }
+  return resolveMacScreenCaptureCapability(context, options);
+}
+
 async function resolveMacScreenCaptureCapability(context: string, options?: { bypassCache?: boolean }): Promise<MacScreenCaptureCapability> {
   const isMac = process.platform === 'darwin';
 
@@ -1032,11 +1060,13 @@ type PermissionReason =
   | 'screen-recording-denied'
   | 'mac-screen-recording-restricted'
   | 'mac-screen-recording-revoked-rebuild'
+  | 'mac-system-audio-recording-denied'
   | 'mic-denied'
   | 'mic-zero-fill'
   | 'mac-same-device-input-output'
-  | 'system-audio-stuck';
-function formatPermissionMessage(reason: PermissionReason, extra?: { device?: string }): string {
+  | 'system-audio-stuck'
+  | 'output-route-mismatch';
+function formatPermissionMessage(reason: PermissionReason, extra?: { device?: string; captured?: string }): string {
   const isMac = process.platform === 'darwin';
   switch (reason) {
     case 'screen-recording-denied':
@@ -1066,14 +1096,36 @@ function formatPermissionMessage(reason: PermissionReason, extra?: { device?: st
       // than leak macOS UI strings to Windows users.
       if (!isMac) return formatPermissionMessage('system-audio-stuck');
       return 'System audio is arriving silent. Toggle Natively off and on under Privacy & Security → Screen Recording, then restart.';
+    case 'mac-system-audio-recording-denied':
+      // Defense-in-depth: see comment on `mac-screen-recording-revoked-rebuild`.
+      if (!isMac) return formatPermissionMessage('system-audio-stuck');
+      return "Interviewer audio won't be captured. Enable Natively under Privacy & Security → Screen & System Audio Recording, then restart.";
+    // Windows has no per-app toggle for desktop (Win32) apps — "enable Natively"
+    // sent users hunting for an entry that never exists. The gate is the
+    // desktop-apps switch; its wording and page path differ between Windows 10
+    // and 11, so they come from the same table the onboarding uses.
     case 'mic-denied':
-      return isMac
-        ? 'Enable Natively under Privacy & Security → Microphone, then restart.'
-        : 'Enable Natively under Settings → Privacy → Microphone, then restart.';
-    case 'mic-zero-fill':
-      return isMac
-        ? "Check the device isn't muted, and that Natively is enabled under Privacy & Security → Microphone."
-        : "Check the device isn't muted, and that Natively is enabled under Settings → Privacy → Microphone.";
+    case 'mic-zero-fill': {
+      if (isMac) {
+        return reason === 'mic-denied'
+          ? 'Enable Natively under Privacy & Security → Microphone, then restart.'
+          : "Check the device isn't muted, and that Natively is enabled under Privacy & Security → Microphone.";
+      }
+      // os.release() is "10.0.<build>" on both releases; Windows 11 is build
+      // 22000+. windowsMicPage takes the renderer's platformVersion scale
+      // (Windows 11 = 13+), so map onto it.
+      const build = Number.parseInt(os.release().split('.')[2] ?? '', 10);
+      const page = windowsMicPage(Number.isFinite(build) && build < 22000 ? 10 : 13);
+      // 'restricted' (DeniedBySystem) is the device-wide switch at the top of
+      // the page; the desktop-apps switch does nothing while that one is off.
+      let micStatus: string | undefined;
+      try { micStatus = systemPreferences.getMediaAccessStatus('microphone'); } catch { /* unknown */ }
+      const blocked = page.switches[windowsMicBlocker(micStatus) === 'device' ? 0 : 2];
+      const where = `"${blocked}" in Windows ${page.path.join(' → ')}`;
+      return reason === 'mic-denied'
+        ? `Turn on ${where}, then restart.`
+        : `Check the device isn't muted, and that ${where} is on.`;
+    }
     case 'mac-same-device-input-output':
       // Defense-in-depth: see comment on `mac-screen-recording-revoked-rebuild`.
       // The CoreAudio Process Tap same-device limitation is macOS-specific;
@@ -1082,6 +1134,10 @@ function formatPermissionMessage(reason: PermissionReason, extra?: { device?: st
       return `macOS can't tap ${extra?.device ?? 'this device'} while it's also the active mic. Switch input to the built-in mic, or output to the built-in speakers.`;
     case 'system-audio-stuck':
       return 'If your meeting app outputs to a different device (headset, virtual cable, second display), switch it to your default output.';
+    case 'output-route-mismatch':
+      // Windows-only emitter (per-endpoint output peaks); the wording is
+      // platform-neutral regardless.
+      return `Audio is playing on ${extra?.device ?? 'another device'}, but Natively is listening to ${extra?.captured ?? 'a different one'}. Choose ${extra?.device ?? 'that device'} as the output in Settings → Audio.`;
   }
 }
 
@@ -1114,6 +1170,9 @@ function permissionTitleKey(reason: PermissionReason): string {
     case 'mac-screen-recording-revoked-rebuild':
       if (!isMac) return permissionTitleKey('system-audio-stuck');
       return 'Screen Recording Grant Expired';
+    case 'mac-system-audio-recording-denied':
+      if (!isMac) return permissionTitleKey('system-audio-stuck');
+      return 'System Audio Recording Blocked';
     case 'mic-denied':
       return 'Microphone Blocked';
     case 'mic-zero-fill':
@@ -1123,6 +1182,8 @@ function permissionTitleKey(reason: PermissionReason): string {
       return 'Input and Output Are the Same Device';
     case 'system-audio-stuck':
       return 'No System Audio for 8s';
+    case 'output-route-mismatch':
+      return 'Meeting Audio on Another Device';
   }
 }
 
@@ -1227,7 +1288,7 @@ import { IntelligenceManager } from "./IntelligenceManager"
 import { SystemAudioCapture } from "./audio/SystemAudioCapture"
 import { MicrophoneCapture } from "./audio/MicrophoneCapture"
 import { AudioDevices } from "./audio/AudioDevices"
-import { resolveRequestedInputDevice } from "./audio/audioDeviceSelection.mjs"
+import { isInternalCaptureDevice, resolveRequestedInputDevice } from "./audio/audioDeviceSelection.mjs"
 import { loadNativeModule } from "./audio/nativeModuleLoader"
 import { GoogleSTT } from "./audio/GoogleSTT"
 import { RestSTT } from "./audio/RestSTT"
@@ -1353,6 +1414,7 @@ import { showLauncherForReminderDraft } from './services/assist/reminderDraftWin
 import { wireExtensionMeetingTabs } from './services/meetingDetection/extensionMeetingTabs'
 import { DesktopCallSpeakers, type DesktopCallReport } from './services/meetingDetection/desktopCallSpeakers'
 import { meetingMuteSync, muteSourceName, type MuteSource } from './services/meeting/MeetingMuteSync'
+import { TranscriptionPause, AudioLevelMeter, level as audioLevel } from './services/meeting/transcriptionPause'
 import { ScreenShareContext } from './services/meeting/ScreenShareContext'
 import { captureShareFrame, clearScreenShareFrames } from './services/meeting/screenShareCapture'
 import { SHORTCUT_TOUR_ACTIONS } from './services/shortcutTourActions'
@@ -1369,6 +1431,7 @@ import { acceptsLocalSpeechEndHint } from './intelligence/autoAnswer/SimpleAutoA
 import { NativeOomTrace } from './utils/NativeOomTrace'
 import { setStealthHookAvailabilityProvider } from './utils/windowsFocusPolicy'
 import { hasLiveRenderer } from './utils/rendererLiveness'
+import { DEFAULT_MEETING_SURFACE, planMeetingStart } from './utils/meetingSurface'
 import {
   shouldPromoteToRegularAtStartup,
   planDisguiseTitleWrites,
@@ -1513,6 +1576,19 @@ export class AppState {
       this.sendToWindow(this.getWindowHelper().getOverlayWindow(), 'meeting-mute-changed', { muted: state.muted, app: muteSourceName(state.app) });
     } catch { /* the overlay may not exist yet */ }
     console.log(`[Main] Meeting app mute: ${state.muted ? `muted in ${muteSourceName(state.app)}; the mic channel carries silence` : 'live'}`);
+  });
+  // Pause transcription from the notepad (services/meeting/transcriptionPause.ts):
+  // both capture paths below send silence while paused. Reset by every meeting start and end.
+  private readonly transcriptionPause = new TranscriptionPause();
+  private readonly _transcriptionPauseListener = this.transcriptionPause.onChange((paused) => {
+    try { this.meetingAutoStop.setPaused(paused); } catch { /* auto-stop never blocks a pause */ }
+    this.sendToMeetingSurfaces('meeting-transcription-paused', { paused });
+    console.log(`[Main] Transcription ${paused ? 'paused: both channels carry silence' : 'resumed'}`);
+  });
+  // The notepad's listening bars: the louder channel's level, only while that window is open.
+  private readonly audioLevelMeter = new AudioLevelMeter((value) => {
+    if (!this.notesWindowHelper?.isVisible()) return;
+    this.sendToWindow(this.notesWindowHelper.getWindow(), 'meeting-audio-level', value);
   });
   // Serializes start/stop so two transitions can never interleave. This is the
   // ONLY mutual-exclusion layer: _meetingGeneration, the _audioInitPromise
@@ -1928,24 +2004,29 @@ export class AppState {
     if (process.platform === 'darwin' || process.platform === 'win32') {
       const { StealthKeyboardManager } = require('./services/StealthKeyboardManager');
       const stealth = StealthKeyboardManager.getInstance();
-      // Only the overlay renderer may ENGAGE the system-wide keyboard hook.
-      // stealth-tap:start had no sender check, so any renderer (settings,
-      // cropper, model-selector) — or a compromised one — could turn on
-      // keystroke capture. Keystrokes still only ever flow to the overlay (see
-      // StealthKeyboardManager.overlayWebContents scoping), so this is a
-      // start-authority gate, not a read gate; but engaging capture is itself a
-      // capability that belongs to the overlay alone. stop() stays ungated —
-      // disengaging is always safe.
-      const isFromOverlay = (event: any): boolean => {
-        const overlay = this.windowHelper?.getOverlayWindow?.();
-        return !!overlay && !overlay.isDestroyed() && overlay.webContents.id === event?.sender?.id;
+      // Only the overlay and the notes window may ENGAGE the system-wide
+      // keyboard hook, each for itself. stealth-tap:start had no sender check,
+      // so any renderer (settings, cropper, model-selector) — or a compromised
+      // one — could turn on keystroke capture. Keystrokes only ever flow to the
+      // window that started the session (StealthKeyboardManager's target), and
+      // the target comes from the sender here, never from the renderer. This
+      // is a start-authority gate, not a read gate; but engaging capture is
+      // itself a capability that belongs to those two windows alone. stop()
+      // stays ungated — disengaging is always safe.
+      const senderIs = (win: BrowserWindow | null | undefined, event: any): boolean =>
+        !!win && !win.isDestroyed() && win.webContents.id === event?.sender?.id;
+      const typingTargetOf = (event: any): 'overlay' | 'notes' | null => {
+        if (senderIs(this.windowHelper?.getOverlayWindow?.(), event)) return 'overlay';
+        if (senderIs(this.notesWindowHelper?.getWindow?.(), event)) return 'notes';
+        return null;
       };
       registerStealthHandler('stealth-tap:available', () => stealth.isAvailable());
       registerStealthHandler('stealth-tap:open-settings', () => { stealth.openSettings(); });
       registerStealthHandler('stealth-tap:stop', () => { stealth.stop(); });
-      registerStealthHandler('stealth-tap:start', (event: any) =>
-        isFromOverlay(event) ? stealth.start() : false,
-      );
+      registerStealthHandler('stealth-tap:start', (event: any) => {
+        const target = typingTargetOf(event);
+        return target ? stealth.start(target) : false;
+      });
       if (process.platform === 'darwin') {
         // IME users (Pinyin, Hangul, Kanji, …) cannot compose under the tap
         // because CGEventTap fires below TIS. Renderer consults this before
@@ -2233,6 +2314,8 @@ export class AppState {
       setLive: (text) => this.intelligenceManager.setLiveUserNotes(text),
       saveEnded: (meetingId, text) => { DatabaseManager.getInstance().setMeetingUserNotes(meetingId, text); },
       broadcast: (state) => this.sendToWindow(this.notesWindowHelper.getWindow(), 'live-notes-state', state),
+      // The notepad's folder button (services/organise), as "Move to folder" on the meeting page.
+      fileInFolder: (meetingId, folderId, inFolder) => this.fileMeetingInFolder(meetingId, folderId, inFolder),
     })
 
     // Initialize ThemeManager
@@ -2424,6 +2507,17 @@ export class AppState {
     this.nativeOomTraceTimer = null;
   }
 
+  // The notepad's folder button (LiveNotesSession.fileInFolder). Every list of
+  // meetings refreshes, as "Move to folder" on the meeting page does.
+  private fileMeetingInFolder(meetingId: string, folderId: string, inFolder: boolean): boolean {
+    const { organiseStore } = require('./services/organise/organiseService');
+    const store = organiseStore();
+    if (!store) return false;
+    const ok = inFolder ? store.addMeetingToFolder(meetingId, folderId, 'user') : store.removeMeetingFromFolder(meetingId, folderId);
+    if (ok) for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send('meetings-updated');
+    return ok;
+  }
+
   private sendToWindow(win: BrowserWindow | null | undefined, channel: string, ...args: any[]): boolean {
     if (!win || win.isDestroyed()) return false;
     try {
@@ -2443,6 +2537,20 @@ export class AppState {
     };
     sendOnce(this.windowHelper.getLauncherWindow());
     sendOnce(this.windowHelper.getOverlayWindow());
+    // The notepad shows the meeting's status too (capture, transcription, pause):
+    // in a notepad meeting the overlay is hidden all meeting.
+    sendOnce(this.notesWindowHelper?.getWindow());
+  }
+
+  /** Pause or resume transcription (the notepad's pill); only while a meeting runs. */
+  public setTranscriptionPaused(paused: boolean): boolean {
+    if (paused && !this.isMeetingActive) return false;
+    this.transcriptionPause.setPaused(paused);
+    return true;
+  }
+
+  public isTranscriptionPaused(): boolean {
+    return this.transcriptionPause.isPaused();
   }
 
   private sendToSettingsSurfaces(channel: string, ...args: any[]): void {
@@ -2460,6 +2568,10 @@ export class AppState {
     const helper = this.getWindowHelper();
     this.sendToWindow(helper.getLauncherWindow(), 'native-audio-transcript', payload);
     this.sendToWindow(helper.getOverlayWindow(), 'native-audio-transcript', payload);
+    // The notes window's transcript panel (its ^ button), only while it is open.
+    if (this.notesWindowHelper?.isVisible()) {
+      this.sendToWindow(this.notesWindowHelper.getWindow(), 'native-audio-transcript', payload);
+    }
     // Phone mirror shows the same live transcript (no-op when it isn't running).
     try {
       PhoneMirrorService.getInstance().publishTranscript(payload);
@@ -3634,6 +3746,8 @@ export class AppState {
     },
     notify: (stopsAt) => {
       this.sendToWindow(this.getWindowHelper().getOverlayWindow(), 'meeting-auto-stop-notice', { stopsAt });
+      // A notepad meeting has no overlay on screen: the notepad shows it too.
+      if (this.notesWindowHelper?.isVisible()) this.sendToWindow(this.notesWindowHelper.getWindow(), 'meeting-auto-stop-notice', { stopsAt });
     },
   });
 
@@ -4176,7 +4290,10 @@ export class AppState {
 
       // Retryable: network drop, timeout, 5xx, 400, 429, WS drop. The audio
       // from here until text comes back is kept for recovery (sttGapRecovery.ts).
-      this.sttGap.onProviderError(gapSource);
+      // Not for a local model that is merely behind (LocalWhisperSTT
+      // LOCAL_STT_BEHIND_CODE): its text still comes, and recovery would run a
+      // second local model over the same audio on an already overloaded CPU.
+      if ((err as any)?.code !== 'local_stt_behind') this.sttGap.onProviderError(gapSource);
       _consecutiveErrors++;
       const maxErrors = 5;
 
@@ -4330,6 +4447,13 @@ export class AppState {
     let chunkCount = 0;
     // Rate of the PCM this capture emits, for gap recovery (read once, then on change).
     let gapRate = 0;
+    let firstChunkAtMs = 0;
+    // Callers assign this.systemAudioCapture before wiring; the old capture's
+    // quiet time must not be read as this one's (route-mismatch watcher).
+    if (this.systemAudioCapture === capture) {
+      this._systemAudioQuietSinceMs = 0;
+      this._systemAudioHeardSignal = false;
+    }
     // Watchdog: if no chunks arrive within 8s of capture start, the most likely
     // causes are (a) Screen Recording permission was revoked between the TCC
     // check and SCK init, (b) the meeting app routes audio to a device the
@@ -4360,7 +4484,8 @@ export class AppState {
         // just happened, a cached 'granted' would defeat the check) and emit
         // the correct banner when the silence is explained by a lost grant.
         // Probe failure or a healthy grant keeps the log-only behavior.
-        if (decision.reason === 'sustained-zero-valued-silence' && process.platform === 'darwin') {
+        // ScreenCaptureKit only: a Core Audio tap does not use Screen Recording.
+        if (decision.reason === 'sustained-zero-valued-silence' && process.platform === 'darwin' && zeroFillMeansScreenRecordingLost(capture.getActiveBackend())) {
           void resolveMacScreenCaptureCapability('sustained zero-fill diagnosis', { bypassCache: true })
             .then((cap) => {
               if (!cap.effectiveDenied) return;
@@ -4379,6 +4504,24 @@ export class AppState {
               });
             })
             .catch(() => { /* probe failed — keep log-only behavior */ });
+        }
+        // Core Audio tap: silence explained only by a declined System Audio
+        // Recording grant (an explicit "denied"; "unknown" stays log-only, as a
+        // quiet call does).
+        if (decision.reason === 'sustained-zero-valued-silence' && process.platform === 'darwin' && zeroFillMeansSystemAudioRecordingDenied(capture.getActiveBackend(), readSystemAudioRecordingPermission(), getMacScreenCaptureStatus())) {
+          if (this.systemAudioCapture === capture && this.isMeetingActive) {
+            const msg = formatPermissionMessage('mac-system-audio-recording-denied');
+            console.warn(`${prefix}SystemAudioCapture ${msg}`);
+            this.sendAudioCaptureFailed({
+              channel: 'system',
+              message: msg,
+              titleKey: permissionTitleKey('mac-system-audio-recording-denied'),
+              attempt: 0,
+              maxAttempts: 3,
+              terminal: false,
+              stuck: true,
+            });
+          }
         }
         return;
       }
@@ -4415,6 +4558,13 @@ export class AppState {
     let stuckTimer: NodeJS.Timeout | null = null;
     const armStuckWatchdog = () => {
       handleSystemAudioHealthDecision(systemAudioHealth.handle({ kind: 'capture-started', nowMs: Date.now() }));
+      // A restart of this same wrapper (mic recovery pauses and resumes system
+      // audio) is a new stream: its age and quiet time start over too.
+      firstChunkAtMs = 0;
+      if (this.systemAudioCapture === capture) {
+        this._systemAudioQuietSinceMs = 0;
+        this._systemAudioHeardSignal = false;
+      }
       if (stuckTimer) clearTimeout(stuckTimer);
       stuckTimer = setTimeout(() => {
         if (this.systemAudioCapture !== capture) return; // capture was replaced
@@ -4468,6 +4618,28 @@ export class AppState {
         clearTimeout(stuckTimer);
         stuckTimer = null;
       }
+      // Route-mismatch watcher input: when this capture last carried real
+      // signal (its first chunk, until it ever does) and whether it ever has.
+      if (this.systemAudioCapture === capture) {
+        const heardAt = systemAudioHealth.lastMeaningfulSignalAtMs;
+        this._systemAudioQuietSinceMs = heardAt ?? (firstChunkAtMs || now);
+        this._systemAudioHeardSignal = heardAt != null;
+      }
+      // A capture that has delivered audio for a minute proves the last
+      // recovery worked, so later unrelated failures get a fresh 3-attempt
+      // budget. Before, three failures spread over hours exhausted it for the
+      // rest of the meeting (and the fourth now raises a terminal banner).
+      if (firstChunkAtMs === 0) {
+        firstChunkAtMs = now;
+      } else if (
+        this._systemAudioRecoveryAttempts > 0
+        && now - firstChunkAtMs >= 60_000
+        && this.systemAudioCapture === capture
+        && !this._systemAudioRecoveryInProgress
+      ) {
+        this._systemAudioRecoveryAttempts = 0;
+        this._systemAudioConsecutiveFailures = 0;
+      }
       if (!this._sysSttRateApplied && this.googleSTT && this.systemAudioCapture === capture) {
         const rate = capture.getSampleRate();
         this.googleSTT.setSampleRate(rate);
@@ -4489,6 +4661,9 @@ export class AppState {
       // interleaved with the owner's audio it garbles the interviewer
       // transcript (F-102).
       if (this.systemAudioCapture === capture) {
+        // Paused from the notepad: silence of the same length (transcriptionPause.ts).
+        chunk = this.transcriptionPause.gate(chunk);
+        this.audioLevelMeter.note('system', this.transcriptionPause.isPaused() ? 0 : audioLevel(chunk));
         this.googleSTT?.write(chunk);
         // Gap recovery's ring buffer (sttGapRecovery.ts): a copy, nothing waits.
         if (this.sttGap.isActive()) {
@@ -4722,7 +4897,9 @@ export class AppState {
         // Muted in the meeting app ("Follow the meeting app's mute"): silence of
         // the same length, so the stream keeps its timing. The checks above
         // still read the real chunk.
-        const heard = meetingMuteSync.gate(chunk);
+        // Paused from the notepad, the same: silence (transcriptionPause.ts).
+        const heard = this.transcriptionPause.gate(meetingMuteSync.gate(chunk));
+        this.audioLevelMeter.note('mic', this.transcriptionPause.isPaused() ? 0 : audioLevel(heard));
         this.googleSTT_User?.write(heard);
         // Gap recovery's ring buffer (sttGapRecovery.ts): a copy, nothing waits.
         if (this.sttGap.isActive()) {
@@ -4768,7 +4945,7 @@ export class AppState {
       // and a between-meeting TCC revoke would cause the next meeting to
       // silently zero-fill with no banner — the exact pattern the audit
       // identified for "permissions granted (then revoked), no transcription."
-      const screenCapability = await resolveMacScreenCaptureCapability('system audio pipeline setup');
+      const screenCapability = await resolveMacSystemAudioCapability('system audio pipeline setup');
 
       if (screenCapability.effectiveDenied) {
         const message = screenCapability.message ?? formatPermissionMessage('screen-recording-denied');
@@ -5068,7 +5245,7 @@ export class AppState {
       this.systemAudioCapture = null;
     }
     try {
-      const screenCapability = await resolveMacScreenCaptureCapability('resume capture restart');
+      const screenCapability = await resolveMacSystemAudioCapability('resume capture restart');
       if (screenCapability.effectiveDenied) {
         this.sendSystemAudioPermissionDenied(
           screenCapability.message ?? formatPermissionMessage('screen-recording-denied'),
@@ -5147,6 +5324,11 @@ export class AppState {
   }): void {
     console.log(`[Main] device-selection-applied:`, payload);
     this.sendToSettingsSurfaces('device-selection-applied', payload);
+    // The overlay (NativelyInterface) clears a stale "system audio gave up"
+    // banner when a rebuild lands on a working device. Not via
+    // sendToMeetingSurfaces: the launcher already got it above.
+    const overlay = this.windowHelper.getOverlayWindow();
+    if (overlay) this.sendToWindow(overlay, 'device-selection-applied', payload);
   }
 
   /**
@@ -5535,7 +5717,7 @@ export class AppState {
       await oldSystemAudioCapture.destroy();
     }
 
-    const screenCapability = await resolveMacScreenCaptureCapability('audio reconfigure');
+    const screenCapability = await resolveMacSystemAudioCapability('audio reconfigure');
     if (screenCapability.effectiveDenied) {
       const message = screenCapability.message ?? formatPermissionMessage('screen-recording-denied');
       console.warn('[Main] Skipping SystemAudioCapture reconfigure — Screen Recording permission denied. Meeting will run mic-only.');
@@ -5917,6 +6099,33 @@ export class AppState {
         console.warn(
           `[AudioRecovery] Skipping recovery — already in progress or max attempts (${this._systemAudioRecoveryAttempts}/3) reached.`,
         );
+        // Native init failures (CoreAudio tap + SCK both failing, WASAPI init
+        // timeout) arrive asynchronously through this handler AFTER the
+        // recovery's synchronous start() "succeeded", so the catch below never
+        // sees them. The error that lands here after the third recovery is the
+        // only evidence that recovery is exhausted — make it terminal, or the
+        // renderer (which hides non-terminal banners) shows nothing at all.
+        // Attempts is bumped past 3 so this fires once; every reset site
+        // (meeting start, route change, wake) re-arms it by zeroing the counter.
+        if (!this._systemAudioRecoveryInProgress && this._systemAudioRecoveryAttempts === 3 && isRecoveryCurrentMeeting()) {
+          this._systemAudioRecoveryAttempts++;
+          // Wait out one default-output watcher tick (4s) first. Unplugging
+          // the device the capture was bound to fails it AND changes the
+          // default output; the route flow then rebuilds the capture and zeroes
+          // the counter, and a "gave up" banner would sit over working audio.
+          const failedCapture = this.systemAudioCapture;
+          setTimeout(() => {
+            if (!isRecoveryCurrentMeeting()) return;
+            if (this.systemAudioCapture !== failedCapture || this._systemAudioRecoveryAttempts !== 4) return;
+            this.sendAudioCaptureFailed({
+              channel: 'system',
+              message: `System audio capture gave up after 3 attempts. Last error: ${err.message}`,
+              attempt: 3,
+              maxAttempts: 3,
+              terminal: true,
+            });
+          }, 5000).unref?.();
+        }
         return;
       }
 
@@ -5967,7 +6176,7 @@ export class AppState {
         this._sysSttRateApplied = false;
         await oldCapture?.destroy();
 
-        const screenCapability = await resolveMacScreenCaptureCapability('system audio recovery');
+        const screenCapability = await resolveMacSystemAudioCapability('system audio recovery');
         if (!isRecoveryCurrentMeeting()) {
           return;
         }
@@ -6016,6 +6225,7 @@ export class AppState {
             maxAttempts: 3,
             terminal: true,
           });
+          this._systemAudioRecoveryAttempts++; // terminal sent — see the skip branch above
         }
       } finally {
         this._systemAudioRecoveryInProgress = false;
@@ -6106,6 +6316,176 @@ export class AppState {
       this._defaultOutputWatcherInterval = null;
     }
     this._lastObservedDefaultOutputId = null;
+    this.stopOutputRouteMismatchWatcher();
+  }
+
+  // ── Output-route mismatch (Windows, 2026-10-21) ───────────────────────────
+  // WASAPI loopback hears one endpoint. A meeting app on a different one (the
+  // eCommunications default Teams/Zoom use, or a device picked in the app's own
+  // settings) gave a transcript with no interviewer and no banner — the case
+  // the windows.rs LIMITATION note tracks. Each endpoint's live output peak
+  // tells us where audio is actually playing; outputRouteMismatch.mjs decides
+  // when that is evidence enough to re-target the capture or warn. macOS has
+  // no per-device output meter (probeOutputRoutes is empty there), so this
+  // is Windows-only; the macOS route watcher above follows the default output.
+  private _outputRouteMismatchInterval: NodeJS.Timeout | null = null;
+  private readonly _outputRouteMismatch = new OutputRouteMismatchDetector();
+  /** When the live system capture last carried real signal (or first chunked); 0 = no chunk yet. */
+  private _systemAudioQuietSinceMs = 0;
+  /** The live system capture has carried real signal at least once. */
+  private _systemAudioHeardSignal = false;
+  private _outputRouteProbeInFlight = false;
+
+  private startOutputRouteMismatchWatcher(): void {
+    if (process.platform !== 'win32' || this._outputRouteMismatchInterval) return;
+    const NativeModule: any = loadNativeModule();
+    if (!NativeModule || typeof NativeModule.probeOutputRoutes !== 'function') {
+      console.log('[OutputRouteMismatch] Native probeOutputRoutes unavailable — skipping.');
+      return;
+    }
+    this._outputRouteMismatch.reset();
+    this._outputRouteMismatchInterval = setInterval(() => {
+      this.checkOutputRouteMismatch(NativeModule).catch((err) => {
+        console.warn('[OutputRouteMismatch] Probe failed:', err);
+      });
+    }, 1000);
+    this._outputRouteMismatchInterval.unref?.();
+  }
+
+  private stopOutputRouteMismatchWatcher(): void {
+    if (this._outputRouteMismatchInterval) {
+      clearInterval(this._outputRouteMismatchInterval);
+      this._outputRouteMismatchInterval = null;
+    }
+  }
+
+  private async checkOutputRouteMismatch(NativeModule: any): Promise<void> {
+    if (this._isQuitting || !this.isMeetingActive) return;
+    if (this._defaultOutputSwitchInProgress || this._systemAudioRecoveryInProgress) return;
+    if (this._outputRouteProbeInFlight) return;
+    const capture = this.systemAudioCapture;
+    if (!capture) return;
+    // Only spend the probe while the capture is quiet — a mismatch is invisible
+    // while it is carrying the interviewer, and the detector needs no history
+    // older than its 5s window.
+    if (this._systemAudioQuietSinceMs === 0 || Date.now() - this._systemAudioQuietSinceMs < 1000) return;
+
+    let probe: { peaks: { id: string; peak: number }[]; defaultId: string; commsId: string };
+    this._outputRouteProbeInFlight = true;
+    try {
+      probe = await NativeModule.probeOutputRoutes();
+    } finally {
+      this._outputRouteProbeInFlight = false;
+    }
+    // The world may have moved while the worker ran.
+    if (this._isQuitting || !this.isMeetingActive || this.systemAudioCapture !== capture) return;
+    if (this._defaultOutputSwitchInProgress || this._systemAudioRecoveryInProgress) return;
+
+    const { peaks, defaultId, commsId } = probe;
+    const capturedId = capture.getRequestedDeviceId() || defaultId;
+    const decision = this._outputRouteMismatch.observe({
+      nowMs: Date.now(),
+      quietSinceMs: this._systemAudioQuietSinceMs,
+      heardSignal: this._systemAudioHeardSignal,
+      capturedId,
+      explicit: !!this._lastRequestedOutputDeviceId,
+      defaultId,
+      commsId,
+      peaks,
+    });
+    if (decision.type === 'none') return;
+
+    let names = new Map<string, string>();
+    try {
+      names = new Map((NativeModule.getOutputDevices?.() || []).map((d: { id: string; name: string }) => [d.id, d.name]));
+    } catch { /* names are cosmetic */ }
+    const playing = names.get(decision.deviceId) || 'another output device';
+    const listening = names.get(capturedId) || 'the default output';
+
+    if (decision.type === 'switch') {
+      console.warn(`[OutputRouteMismatch] Audio is playing on "${playing}" while the capture on "${listening}" is silent — re-targeting system audio.`);
+      this.handleDefaultOutputChanged(undefined, decision.deviceId).catch((err) => {
+        console.error('[OutputRouteMismatch] Re-target failed:', err);
+      });
+      return;
+    }
+    const message = formatPermissionMessage('output-route-mismatch', { device: playing, captured: listening });
+    console.warn(`[OutputRouteMismatch] ${message}`);
+    this.sendAudioCaptureFailed({
+      channel: 'system',
+      message,
+      titleKey: permissionTitleKey('output-route-mismatch'),
+      attempt: 0,
+      maxAttempts: 3,
+      terminal: false,
+      stuck: true,
+    });
+  }
+
+  // Default-input follow (electron/audio/defaultInputFollow.ts has the rules).
+  // A default-mic change is handed to the mic recovery as an 'error' on the
+  // current capture: that path already pauses system audio around the reopen,
+  // guards the meeting generation, rewires with wireMicCapture and reopens on
+  // this._lastRequestedInputDeviceId (empty = the new default).
+  private _defaultInputWatcherInterval: NodeJS.Timeout | null = null;
+  private _lastObservedDefaultInputId = '';
+
+  private startDefaultInputWatcher(): void {
+    if (this._defaultInputWatcherInterval) return;
+    const NativeModule: any = loadNativeModule();
+    if (!NativeModule || typeof NativeModule.getDefaultInputDeviceId !== 'function') {
+      console.log('[DefaultInputWatcher] Native getDefaultInputDeviceId unavailable — skipping.');
+      return;
+    }
+    const read = (): string => {
+      try { return NativeModule.getDefaultInputDeviceId() || ''; } catch { return ''; }
+    };
+    this._lastObservedDefaultInputId = read();
+    console.log(`[DefaultInputWatcher] Started. Initial default input: ${this._lastObservedDefaultInputId || '(none)'}`);
+
+    this._defaultInputWatcherInterval = setInterval(() => {
+      if (this._isQuitting) return;
+      const mic = this.microphoneCapture;
+      const current = this.isMeetingActive && mic ? read() : '';
+      // The device list is read only when the default actually moved.
+      const moved = !!current && current !== this._lastObservedDefaultInputId;
+      const changedToBluetooth = moved && this.isBluetoothInputName(current);
+      let selectable = false;
+      if (moved && !isInternalCaptureDevice(current)) {
+        try {
+          const want = current.toLowerCase();
+          selectable = AudioDevices.getInputDevices().some((d) => d.id.toLowerCase() === want || d.name.toLowerCase() === want);
+        } catch { /* unreadable list: stay on the current mic */ }
+      }
+      const decision = defaultInputDecision({
+        meetingActive: this.isMeetingActive,
+        pinnedInput: this._lastRequestedInputDeviceId,
+        hasCapture: !!mic,
+        busy: this._micRecoveryInProgress || this._defaultOutputSwitchInProgress || this._systemAudioRecoveryInProgress,
+        previous: this._lastObservedDefaultInputId,
+        current,
+        currentIsBluetooth: changedToBluetooth,
+        builtInAvailable: changedToBluetooth && !!this.findBuiltInInputDevice(),
+        currentSelectable: selectable,
+      });
+      if (decision === 'skip') return;
+      const previous = this._lastObservedDefaultInputId;
+      this._lastObservedDefaultInputId = current;
+      if (decision === 'observe') {
+        console.log(`[DefaultInputWatcher] Default input changed: ${previous || '(none)'} → ${current}; staying on the current mic.`);
+        return;
+      }
+      console.warn(`[DefaultInputWatcher] Default input changed: ${previous || '(none)'} → ${current}. Reopening the mic on it.`);
+      mic!.emit('error', new Error(`Default microphone changed to "${current}"`));
+    }, 4000);
+  }
+
+  private stopDefaultInputWatcher(): void {
+    if (this._defaultInputWatcherInterval) {
+      clearInterval(this._defaultInputWatcherInterval);
+      this._defaultInputWatcherInterval = null;
+    }
+    this._lastObservedDefaultInputId = '';
   }
 
   // ── ScreenCaptureKit re-probe (macOS, 2026-09-11) ─────────────────────────
@@ -6204,9 +6584,14 @@ export class AppState {
   public stopDefaultOutputWatcherForShutdown(): void {
     this.stopDefaultOutputWatcher();
     this.stopSckReprobeWatcher();
+    this.stopDefaultInputWatcher();
   }
 
-  private async handleDefaultOutputChanged(currentId?: string): Promise<void> {
+  /**
+   * @param bindToDeviceId set by the Windows output-route-mismatch watcher: bind
+   *   the rebuilt capture to this endpoint instead of following the default.
+   */
+  private async handleDefaultOutputChanged(currentId?: string, bindToDeviceId?: string): Promise<void> {
     const meetingGeneration = this._meetingGeneration;
     const isCurrentMeeting = () => this.isMeetingActive && this._meetingGeneration === meetingGeneration;
     if (this._isQuitting) return;
@@ -6251,7 +6636,7 @@ export class AppState {
       // property-listener lock.
       await oldCapture?.destroy();
 
-      const screenCapability = await resolveMacScreenCaptureCapability('default output route change');
+      const screenCapability = await resolveMacSystemAudioCapability('default output route change');
       if (this._isQuitting) return;
       if (!isCurrentMeeting()) {
         return;
@@ -6296,20 +6681,24 @@ export class AppState {
       // Pass undefined (not the new device id) so CoreAudio picks up the new
       // default at construction time. This is intentional: binding to a
       // stable id would defeat the whole point of "follow the user's route".
-      const fresh = new SystemAudioCapture(undefined);
+      // The one exception is a Windows route-mismatch re-target, which names
+      // the endpoint the meeting is actually playing on.
+      const fresh = new SystemAudioCapture(bindToDeviceId);
       this.systemAudioCapture = fresh;
-      this.wireSystemCapture(fresh, '(RouteChanged)');
+      this.wireSystemCapture(fresh, bindToDeviceId ? '(RouteMismatch)' : '(RouteChanged)');
       fresh.start();
       // Tell the renderer what's happening so any "interviewer went silent"
       // banners can clear once chunks resume.
       this.broadcastDeviceSelection({
         kind: 'output',
         requested: null,
-        actual: 'default',
+        actual: bindToDeviceId ?? 'default',
         fellBack: false,
-        reason: 'output-route-changed',
+        reason: bindToDeviceId ? 'output-route-mismatch' : 'output-route-changed',
       });
-      console.log('[DefaultOutputWatcher] CoreAudio Tap rebound to new default output.');
+      console.log(bindToDeviceId
+        ? '[OutputRouteMismatch] System audio re-targeted to the endpoint the meeting is playing on.'
+        : '[DefaultOutputWatcher] CoreAudio Tap rebound to new default output.');
       this._routeChangeRebuildFailures = 0;
     } catch (err) {
       // F2 (code-review 2026-08-14): the observation was committed BEFORE the
@@ -6692,7 +7081,7 @@ export class AppState {
     // test. The renderer renders the system-level bar greyed-out + a
     // permission-denied notice if the screen capture probe couldn't start.
     try {
-      const screenCapability = await resolveMacScreenCaptureCapability('audio test');
+      const screenCapability = await resolveMacSystemAudioCapability('audio test');
       // UX4 hardening: bail if a stopAudioTest fired during the await.
       // Constructing+starting a SystemAudioCapture after stop would orphan
       // the capture with no shutdown path.
@@ -6953,13 +7342,14 @@ export class AppState {
       }
 
       // Check Screen Recording permission required for system audio capture
-      // (CoreAudio Global Process Tap + ScreenCaptureKit both need this).
+      // (ScreenCaptureKit needs this; the macOS 14.2+ Core Audio tap does not, and
+      // resolveMacSystemAudioCapability skips the gate there).
       // NOTE: The 'not-determined' TCC dialog is triggered once at app startup
       // (in initializeApp) so it never pops up mid-meeting here. We only act on
       // explicit 'denied' — in that case warn the user but let the meeting continue
       // with microphone-only transcription.
       if (process.platform === 'darwin') {
-        const screenCapability = await resolveMacScreenCaptureCapability('meeting start');
+        const screenCapability = await resolveMacSystemAudioCapability('meeting start');
         console.log(`[Main] macOS screen recording permission status: ${screenCapability.status}; capturable=${screenCapability.capturable}; sources=${screenCapability.sourceCount}`);
         if (screenCapability.effectiveDenied) {
           // Permission was explicitly denied — warn the user via the UI but do NOT
@@ -6971,6 +7361,18 @@ export class AppState {
           this.sendSystemAudioPermissionDenied(message, screenCapability.titleKey ?? permissionTitleKey('screen-recording-denied'));
           // NOTE: Do NOT call shell.openExternal() here — it hijacks focus on every meeting
           // start. The UI banner (system-audio-permission-denied IPC event) handles this.
+        } else if (
+          systemAudioGrant('darwin', process.getSystemVersion()) === 'system-audio-recording'
+          && systemAudioRecordingBlocked(readSystemAudioRecordingPermission(), screenCapability.status)
+        ) {
+          // The tap still starts (the grant can be given at any time, and a
+          // wrong read must not cost the user their audio); the banner explains
+          // the silence that follows.
+          console.warn('[Main] System Audio Recording is denied and Screen Recording is not granted: the tap will be silent.');
+          this.sendSystemAudioPermissionDenied(
+            formatPermissionMessage('mac-system-audio-recording-denied'),
+            permissionTitleKey('mac-system-audio-recording-denied'),
+          );
         }
         // 'not-determined': Handled at startup. SCK/CoreAudio will trigger the TCC
         // dialog itself when it first attempts to access screen content.
@@ -6983,6 +7385,12 @@ export class AppState {
     // the reset bounds.)
     this.windowHelper.resetOverlayPosition();
 
+    // The overlay or the notepad (Settings › Overlay's switcher,
+    // utils/meetingSurface.ts). A notepad meeting is in overlay mode with the
+    // overlay hidden, and the notepad opens below once the page is this meeting's.
+    let startPlan = planMeetingStart(DEFAULT_MEETING_SURFACE, false);
+    try { startPlan = planMeetingStart(SettingsManager.getInstance().get('meetingSurface'), this.notesWindowHelper.wasLeftOpen()); } catch { /* the overlay, as always */ }
+
     // ─── WINDOW SWAP BEFORE STATE BROADCAST ───────────────────────────────
     // Switch to the overlay BEFORE flipping `isMeetingActive` to true. If we
     // broadcast meeting-state-changed:{isActive:true} while the launcher is
@@ -6990,7 +7398,7 @@ export class AppState {
     // before the renderer's follow-up setWindowMode('overlay') hides it —
     // visible as a flash. Switching first means the launcher hides before
     // the state event arrives, so the user only ever sees the overlay.
-    this.windowHelper.setWindowMode('overlay');
+    this.windowHelper.setWindowMode('overlay', undefined, { hidden: startPlan.overlayHidden });
 
     const meetingGeneration = ++this._meetingGeneration;
     this.isMeetingActive = true;
@@ -7006,8 +7414,10 @@ export class AppState {
     // the window open gets it back, without it taking focus.
     try {
       this.liveNotes.meetingStarted();
-      this.notesWindowHelper.reopenForMeeting();
+      this.notesWindowHelper.reopenForMeeting(startPlan.openNotes);
     } catch (e) { console.warn('[Main] notes window not reopened:', (e as Error)?.message); }
+    this.transcriptionPause.setPaused(false);
+    this.audioLevelMeter.reset();
     this.meetingAutoStop.start({ ambientChat: this._ambientChatEnabled, undetectable: this.isUndetectable });
     // A "meeting detected" offer still up (panel, notification, countdown) is answered.
     try { require('./services/meetingDetection/wireMeetingDetection').getMeetingOffers()?.clear('meeting started'); } catch { /* nothing offered */ }
@@ -7228,6 +7638,8 @@ export class AppState {
         // export.
         this.startDefaultOutputWatcher();
         this.startSckReprobeWatcher();
+        this.startDefaultInputWatcher();
+        this.startOutputRouteMismatchWatcher();
 
         if (this._verboseLogging) {
           const requestedInput = metadata?.audio?.inputDeviceId || 'default';
@@ -7443,6 +7855,8 @@ export class AppState {
     } catch { /* non-fatal */ }
     // The "Last time" recap goes with the meeting (services/assist).
     try { getAssistService()?.noteMeetingEnded(); } catch { /* nothing showing */ }
+    // A paused meeting ends unpaused (the notepad's Pause, transcriptionPause.ts).
+    this.transcriptionPause.setPaused(false);
 
     // Reset Mouse Passthrough so the next meeting overlay starts fresh and focusable
     if (this.overlayMousePassthrough) {
@@ -7569,6 +7983,7 @@ export class AppState {
     // there's no active capture to rebind.
     this.stopDefaultOutputWatcher();
     this.stopSckReprobeWatcher();
+    this.stopDefaultInputWatcher();
 
     // Tell STT to mark the audio stream as ended; trailing finals will arrive
     // over the next ~150ms while we're already returning to the renderer.
@@ -8032,6 +8447,30 @@ export class AppState {
       this.googleSTT_User.setCredentials(keyPath);
     }
     return verdict;
+  }
+
+  // The notepad's mic picker (2026-10-20): each switch rebuilds the native
+  // mic capture (CoreAudio on macOS, WASAPI on Windows), so they run one at a
+  // time, as reconfigureSttProvider's do.
+  private _inputSwitchChain: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Switch the running meeting's microphone (the notepad's transcript panel).
+   * Outside a meeting nothing runs: the next meeting reads the same saved
+   * choice. The output side keeps its current device.
+   */
+  public switchMeetingInputDevice(deviceId: string | null): Promise<boolean> {
+    if (deviceId !== null && (typeof deviceId !== 'string' || !deviceId || deviceId.length > 512 || isInternalCaptureDevice(deviceId))) {
+      return Promise.resolve(false);
+    }
+    const run = async (): Promise<boolean> => {
+      if (!this.isMeetingActive) return false;
+      await this.reconfigureAudio(deviceId, this._lastRequestedOutputDeviceId);
+      return true;
+    };
+    const next = this._inputSwitchChain.then(run, run);
+    this._inputSwitchChain = next.catch(() => undefined);
+    return next;
   }
 
   public setRecognitionLanguage(key: string): void {
@@ -10533,7 +10972,7 @@ if (process.env.THINKING_MATRIX === '1') {
           // system audio at all, so a denied Screen Recording grant is moot —
           // skip the banner rather than warning about a capability the app
           // isn't going to use.
-          const screenCapability = await resolveMacScreenCaptureCapability('startup permission check');
+          const screenCapability = await resolveMacSystemAudioCapability('startup permission check');
           if (screenCapability.effectiveDenied) {
             // Returning user who previously denied — show the banner immediately at startup
             // so they know system audio won't work before they even start a meeting.
@@ -11102,6 +11541,8 @@ if (process.env.THINKING_MATRIX === '1') {
     try {
       appState.stopDefaultOutputWatcherForShutdown?.();
       appState.disposeAutoAnswerForShutdown?.();
+      // The Chromium capture fallback's hidden window, if one was made.
+      require('./audio/fallback/captureHost').disposeCaptureHost();
     } catch (e) {
       console.error('[main] Failed to stop DefaultOutputWatcher during shutdown:', e);
     }

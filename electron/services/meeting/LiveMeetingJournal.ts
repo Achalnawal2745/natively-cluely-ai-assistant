@@ -49,6 +49,8 @@ export interface MeetingRecoveryMeta {
      * so a quit or crash keeps it; recovery hands it to the notes as Stop would.
      */
     userNotes?: string;
+    /** The note template picked in the notepad (noteTemplates.ts), so recovery writes the notes in it. */
+    noteTemplateId?: string;
 }
 
 export interface LiveJournalRow {

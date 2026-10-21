@@ -993,12 +993,9 @@ export function createWhisperDownloadProvider(): LocalModelDownloadProvider {
     },
     preflightCheck(): string | null {
       // Preserve the existing macOS 13 Ventura gate from the IPC handler.
-      if (process.platform === 'darwin') {
-        const os = require('os') as typeof import('os');
-        const darwinMajor = parseInt(os.release().split('.')[0], 10);
-        if (Number.isNaN(darwinMajor) || darwinMajor < 22) {
-          return 'Local Whisper models require macOS 13 Ventura or later.';
-        }
+      {
+        const { onnxRuntimeSupportedOnThisMac, ONNX_MAC_UNSUPPORTED_MESSAGE } = require('../audio/whisper/onnxMacSupport');
+        if (!onnxRuntimeSupportedOnThisMac()) return ONNX_MAC_UNSUPPORTED_MESSAGE;
       }
       return null;
     },

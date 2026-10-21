@@ -2,9 +2,10 @@ import React, { useEffect, useState } from 'react';
 import {
     ArrowRight, AudioLines, CalendarCheck, Code, Crop, Eye, FileText, FlaskConical, Ghost, Info, Keyboard, LayoutGrid,
     ListOrdered, MessageSquareText, MonitorUp, MousePointerClick, Move, PanelTop, PointerOff, ShieldCheck, Smartphone,
-    TriangleAlert, UserRound,
+    TriangleAlert,
 } from 'lucide-react';
 import { AutoAnswerIcon } from '../AutoAnswerIcon';
+import { ProfileIntelligenceIcon } from '../ProfileIntelligenceIcon';
 import { useT } from '../../i18n';
 import { useShortcuts, type ShortcutConfig } from '../../hooks/useShortcuts';
 import { isMac, isWindows } from '../../utils/platformUtils';
@@ -371,7 +372,7 @@ const HelpPane: React.FC<{
                         control={onOpenModes && <GoButton label={t('Modes')} onClick={onOpenModes} />}
                     />
                     <SettingsRow
-                        icon={<UserRound size={20} />}
+                        icon={<ProfileIntelligenceIcon size={20} />}
                         title={t('Add your résumé')}
                         badge={
                             <Presence kind="badge" id={status.profile.state === 'locked' ? 'pro' : 'optional'}>
@@ -543,10 +544,10 @@ const HelpPane: React.FC<{
                             items={[
                                 { title: 'The pill', body: <>The logo opens the Launcher. Hide hides the overlay; {keys('toggleVisibility')} brings it back. The square ends the meeting.</> },
                                 { title: 'Live transcript', body: 'What is being said, as your speech provider hears it.' },
-                                { title: 'Quick actions', body: 'What to answer?, Clarify, Recap (Brainstorm in Interview Mode), Follow Up Question, and Answer, which records you.' },
+                                { title: 'Quick actions', body: 'What to answer?, Clarify, Recap, Follow Up Question, and Answer, which records you. Settings › Overlay reorders them or swaps in Brainstorm, What did I miss?, Define or Sound smart.' },
                                 { title: 'Ask box', body: <>Type any question. {keys('selectiveScreenshot')} attaches part of the screen.</> },
                                 { title: 'Model', body: 'Switches the AI model.' },
-                                { title: 'Quick settings', body: 'Undetectable, Fast Response, Transcript and Interview Mode.' },
+                                { title: 'Quick settings', body: 'Undetectable, Fast Response and Transcript.' },
                                 { title: 'Mouse passthrough', body: 'Lets clicks go through to the app behind.' },
                             ]}
                         />
@@ -653,7 +654,7 @@ const HelpPane: React.FC<{
 
                     {/* Profile Intelligence */}
                     <HelpGuideRow
-                        icon={<UserRound size={20} />}
+                        icon={<ProfileIntelligenceIcon size={20} />}
                         title={t('Profile Intelligence')}
                         description={t('Answers built from your résumé and the job you want.')}
                     >

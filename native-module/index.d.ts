@@ -192,6 +192,28 @@ export interface CallTreeWindow {
   nodes: Array<CallTreeNode>
 }
 
+export interface OutputDevicePeak {
+  id: string
+  peak: number
+}
+
+export interface OutputRouteProbe {
+  /** Live output peak (0.0–1.0) of every active render endpoint. */
+  peaks: Array<OutputDevicePeak>
+  /** eConsole default render endpoint. */
+  defaultId: string
+  /** eCommunications default render endpoint — where Teams/Zoom/Discord play. */
+  commsId: string
+}
+
+/**
+ * Windows: where audio is actually playing right now (see
+ * speaker::windows::output_device_peaks) plus both role defaults. Empty
+ * elsewhere — macOS has no per-device output meter, and JS treats an empty
+ * probe as "no evidence".
+ */
+export declare function probeOutputRoutes(): Promise<OutputRouteProbe>
+
 /**
  * Event payload delivered to the JS callback. Crossing the V8 boundary is
  * not free, so we keep this struct flat (no nested objects) and only include
@@ -252,6 +274,17 @@ export declare function deactivateDodoKey(licenseKey: string, instanceId: string
 export declare function getCalendarEvents(startMs: number, endMs: number): Promise<Array<CalendarEventInfo> | null>
 
 /**
+ * Name of the current default input device (cpal), the id get_input_devices
+ * uses for it. Empty string when there is none. JS polls it during a meeting
+ * that captures from the default mic, and reopens the mic when it changes:
+ * cpal binds a stream to the device it opened, so without this a new default
+ * (USB headset plugged in, mic changed in system settings) went unheard while
+ * the old one stayed open. Call only while the mic is already capturing: on
+ * macOS cpal::default_host() registers the process with the CoreAudio HAL.
+ */
+export declare function getDefaultInputDeviceId(): string
+
+/**
  * Returns the platform-native ID of the current default output device.
  * macOS: CoreAudio device UID. Windows: WASAPI device id (eMultimedia/eConsole role).
  * Empty string on error or unsupported platform.
@@ -276,6 +309,15 @@ export declare function getInputDevices(): Array<AudioDeviceInfo>
 export declare function getMicUsers(): Array<MicUser> | null
 
 export declare function getOutputDevices(): Array<AudioDeviceInfo>
+
+/**
+ * macOS: the "System Audio Recording" grant the Core Audio tap needs:
+ * "granted", "denied", or "unknown" (not asked yet, or unreadable). Read
+ * through a private TCC call loaded at run time (see
+ * speaker/audio_capture_permission.rs); only ever used to explain silence,
+ * never to refuse capture. "unknown" on other platforms.
+ */
+export declare function getSystemAudioRecordingPermission(): string
 
 /** The visible top-level windows; null where the OS can't say. */
 export declare function getVisibleWindows(): Array<WindowInfo> | null

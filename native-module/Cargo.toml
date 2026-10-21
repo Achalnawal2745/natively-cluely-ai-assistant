@@ -27,7 +27,13 @@ webrtc-vad = "0.4"
 bytemuck = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-cidre = { version = "0.11.10", features = ["ca", "cm", "av", "cat", "dispatch", "ns", "sc", "cf", "blocks", "objc"] }
+# classic-objc-retain-release: on arm64 cidre otherwise retains and releases
+# through objc_retain_x<N> / objc_release_x<N>, register variants libobjc gained
+# in macOS 13. They are strong imports, so on an Apple Silicon Mac running
+# macOS 12 dyld refused the whole module (mic, system audio and every other
+# native export). The classic objc_retain / objc_release exist on every macOS.
+# scripts/lib/native-link-checks.cjs fails the build if the variants come back.
+cidre = { version = "0.11.10", default-features = false, features = ["ca", "cm", "av", "cat", "dispatch", "ns", "sc", "cf", "blocks", "async", "objc", "core_audio", "macos_15_0", "classic-objc-retain-release"] }
 # Used by stealth_window to access NSWindow APIs Electron doesn't expose
 # (becomesKeyOnlyIfNeeded, hidesOnDeactivate, collectionBehavior). objc2 is
 # the actively-maintained Rust↔Objective-C bridge; objc2-app-kit gives strongly
@@ -62,6 +68,13 @@ wasapi = "0.13.0"
 #   Win32_System_LibraryLoader            — GetModuleHandleW (hmod for the LL hook).
 windows = { version = "0.52.0", features = [
     "Win32_Media_Audio",
+    #   Win32_Media_Audio_Endpoints       — IAudioMeterInformation: per-endpoint output
+    #                                       peak, to see which device the meeting plays on.
+    "Win32_Media_Audio_Endpoints",
+    #   Win32_System_Com_StructuredStorage + Win32_System_Variant — required by the
+    #                                       binding's gate on IMMDevice::Activate.
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
     "Win32_System_Com",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",

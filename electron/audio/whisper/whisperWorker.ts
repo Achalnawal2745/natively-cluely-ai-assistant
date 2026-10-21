@@ -15,6 +15,7 @@
  * natively as a true dynamic ESM import at runtime.
  */
 import { parentPort } from 'worker_threads';
+import { createWhisperTaskQueue } from './whisperTaskQueue';
 import { WhisperProgressAggregator } from './whisperProgressAggregator';
 import { downloadModelFilesResumable } from './resumableDownload';
 import { getBoundedOnnxSessionOptions } from '../../utils/onnxThreadConfig';
@@ -30,7 +31,7 @@ import { getBoundedOnnxSessionOptions } from '../../utils/onnxThreadConfig';
 //  - ENGLISH_ONLY_MODELS was a hand-typed id list that omitted Parakeet CTC
 //    (English-only per NVIDIA's model card). isEnglishOnlyLocalModel() is
 //    derived from MODEL_CATALOG's own `multilingual` flag instead.
-import { isEnglishOnlyLocalModel, resolveWhisperLanguage } from './modelLanguageSupport';
+import { detectedWhisperLanguage, isEnglishOnlyLocalModel, resolveWhisperLanguage } from './modelLanguageSupport';
 import { moonshineMaxNewTokens } from './moonshineTokenBudget';
 
 let pipe: any = null;
@@ -466,6 +467,7 @@ parentPort.on('message', async (msg: any) => {
       // New model = stale prompt cache (different tokenizer vocab)
       cachedPromptText = '';
       cachedPromptIds = null;
+      autoLanguage = null;
 
       parentPort!.postMessage({ type: 'ready' });
     } catch (e: any) {
@@ -640,102 +642,221 @@ parentPort.on('message', async (msg: any) => {
       parentPort!.postMessage({ type: 'error', message: 'Model not loaded' });
       return;
     }
-    try {
-      let language: string | null = resolveWhisperLanguage(msg.language);
-      const streaming: boolean = !!msg.streaming;
-
-      // English-only checkpoints (Distil-Whisper + .en variants) have no
-      // multilingual decoder — and transformers.js REJECTS the decoder-prompt
-      // options for them outright. From the installed library source:
-      //
-      //   if (e.is_multilingual) { …lang_to_id / task_to_id… }
-      //   else if (s || r) throw new Error(
-      //     "Cannot specify `task` or `language` for an English-only model…")
-      //
-      // where s = generationConfig.language and r = generationConfig.task. So
-      // BOTH must be omitted, not just one, and this block previously did the
-      // exact opposite: it FORCED language='english' on precisely the models
-      // that forbid it. Every transcription then threw, and because the
-      // streaming loop re-dispatches per audio window the failure repeated
-      // once per chunk — 15,733 identical errors across three days in the
-      // 2026-08-12 production log (10,183 of them in a single day), with the
-      // user's local STT silently producing nothing the whole time.
-      //
-      // Omitting them is not a downgrade: an English-only checkpoint can only
-      // transcribe, and only in English, so there is nothing left to express.
-      //
-      // Derived from MODEL_CATALOG's `multilingual` flag (modelLanguageSupport)
-      // rather than the previous hand-typed id set, which omitted Parakeet CTC
-      // — English-only per NVIDIA's model card, and a CTC pipeline with no
-      // decoder prompt to condition anyway.
-      const isEnglishOnly = isEnglishOnlyLocalModel(loadedModelId);
-      if (isEnglishOnly) {
-        language = null;
-      }
-
-      // Streaming partial passes use deterministic settings so consecutive
-      // overlapping windows are stable enough for LocalAgreement-2 to
-      // converge on a committed prefix. Final passes also disable
-      // condition_on_previous_text + add Whisper's standard fallback
-      // thresholds to suppress repetition loops on long segments.
-      const opts: any = streaming
-        ? {
-            sampling_rate: 16000,
-            task: 'transcribe',
-            temperature: 0,
-            no_speech_threshold: 0.6,
-            // Whisper's anti-loop check — drops outputs whose token gzip
-            // ratio exceeds 2.4 (typical of "thank you. thank you. thank
-            // you..." hallucinations on near-silent windows). Final pass
-            // uses the same threshold; streaming should match for
-            // consistency in what reaches the user.
-            compression_ratio_threshold: 2.4,
-            condition_on_previous_text: false,
-            return_timestamps: false,
-          }
-        : {
-            sampling_rate: 16000,
-            task: 'transcribe',
-            condition_on_previous_text: false,
-            compression_ratio_threshold: 2.4,
-            logprob_threshold: -1.0,
-            no_speech_threshold: 0.6,
-          };
-      // `task` is set unconditionally in BOTH opts branches above, so an
-      // English-only model must have it stripped here — fixing only the
-      // `language` line would still throw on `task`.
-      if (isEnglishOnly) {
-        delete opts.task;
-      } else if (language) {
-        opts.language = language;
-      }
-
-      // Use the pre-tokenized prompt cache populated by setPrompt messages.
-      // Skip for Moonshine (cached IDs are null in that case anyway).
-      if (cachedPromptIds && cachedPromptIds.length > 0 && !isMoonshineModel(loadedModelId)) {
-        opts.prompt_ids = cachedPromptIds;
-      }
-
-      // Moonshine: set the token budget ourselves. Left to the library it is
-      // floor(whole seconds) * 6, which is ZERO for anything under a second —
-      // see moonshineTokenBudget.ts. msg.audio is already 16 kHz mono (the
-      // host resamples before posting).
-      if (isMoonshineModel(loadedModelId)) {
-        opts.max_new_tokens = moonshineMaxNewTokens(msg.audio?.length ?? 0, 16000);
-      }
-
-      const result = await pipe(msg.audio, opts);
-      parentPort!.postMessage({
-        type: streaming ? 'partial' : 'result',
-        taskId: msg.taskId,
-        text: result.text ?? '',
-      });
-    } catch (e: any) {
-      parentPort!.postMessage({
-        type: 'error',
-        taskId: msg.taskId,
-        message: `Transcription failed: ${e.message}`,
-      });
-    }
+    whisperQueue.push(msg);
   }
 });
+
+// Whisper / Moonshine: one pass at a time, finals first (whisperTaskQueue.ts).
+const whisperQueue = createWhisperTaskQueue<any>({
+  run: runWhisperTranscribe,
+  // Answered so the host stops waiting on it; it shows no text.
+  skip: (msg) => parentPort!.postMessage({ type: 'partial', taskId: msg.taskId, text: '', skipped: true }),
+  behind: (waitedMs) => parentPort!.postMessage({ type: 'behind', waitedMs }),
+});
+
+// "Auto Detect" on a multilingual Whisper. Left to transformers.js 3.8.1 a null
+// language is transcribed as English (it has no detection), so French speech
+// came back as English sentences (2026-10-21).
+//
+// Every final is checked, so a meeting that changes language follows it. The
+// check runs the encoder once and the transcription reuses that output
+// (encoder_outputs), so it costs one decoder step, not a second encoder pass.
+// Partials use the language of the last final. An unsure guess keeps the
+// language before it: under 50%, or under 80% on a clip shorter than 1.5 s.
+let autoLanguage: string | null = null;
+const AUTO_LANGUAGE_MIN_SAMPLES = 16000 * 1.5;
+
+// Both steps use transformers.js internals (the version is pinned exactly in
+// package.json and WhisperInternalsContract2026_10_21.test.mjs checks them).
+// If one still fails three finals in a row it is switched off for the
+// session: every final would otherwise pay for a failed attempt first.
+const INTERNALS_FAILURE_LIMIT = 3;
+const internalsFailures = { detect: 0, reuse: 0 };
+function internalsUsable(step: 'detect' | 'reuse'): boolean {
+  return internalsFailures[step] < INTERNALS_FAILURE_LIMIT;
+}
+function internalsResult(step: 'detect' | 'reuse', ok: boolean, e?: any): void {
+  if (ok) {
+    internalsFailures[step] = 0;
+    return;
+  }
+  internalsFailures[step] += 1;
+  if (internalsFailures[step] === INTERNALS_FAILURE_LIMIT) {
+    console.warn(`[WhisperWorker] ${step === 'detect' ? 'Auto Detect' : 'Reusing the encoder output'} failed ${INTERNALS_FAILURE_LIMIT} times in a row, off until restart:`, e?.message ?? e);
+  }
+}
+
+function acceptsAutoLanguage(guess: { probability: number } | null, samples: number): boolean {
+  if (!guess) return false;
+  if (!autoLanguage) return true;
+  return guess.probability >= (samples >= AUTO_LANGUAGE_MIN_SAMPLES ? 0.5 : 0.8);
+}
+
+async function detectAutoLanguage(audio: Float32Array): Promise<{ language: string | null; encoderOutputs: any }> {
+  const model = pipe?.model;
+  const config = model?.generation_config;
+  const langToId = config?.lang_to_id;
+  const sot = config?.decoder_start_token_id;
+  if (!langToId || sot == null || !pipe.processor || typeof model._prepare_encoder_decoder_kwargs_for_generation !== 'function') {
+    return { language: autoLanguage, encoderOutputs: null };
+  }
+  const { Tensor } = await loadTransformers() as any;
+  const { input_features } = await pipe.processor(audio);
+  const { encoder_outputs } = await model._prepare_encoder_decoder_kwargs_for_generation({
+    inputs_tensor: input_features,
+    model_inputs: { input_features },
+    model_input_name: 'input_features',
+    generation_config: {},
+  });
+  const out = await model({
+    encoder_outputs,
+    decoder_input_ids: new Tensor('int64', BigInt64Array.from([BigInt(sot)]), [1, 1]),
+  });
+  const guess = detectedWhisperLanguage(out.logits.data, langToId);
+  if (acceptsAutoLanguage(guess, audio.length) && guess!.language !== autoLanguage) {
+    console.log(`[WhisperWorker] Auto Detect: ${guess!.language} (${Math.round(guess!.probability * 100)}%, was ${autoLanguage ?? 'none'}, ${loadedModelId})`);
+    autoLanguage = guess!.language;
+  }
+  return { language: autoLanguage, encoderOutputs: encoder_outputs };
+}
+
+// WhisperPreTrainedModel.forward_params leaves out encoder_outputs, so
+// generate() would drop it and run the encoder again. With it listed,
+// generate() skips the encoder ("if (!('encoder_outputs' in model_inputs))").
+function letGenerateReuseEncoderOutputs(model: any): boolean {
+  if (!Array.isArray(model?.forward_params)) return false;
+  if (!model.forward_params.includes('encoder_outputs')) model.forward_params = [...model.forward_params, 'encoder_outputs'];
+  return true;
+}
+
+async function runWhisperTranscribe(msg: any): Promise<void> {
+  if (!pipe) {
+    parentPort!.postMessage({ type: 'error', taskId: msg.taskId, message: 'Model not loaded' });
+    return;
+  }
+  try {
+    let language: string | null = resolveWhisperLanguage(msg.language);
+    const streaming: boolean = !!msg.streaming;
+
+    // English-only checkpoints (Distil-Whisper + .en variants) have no
+    // multilingual decoder — and transformers.js REJECTS the decoder-prompt
+    // options for them outright. From the installed library source:
+    //
+    //   if (e.is_multilingual) { …lang_to_id / task_to_id… }
+    //   else if (s || r) throw new Error(
+    //     "Cannot specify `task` or `language` for an English-only model…")
+    //
+    // where s = generationConfig.language and r = generationConfig.task. So
+    // BOTH must be omitted, not just one, and this block previously did the
+    // exact opposite: it FORCED language='english' on precisely the models
+    // that forbid it. Every transcription then threw, and because the
+    // streaming loop re-dispatches per audio window the failure repeated
+    // once per chunk — 15,733 identical errors across three days in the
+    // 2026-08-12 production log (10,183 of them in a single day), with the
+    // user's local STT silently producing nothing the whole time.
+    //
+    // Omitting them is not a downgrade: an English-only checkpoint can only
+    // transcribe, and only in English, so there is nothing left to express.
+    //
+    // Derived from MODEL_CATALOG's `multilingual` flag (modelLanguageSupport)
+    // rather than the previous hand-typed id set, which omitted Parakeet CTC
+    // — English-only per NVIDIA's model card, and a CTC pipeline with no
+    // decoder prompt to condition anyway.
+    let encoderOutputs: any = null;
+    const isEnglishOnly = isEnglishOnlyLocalModel(loadedModelId);
+    if (isEnglishOnly) {
+      language = null;
+    } else if (!language && !isMoonshineModel(loadedModelId)) {
+      if (streaming) {
+        language = autoLanguage;
+      } else if (internalsUsable('detect')) {
+        try {
+          ({ language, encoderOutputs } = await detectAutoLanguage(msg.audio));
+          internalsResult('detect', true);
+        } catch (e: any) {
+          console.warn('[WhisperWorker] Auto Detect failed, keeping the last language:', e?.message ?? e);
+          internalsResult('detect', false, e);
+          language = autoLanguage;
+        }
+      } else {
+        language = autoLanguage;
+      }
+    }
+
+    // Streaming partial passes use deterministic settings so consecutive
+    // overlapping windows are stable enough for LocalAgreement-2 to
+    // converge on a committed prefix. Final passes also disable
+    // condition_on_previous_text + add Whisper's standard fallback
+    // thresholds to suppress repetition loops on long segments.
+    const opts: any = streaming
+      ? {
+          sampling_rate: 16000,
+          task: 'transcribe',
+          temperature: 0,
+          no_speech_threshold: 0.6,
+          // Whisper's anti-loop check — drops outputs whose token gzip
+          // ratio exceeds 2.4 (typical of "thank you. thank you. thank
+          // you..." hallucinations on near-silent windows). Final pass
+          // uses the same threshold; streaming should match for
+          // consistency in what reaches the user.
+          compression_ratio_threshold: 2.4,
+          condition_on_previous_text: false,
+          return_timestamps: false,
+        }
+      : {
+          sampling_rate: 16000,
+          task: 'transcribe',
+          condition_on_previous_text: false,
+          compression_ratio_threshold: 2.4,
+          logprob_threshold: -1.0,
+          no_speech_threshold: 0.6,
+        };
+    // `task` is set unconditionally in BOTH opts branches above, so an
+    // English-only model must have it stripped here — fixing only the
+    // `language` line would still throw on `task`.
+    if (isEnglishOnly) {
+      delete opts.task;
+    } else if (language) {
+      opts.language = language;
+    }
+
+    // Use the pre-tokenized prompt cache populated by setPrompt messages.
+    // Skip for Moonshine (cached IDs are null in that case anyway).
+    if (cachedPromptIds && cachedPromptIds.length > 0 && !isMoonshineModel(loadedModelId)) {
+      opts.prompt_ids = cachedPromptIds;
+    }
+
+    // Moonshine: set the token budget ourselves. Left to the library it is
+    // floor(whole seconds) * 6, which is ZERO for anything under a second —
+    // see moonshineTokenBudget.ts. msg.audio is already 16 kHz mono (the
+    // host resamples before posting).
+    if (isMoonshineModel(loadedModelId)) {
+      opts.max_new_tokens = moonshineMaxNewTokens(msg.audio?.length ?? 0, 16000);
+    }
+
+    let result: any;
+    if (encoderOutputs && internalsUsable('reuse') && letGenerateReuseEncoderOutputs(pipe.model)) {
+      try {
+        result = await pipe(msg.audio, { ...opts, encoder_outputs: encoderOutputs });
+        internalsResult('reuse', true);
+      } catch (e: any) {
+        console.warn('[WhisperWorker] Reusing the encoder output failed, running it again:', e?.message ?? e);
+        internalsResult('reuse', false, e);
+        result = await pipe(msg.audio, opts);
+      }
+    } else {
+      result = await pipe(msg.audio, opts);
+    }
+    parentPort!.postMessage({
+      type: streaming ? 'partial' : 'result',
+      taskId: msg.taskId,
+      text: result.text ?? '',
+    });
+  } catch (e: any) {
+    parentPort!.postMessage({
+      type: 'error',
+      taskId: msg.taskId,
+      message: `Transcription failed: ${e.message}`,
+    });
+  }
+}

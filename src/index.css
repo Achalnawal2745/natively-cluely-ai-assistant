@@ -12470,6 +12470,179 @@ html[data-tooltips='off'] .t-tt {
 }
 /* @overlay-motion:end */
 
+/* The notes window's listening bars (NotesWindow.tsx, 2026-10-20): three green
+   bars that move while the meeting runs, as Granola's pill shows. Still for
+   reduced motion. */
+.notes-listening-bars { display: inline-flex; align-items: center; gap: 2px; height: 14px; }
+.notes-listening-bars > span { width: 3px; height: 100%; border-radius: 2px; background: #34c759; transform-origin: center; animation: notes-listening-bar 1.1s ease-in-out infinite; }
+.notes-listening-bars > span:nth-child(2) { animation-delay: -0.35s; }
+.notes-listening-bars > span:nth-child(3) { animation-delay: -0.7s; }
+@keyframes notes-listening-bar { 0%, 100% { transform: scaleY(0.45); } 50% { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) { .notes-listening-bars > span { animation: none; transform: scaleY(0.8); } }
+/* The bars follow the real level once main sends it (NotesWindow: meeting-audio-level). */
+.notes-listening-bars.notes-level > span { animation: none; transition: transform 120ms linear; }
+
+/* The notepad's page (components/notes/NotesEditor.tsx, Tiptap). */
+.notes-editor { font-size: 15px; line-height: 1.65; color: var(--text-primary); caret-color: var(--text-primary); min-height: 100%; }
+.notes-editor > * + * { margin-top: 0.35em; }
+.notes-editor h1 { font-size: 21px; line-height: 1.3; font-weight: 600; margin-top: 0.9em; }
+.notes-editor h2 { font-size: 17.5px; line-height: 1.35; font-weight: 600; margin-top: 0.8em; }
+.notes-editor h3 { font-size: 15.5px; line-height: 1.4; font-weight: 600; margin-top: 0.7em; }
+.notes-editor > :first-child { margin-top: 0; }
+.notes-editor ul:not([data-type="taskList"]) { list-style: disc; padding-left: 1.3em; }
+.notes-editor ol { list-style: decimal; padding-left: 1.45em; }
+.notes-editor li > p { margin: 0; }
+.notes-editor li + li { margin-top: 0.15em; }
+.notes-editor ul[data-type="taskList"] { list-style: none; padding-left: 0.1em; }
+.notes-editor ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 0.55em; }
+.notes-editor ul[data-type="taskList"] li > label { flex: none; margin-top: 0.28em; user-select: none; }
+.notes-editor ul[data-type="taskList"] li > div { flex: 1; min-width: 0; }
+.notes-editor ul[data-type="taskList"] li[data-checked="true"] > div { color: var(--text-tertiary); text-decoration: line-through; }
+.notes-editor .contains-task-list { list-style: none; padding-left: 0.1em; }
+.notes-editor .task-list-item input[type="checkbox"] { margin-right: 0.5em; vertical-align: -1px; }
+.notes-editor input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--text-primary); cursor: pointer; }
+.notes-editor a { color: var(--text-primary); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--text-tertiary); }
+.notes-editor hr { border: none; border-top: 1px solid color-mix(in srgb, var(--text-tertiary) 40%, transparent); margin: 1em 0; }
+.notes-editor p.is-editor-empty:first-child::before { content: attr(data-placeholder); float: left; height: 0; pointer-events: none; color: var(--text-tertiary); }
+.notes-editor .notes-find-hit { background: rgba(255, 204, 0, 0.28); border-radius: 2px; }
+.notes-editor .notes-find-current { background: rgba(255, 204, 0, 0.6); }
+.notes-editor .notes-hook-selection { background: rgba(10, 132, 255, 0.28); }
+/* Typing through the hook the page has no focus, so its caret is drawn. */
+.notes-editor .notes-hook-caret { display: inline-block; width: 0; height: 1.15em; vertical-align: text-bottom; border-left: 1.5px solid var(--text-primary); margin-right: -1.5px; animation: notes-hook-caret 1.1s steps(1) infinite; pointer-events: none; }
+@keyframes notes-hook-caret { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .notes-editor .notes-hook-caret { animation: none; } }
+
+/* ── The notepad in Granola's look (2026-10-20) ─────────────────────────────
+   Values read from Granola 7.663's own stylesheet (tokens, editor, bottom bar)
+   and measured against its live notes window at 500×923. Scoped to the
+   notepad (NotesWindow root `.notepad`); the meeting page keeps Natively's. */
+.notepad {
+  --np-surface: #f7f7f2; --np-elevated: #ffffff; --np-ink: #292929; --np-ink-strong: #1e1e1e;
+  --np-ink-secondary: #72726e; --np-ink-tertiary: #acada8; --np-placeholder: #acada8; --np-title-placeholder: #acada8;
+  --np-hairline: #47432a33; --np-ring: #47432a33; --np-wash: #625a220f; --np-wash-strong: #625a221a;
+  --np-caret: #5b6f00; --np-selection: #5b6f0033; --np-accent: #5b6f00; --np-focus: #5b6f00; --np-focus-ring: #788c1533;
+  --np-green: #74bd00; --np-red: #bd4a30; --np-chevron: #72726e; --np-stop: #72726e; --np-ask-placeholder: #72726e;
+  --np-marker: #72726e; --np-track: #f2f2ec; --np-thumb-border: #d2cfc6; --np-grip: #eaebe5;
+  --np-bubble-me: #b2c24866; --np-bubble-me-ink: #313225; --np-bubble-them: #f2f2ec; --np-bubble-them-ink: #292929;
+  --np-highlight-faint: #625a220a; --np-shadow-pill: 0px 4px 6px -2px #0000000d;
+  --np-shadow-pop: 0 10px 15px -3px #0000001a, 0 4px 6px -4px #0000001a;
+  --np-event: #a855f7;
+  /* Note templates gallery (2026-10-21), measured on Granola's: labels, the
+     section text, the icon tiles and the scrim behind the dialog. */
+  --np-label: #72726e; --np-ink-soft: #292929e6; --np-tile: #625a221a; --np-scrim: #0000004d;
+  background: var(--np-surface); color: var(--np-ink);
+}
+.notepad[data-np-theme="dark"] {
+  --np-surface: #292929; --np-elevated: #363635; --np-ink: #eaebe5; --np-ink-strong: #ffffff;
+  --np-ink-secondary: #9e9e99; --np-ink-tertiary: #818179; --np-placeholder: #72726e; --np-title-placeholder: #818179;
+  --np-hairline: #ffffff33; --np-ring: #ffffff26; --np-wash: #ffffff0f; --np-wash-strong: #ffffff14;
+  --np-caret: #d1e043; --np-selection: #b2c24833; --np-accent: #b2c248; --np-focus: #788c15; --np-focus-ring: #788c1533;
+  --np-chevron: #acada8; --np-stop: #9e9e99; --np-ask-placeholder: #acada8;
+  --np-marker: #acada8; --np-track: #212121; --np-thumb-border: #424242; --np-grip: #72726e;
+  --np-bubble-me: #292929; --np-bubble-me-ink: #f2f6e1; --np-bubble-them: #4e4d4b; --np-bubble-them-ink: #fcfcf8;
+  --np-highlight-faint: #ffffff0a;
+  --np-label: #acada8; --np-ink-soft: #eaebe5e6; --np-tile: #ffffff1f; --np-scrim: #00000099;
+}
+.notepad ::selection { background: var(--np-selection); }
+/* The pills, panels and popovers: the elevated surface with a 0.5px ring. */
+.np-elevated { background: var(--np-elevated); box-shadow: var(--np-shadow-pill), 0 0 0 0.5px var(--np-ring); }
+.notepad[data-np-theme="dark"] .np-elevated { box-shadow: var(--np-shadow-pill), inset 0 0 0 0.5px var(--np-ring); }
+.np-pop { background: var(--np-elevated); border-radius: 12px; box-shadow: var(--np-shadow-pop), 0 0 0 0.5px var(--np-ring); transform-origin: top left; animation: np-pop-in 75ms ease-out; }
+@keyframes np-pop-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+/* Granola's popups leave as they came: 75 ms back to .95 and out. */
+.np-pop[data-closing] { animation: np-pop-out 75ms ease-in forwards; pointer-events: none; }
+@keyframes np-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes np-pop-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(0.95); } }
+/* The floating panel's plate (Granola's m5): the pills sit on it once a panel opens. */
+.np-plate { background: var(--np-elevated); box-shadow: var(--np-shadow-pill), 0 0 0 0.5px var(--np-ring); }
+.notepad[data-np-theme="dark"] .np-plate { box-shadow: var(--np-shadow-pill), inset 0 0 0 0.5px var(--np-ring); }
+/* A pill on the open plate drops its own ring and shadow (Granola: ring only when idle). */
+.np-elevated.np-flat { box-shadow: none; }
+/* The panel's top edge drags its height: hidden, half on the panel's hover, full on its own. */
+.np-grip > span { opacity: 0; background: var(--np-grip); transition: opacity 150ms, background-color 150ms; }
+.np-shell:hover .np-grip > span { opacity: 0.5; }
+.np-grip:hover > span, .np-grip[data-resizing] > span { opacity: 1; }
+.np-grip[data-resizing] > span { background: var(--np-ink-tertiary); }
+/* Find in the transcript (Granola's): every match yellow, the current one amber with a short blink. */
+.np-hit { background: #fde047; color: #18181b; border-radius: 0.25rem; box-shadow: -1px 0 #fde047, 1px 0 #fde047; }
+.np-hit[data-current] { background: #f59e0b; box-shadow: -1px 0 #f59e0b, 1px 0 #f59e0b; animation: np-beep 200ms ease-in-out; }
+@keyframes np-beep { from { box-shadow: 1px 0 0 4px #f59e0b, -1px 0 0 4px #f59e0b; } to { box-shadow: -1px 0 #f59e0b, 1px 0 #f59e0b; } }
+/* Words still being heard: three dots, 1 s, a quarter second apart. */
+.np-dots > span { width: 4px; height: 4px; border-radius: 9999px; background: currentColor; animation: np-jump 1s infinite; }
+.np-dots > span:nth-child(2) { animation-delay: 250ms; }
+.np-dots > span:nth-child(3) { animation-delay: 500ms; }
+@keyframes np-jump { 0%, 100% { opacity: 0.3; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
+/* A new question or answer arrives from 10px below. */
+.np-arrive { animation: np-arrive 200ms ease-out; }
+@keyframes np-arrive { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+/* The closed Ask pill lights faintly under the pointer. */
+.np-glow { position: relative; isolation: isolate; }
+.np-glow::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; z-index: -1; pointer-events: none; opacity: 0; transition: opacity 300ms;
+  background: radial-gradient(1024px circle at var(--np-x, 50%) var(--np-y, 50%), hsla(0, 0%, 100%, 0.05) 0, transparent 500px);
+}
+.np-glow:hover::before { opacity: 1; }
+/* Back to the newest line, over the transcript. */
+.np-jump { background: #fcfcf8cc; box-shadow: 0 10px 15px -3px #0000001a, 0 4px 6px -4px #0000001a, 0 0 0 0.5px var(--np-ring); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); transition: background-color 150ms; }
+.np-jump:hover { background: #eaebe5cc; }
+.notepad[data-np-theme="dark"] .np-jump { background: #4e4d4b80; }
+.notepad[data-np-theme="dark"] .np-jump:hover { background: #72726e80; }
+.np-outline { box-shadow: inset 0 0 0 0.5px var(--np-hairline); }
+.np-wash:hover, .np-wash[aria-expanded="true"] { background: var(--np-wash); }
+/* The chip and folder button paint their hover 3px inside the hairline, as Granola's do. */
+.np-chip { position: relative; isolation: isolate; }
+.np-chip::before { content: ''; position: absolute; inset: 3px; border-radius: 9999px; z-index: -1; background: transparent; transition: background-color 75ms; }
+.np-chip:hover::before, .np-chip[aria-expanded="true"]::before { background: var(--np-wash); }
+/* Listening bars: 3 bars 3px wide, 2px apart, in a 13×20 box; red after 3s of silence. */
+.notepad .notes-listening-bars { height: 20px; width: 13px; gap: 2px; }
+.notepad .notes-listening-bars > span { width: 3px; border-radius: 9999px; background: var(--np-green); transition: background-color 300ms; }
+.notepad .notes-listening-bars.np-silent > span { background: var(--np-red); }
+.notepad .notes-listening-bars.np-paused > span { background: var(--np-ink-tertiary); animation: none; transform: scaleY(0.55); }
+.notepad .notes-listening-bars.notes-level > span { transition: transform 300ms ease-in-out, background-color 300ms; }
+/* The editor: 15px, line height 1.5, no space between paragraphs; headings at body size. */
+.notepad .notes-editor { font-size: 15px; line-height: 1.5; color: var(--np-ink); caret-color: var(--np-caret); }
+.notepad .notes-editor > * + * { margin-top: 0; }
+.notepad .notes-editor h1, .notepad .notes-editor h2, .notepad .notes-editor h3 { font-size: 15px; line-height: 1.5; font-weight: 600; color: var(--np-ink-strong); margin-top: 0; }
+.notepad .notes-editor h1 { position: relative; }
+.notepad .notes-editor h1::before { content: '#'; position: absolute; left: -20px; color: var(--np-ink-tertiary); opacity: 0.6; font-weight: 400; }
+.notepad .notes-editor ul:not([data-type="taskList"]) { list-style: disc; padding-left: 0; margin-left: 24px; padding-bottom: 8px; }
+.notepad .notes-editor ul:not([data-type="taskList"]) ul { list-style: circle; }
+.notepad .notes-editor ul:not([data-type="taskList"]) ul ul { list-style: square; }
+.notepad .notes-editor ol { list-style: decimal; padding-left: 0; margin-left: 24px; padding-bottom: 8px; }
+.notepad .notes-editor ol ol { list-style: lower-alpha; }
+.notepad .notes-editor ol ol ol { list-style: lower-roman; }
+.notepad .notes-editor li::marker { color: var(--np-marker); }
+.notepad .notes-editor li + li { margin-top: 0; }
+.notepad .notes-editor ul[data-type="taskList"] { padding-left: 0; padding-bottom: 8px; }
+.notepad .notes-editor ul[data-type="taskList"] li { gap: 8px; }
+.notepad .notes-editor ul[data-type="taskList"] li > label { margin-top: 3px; }
+.notepad .notes-editor ul[data-type="taskList"] li[data-checked="true"] > div { color: inherit; text-decoration: none; }
+.notepad .notes-editor input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none; width: 16px; height: 16px; margin: 0; border-radius: 5px;
+  background: var(--np-elevated); box-shadow: inset 0 0 0 1px var(--np-hairline); display: grid; place-content: center; cursor: pointer;
+}
+.notepad .notes-editor input[type="checkbox"]:checked { background: var(--np-ink); box-shadow: none; }
+.notepad .notes-editor input[type="checkbox"]:checked::after {
+  content: ''; width: 9px; height: 5px; border-left: 1.75px solid var(--np-surface); border-bottom: 1.75px solid var(--np-surface);
+  transform: translateY(-1px) rotate(-45deg);
+}
+.notepad .notes-editor a { color: inherit; text-decoration-color: var(--np-ink-tertiary); }
+.notepad .notes-editor p.is-editor-empty:first-child::before { color: var(--np-placeholder); }
+.notepad .notes-editor .notes-find-hit { background: #fde04766; }
+.notepad .notes-editor .notes-find-current { background: #f59e0b99; border-radius: 0.25rem; animation: np-beep 200ms ease-in-out; }
+.notepad .notes-editor .notes-hook-selection { background: var(--np-selection); }
+.notepad .notes-editor .notes-hook-caret { border-left-color: var(--np-caret); }
+/* The scroll fades under the toolbar and above the bottom bar. */
+.np-fade-top { background: linear-gradient(to bottom, var(--np-surface), transparent); }
+.np-fade-bottom { background: linear-gradient(to top, var(--np-surface) 40%, transparent); }
+/* The Ask field's focus (a hook-typed field shows it too: the window has no focus then). */
+.np-ask { box-shadow: inset 0 0 0 1px transparent; transition: box-shadow 150ms; }
+.np-ask[data-engaged="true"] { box-shadow: inset 0 0 0 1px var(--np-focus), 0 0 0 3px var(--np-focus-ring); }
+/* After Stop: the My notes / Enhanced / Transcript switch, its thumb sliding. */
+.np-track { background: var(--np-track); box-shadow: inset 0 0 0 0.5px var(--np-ring); }
+.np-thumb { background: var(--np-elevated); box-shadow: inset 0 0 0 0.5px var(--np-thumb-border); transition: left 260ms cubic-bezier(.16,1,.3,1), width 260ms cubic-bezier(.16,1,.3,1); }
+@media (prefers-reduced-motion: reduce) { .np-pop, .np-pop[data-closing], .np-hit[data-current], .np-dots > span, .np-arrive, .notepad .notes-editor .notes-find-current { animation: none; } .np-thumb, .np-glow::before { transition: none; } }
+
 /* ── Theme switch: one tight dissolve of the whole window ───────────────────
    lib/themeTransition.mjs flips html[data-theme] inside a View Transition and
    sets data-theme-switching for its lifetime. The UA cross-fades the old
